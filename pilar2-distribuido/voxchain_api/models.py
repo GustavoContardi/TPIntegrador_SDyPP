@@ -71,6 +71,15 @@ class WorkerStatus(BaseModel):
     mode: str
     pool_url: str = ""
     running: bool
+    pubkey: Optional[str] = None
+
+
+class RegisterWorkerRequest(BaseModel):
+    worker_id: str
+    pubkey: str
+    timestamp: str
+    signature: str
+    private_key: Optional[str] = None
 
 
 class WorkerSwitchRequest(BaseModel):

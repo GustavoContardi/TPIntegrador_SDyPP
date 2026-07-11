@@ -1,16 +1,26 @@
-import { Injectable } from '@angular/core';
+import { Injectable, inject } from '@angular/core';
 import { HttpClient, HttpHeaders } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { Block } from '../models/block.model';
 import { Law, LawProposalRequest } from '../models/law.model';
 import { Window } from '../models/window.model';
+import { IdentityService } from './identity.service';
 
 @Injectable({
   providedIn: 'root'
 })
 export class ApiService {
   private apiUrl = '/api';
-  private ownerId = 'default'; // In production, this should come from auth
+  private identityService = inject(IdentityService);
+
+  private getOwnerId(): string {
+    const id = this.identityService.identity();
+    if (!id) return 'default';
+    if (id.isDemo) {
+      return id.username || 'default';
+    }
+    return id.pubkey;
+  }
 
   constructor(private http: HttpClient) {}
 
@@ -73,7 +83,7 @@ export class ApiService {
   }
 
   switchWorkerMode(workerId: string, request: any): Observable<any> {
-    const headers = new HttpHeaders().set('X-Owner-Id', this.ownerId);
+    const headers = new HttpHeaders().set('X-Owner-Id', this.getOwnerId());
     return this.http.post(`${this.apiUrl}/workers/${workerId}/switch-mode`, request, { headers });
   }
 
@@ -82,7 +92,19 @@ export class ApiService {
   }
 
   setPoolPolicy(poolId: string, policy: any): Observable<any> {
-    const headers = new HttpHeaders().set('X-Owner-Id', this.ownerId);
+    const headers = new HttpHeaders().set('X-Owner-Id', this.getOwnerId());
     return this.http.post(`${this.apiUrl}/workers/pool/${poolId}/policy`, policy, { headers });
+  }
+
+  registerWorker(workerId: string, pubkey: string, timestamp: string, signature: string, privateKey?: string): Observable<any> {
+    const body = { worker_id: workerId, pubkey, timestamp, signature, private_key: privateKey };
+    return this.http.post(`${this.apiUrl}/workers/register`, body);
+  }
+
+  unregisterWorker(workerId: string, timestamp: string, signature: string): Observable<any> {
+    const headers = new HttpHeaders()
+      .set('X-Signature', signature)
+      .set('X-Timestamp', timestamp);
+    return this.http.delete(`${this.apiUrl}/workers/${workerId}`, { headers });
   }
 }

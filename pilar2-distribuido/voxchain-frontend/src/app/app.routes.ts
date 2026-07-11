@@ -29,8 +29,7 @@ export const routes: Routes = [
   },
   { 
     path: 'identity', 
-    loadComponent: () => import('./features/identity/identity.component').then(m => m.IdentityComponent),
-    canActivate: [accountSelectedGuard]
+    loadComponent: () => import('./features/identity/identity.component').then(m => m.IdentityComponent)
   },
   { 
     path: 'propose', 

@@ -6,3 +6,4 @@ redis==5.2.0
 pika==1.4.1
 prometheus-client>=0.19,<1
 cryptography>=43,<44
+kubernetes==30.1.0

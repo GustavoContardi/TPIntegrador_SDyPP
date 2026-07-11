@@ -65,6 +65,7 @@ class WorkerManager:
             "pool_url": pool_url,
             "bully_state": bully_state,
             "running": self._thread is not None and self._thread.is_alive(),
+            "pubkey": self.signer.pubkey if (self.signer and self.signer.enabled) else None,
         }
 
     def switch_mode(self, target: str, pool_url: str = "") -> dict:

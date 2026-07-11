@@ -1,12 +1,12 @@
 import { inject } from '@angular/core';
 import { CanActivateFn, Router } from '@angular/router';
-import { AccountsService } from '../services/accounts.service';
+import { IdentityService } from '../services/identity.service';
 
 export const accountSelectedGuard: CanActivateFn = () => {
-  const accountsService = inject(AccountsService);
+  const identityService = inject(IdentityService);
   const router = inject(Router);
   
-  if (accountsService.selectedAccount()) {
+  if (identityService.identity()) {
     return true;
   }
   
