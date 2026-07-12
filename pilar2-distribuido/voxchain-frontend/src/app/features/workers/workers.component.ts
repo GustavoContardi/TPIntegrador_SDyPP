@@ -56,7 +56,10 @@ interface PoolHealth {
           color="accent" 
           (click)="showRegisterForm.set(true)" 
           *ngIf="identityService.identity() && !identityService.identity()?.isDemo && !showRegisterForm()">
-          <mat-icon>add</mat-icon> Register Worker
+          <svg class="btn-svg" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
+          </svg>
+          Register Worker
         </button>
       </div>
 
@@ -284,6 +287,13 @@ interface PoolHealth {
       justify-content: space-between;
       align-items: center;
       margin-bottom: 30px;
+    }
+    .btn-svg {
+      width: 14px;
+      height: 14px;
+      margin-right: 6px;
+      vertical-align: middle;
+      display: inline-block;
     }
     h1 {
       color: #e0e0e0;

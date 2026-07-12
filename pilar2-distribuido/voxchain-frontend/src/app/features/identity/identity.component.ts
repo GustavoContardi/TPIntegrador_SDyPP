@@ -62,13 +62,12 @@ import { AccountsService } from '../../core/services/accounts.service';
       <!-- Identity Active Card -->
       <mat-card class="active-identity-card" *ngIf="identityService.identity() as id">
         <mat-card-header>
-          <mat-icon mat-card-avatar class="active-icon" [color]="identityService.isDemoMode() ? 'primary' : 'accent'">
-            {{ identityService.isDemoMode() ? 'admin_panel_settings' : 'shield' }}
-          </mat-icon>
-          <mat-card-title>Identity Active</mat-card-title>
-          <mat-card-subtitle>
-            {{ identityService.isDemoMode() ? 'Demo Mode' : 'Custom Cryptographic Node Identity' }}
-          </mat-card-subtitle>
+          <div class="active-header-title">
+            <span class="active-title">Identity Active</span>
+            <span class="active-subtitle">
+              {{ identityService.isDemoMode() ? 'Demo Mode' : 'Custom Cryptographic Node Identity' }}
+            </span>
+          </div>
         </mat-card-header>
         <mat-card-content>
           <div class="account-info" *ngIf="identityService.isDemoMode()">
@@ -78,9 +77,12 @@ import { AccountsService } from '../../core/services/accounts.service';
 
           <div class="key-field">
             <div class="key-header">
-              <strong>Public Key (SPKI Base64):</strong>
-              <button mat-icon-button (click)="copyToClipboard(id.pubkey)" title="Copy Public Key">
-                <mat-icon class="small-icon">content_copy</mat-icon>
+              <strong class="field-label">Public Key (SPKI Base64):</strong>
+              <button mat-stroked-button class="action-btn" (click)="copyToClipboard(id.pubkey)" title="Copy Public Key">
+                <svg class="btn-svg" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
+                </svg>
+                Copy Key
               </button>
             </div>
             <code class="key-block pubkey-block">{{ id.pubkey }}</code>
@@ -88,13 +90,25 @@ import { AccountsService } from '../../core/services/accounts.service';
 
           <div class="key-field" *ngIf="!identityService.isDemoMode() && id.exportedPrivkey">
             <div class="key-header">
-              <strong>Private Key (Standard PEM Format):</strong>
+              <strong class="field-label">Private Key (Standard PEM Format):</strong>
               <div class="key-actions">
-                <button mat-icon-button (click)="showPrivateKey.set(!showPrivateKey())" [title]="showPrivateKey() ? 'Hide Private Key' : 'Show Private Key'">
-                  <mat-icon class="small-icon">{{ showPrivateKey() ? 'visibility_off' : 'visibility' }}</mat-icon>
+                <button mat-stroked-button class="action-btn" (click)="showPrivateKey.set(!showPrivateKey())">
+                  <!-- Eye icon -->
+                  <svg *ngIf="!showPrivateKey()" class="btn-svg" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/>
+                  </svg>
+                  <!-- Eye slash icon -->
+                  <svg *ngIf="showPrivateKey()" class="btn-svg" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M12 7c2.76 0 5 2.24 5 5 0 .65-.13 1.26-.36 1.82l2.92 2.92c1.51-1.44 2.63-3.21 3.44-5.18-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7zM2 4.27l2.28 2.28.46.46C3.08 8.3 1.78 10.02 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3 2 4.27zM7.53 9.8l1.55 1.55c-.05.21-.08.43-.08.65 0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2zm4.31-.78l3.15 3.15.02-.16c0-1.66-1.34-3-3-3l-.17.01z"/>
+                  </svg>
+                  {{ showPrivateKey() ? 'Hide Key' : 'Show Key' }}
                 </button>
-                <button mat-icon-button (click)="copyToClipboard(formatAsPem(id.exportedPrivkey))" title="Copy PEM Private Key">
-                  <mat-icon class="small-icon">content_copy</mat-icon>
+                <button mat-stroked-button class="action-btn" (click)="copyToClipboard(formatAsPem(id.exportedPrivkey))">
+                  <!-- Copy icon -->
+                  <svg class="btn-svg" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
+                  </svg>
+                  Copy PEM
                 </button>
               </div>
             </div>
@@ -184,13 +198,47 @@ import { AccountsService } from '../../core/services/accounts.service';
       color: #e0e0e0;
       border: 1px solid #333;
       border-radius: 8px;
-      padding: 16px;
+      padding: 24px;
     }
-    .active-icon {
-      font-size: 32px;
-      height: 32px;
-      width: 32px;
-      margin-right: 12px;
+    .active-header-title {
+      display: flex;
+      flex-direction: column;
+      margin-bottom: 12px;
+    }
+    .active-title {
+      font-size: 1.4rem;
+      font-weight: 600;
+      color: #e0e0e0;
+    }
+    .active-subtitle {
+      font-size: 0.9rem;
+      color: #888;
+      margin-top: 4px;
+    }
+    .field-label {
+      font-size: 0.95rem;
+      font-weight: 500;
+      color: #bbb;
+    }
+    .action-btn {
+      --mdc-outlined-button-outline-color: #444;
+      --mdc-outlined-button-label-text-color: #bbb;
+      font-size: 0.8rem !important;
+      height: 32px !important;
+      line-height: 32px !important;
+      padding: 0 10px !important;
+    }
+    .action-btn:hover {
+      --mdc-outlined-button-outline-color: #888;
+      --mdc-outlined-button-label-text-color: #fff;
+      background-color: rgba(255, 255, 255, 0.05);
+    }
+    .btn-svg {
+      width: 14px;
+      height: 14px;
+      margin-right: 6px;
+      vertical-align: middle;
+      display: inline-block;
     }
     .account-info {
       margin: 16px 0;
