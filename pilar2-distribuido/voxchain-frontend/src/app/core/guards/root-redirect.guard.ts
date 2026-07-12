@@ -2,15 +2,14 @@ import { inject } from '@angular/core';
 import { CanActivateFn, Router } from '@angular/router';
 import { IdentityService } from '../services/identity.service';
 
-export const accountSelectedGuard: CanActivateFn = () => {
+export const rootRedirectGuard: CanActivateFn = () => {
   const identityService = inject(IdentityService);
   const router = inject(Router);
   
   if (identityService.identity()) {
-    return true;
+    router.navigate(['/dashboard']);
+  } else {
+    router.navigate(['/identity']);
   }
-  
-  router.navigate(['/identity']);
   return false;
 };
-

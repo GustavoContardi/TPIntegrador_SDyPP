@@ -1,8 +1,9 @@
 import { Routes } from '@angular/router';
 import { accountSelectedGuard } from './core/guards/account-selected.guard';
+import { rootRedirectGuard } from './core/guards/root-redirect.guard';
 
 export const routes: Routes = [
-  { path: '', redirectTo: '/select-account', pathMatch: 'full' },
+  { path: '', canActivate: [rootRedirectGuard], children: [] },
   { 
     path: 'select-account', 
     loadComponent: () => import('./features/account-selection/account-selection.component').then(m => m.AccountSelectionComponent) 
@@ -46,5 +47,6 @@ export const routes: Routes = [
     loadComponent: () => import('./features/workers/workers.component').then(m => m.WorkersComponent),
     canActivate: [accountSelectedGuard]
   },
-  { path: '**', redirectTo: '/select-account' }
+  { path: '**', canActivate: [rootRedirectGuard], children: [] }
 ];
+

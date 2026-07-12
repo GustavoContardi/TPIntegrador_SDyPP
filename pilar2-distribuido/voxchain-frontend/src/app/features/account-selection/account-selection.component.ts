@@ -186,6 +186,11 @@ export class AccountSelectionComponent implements OnInit {
   selectedAccount = signal<DemoAccount | null>(null);
 
   ngOnInit() {
+    if (this.identityService.identity()) {
+      this.router.navigate(['/dashboard']);
+      return;
+    }
+
     this.loadAccounts();
     
     // Check if already has a selected account
@@ -194,6 +199,7 @@ export class AccountSelectionComponent implements OnInit {
       this.selectedAccount.set(saved);
     }
   }
+
 
   loadAccounts() {
     this.loading.set(true);
