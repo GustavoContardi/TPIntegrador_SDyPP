@@ -148,7 +148,7 @@ services:
       context: voxchain-frontend
       dockerfile: Dockerfile
     ports:
-      - "4200:80"
+      - "4200:8080"
     depends_on:
       - voxchain-api
 
