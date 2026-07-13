@@ -1,2 +1,32 @@
 # TPIntegrador_SDyPP
 Cierre de la cursada: Sistema distribuido completo de minería blockchain con CUDA.
+
+## Estructura
+
+| Pilar | Contenido |
+|---|---|
+| [`pilar1-minero/`](pilar1-minero/README.md) | Algoritmos de hashing y minería PoW en CPU (Python) y GPU (CUDA) |
+| [`pilar2-distribuido/`](pilar2-distribuido/README.md) | Servicios distribuidos: API, NCT, workers, pools, RabbitMQ, Redis |
+| [`pilar3-despliegue/`](pilar3-despliegue/README.md) | Kubernetes (GKE + k3s), Terraform/OpenTofu, CI/CD, observabilidad |
+
+Documentos de referencia: [`FUNCIONAMIENTO.md`](FUNCIONAMIENTO.md) (guía de
+defensa: flujos y modos de fallo), [`PENDIENTES.md`](PENDIENTES.md) (estado
+contra la checklist oficial).
+
+## Herramientas de IA utilizadas
+
+Declaración requerida por la consigna (§6 de la checklist):
+
+- **Claude Code (Anthropic)** — asistente principal durante el ciclo de
+  desarrollo: exploración y auditoría del código, escritura de tests,
+  manifests de Kubernetes y Terraform, documentación técnica
+  (`FUNCIONAMIENTO.md`, informes de hits) y revisión de decisiones de diseño.
+  Los archivos `AGENT.md` y `CONTEXTO.md` son el contexto de dominio que se le
+  dio al agente para trabajar con las reglas de negocio cerradas.
+<!-- Si se usaron otras herramientas (Copilot, ChatGPT, Cursor...), agregarlas acá. -->
+
+Todo el código generado con asistencia de IA fue revisado, entendido y validado
+por el autor: la suite de tests (122 tests unitarios y de integración) y las
+corridas de los pipelines de CI son el mecanismo de verificación. Las decisiones
+de arquitectura (PoW de gobierno, failover por lease, Bully por esfuerzo) son
+propias y están justificadas en la documentación.

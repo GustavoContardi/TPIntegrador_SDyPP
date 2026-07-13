@@ -187,3 +187,32 @@ PR → ci-checks (gitleaks + pytest)
   desplegado via Helm en el namespace `monitoring`. Cada servicio expone `/metrics`
   con métricas de aplicación (propuestas, bloques, workers, latencia). ServiceMonitors
   configurados para auto-descubrimiento. Dashboard pre-cargado en ConfigMap.
+- **Seguridad de contenedores**: todos los workloads corren con `securityContext`
+  restrictivo — `runAsNonRoot` (uid 1000 apps, 999 Redis/RabbitMQ, 101 nginx),
+  `allowPrivilegeEscalation: false`, `capabilities.drop: ALL` y seccomp
+  `RuntimeDefault`. El frontend usa `nginx-unprivileged` (puerto 8080 no
+  privilegiado). Los logs a disco van a un `emptyDir` montado en
+  `/var/log/voxchain`.
+- **Separación de workloads**: el nodepool `infra` tiene taint
+  `pool=infra:NoSchedule` y label `pool=infra` (Terraform). Redis, Sentinel y
+  RabbitMQ declaran `nodeSelector` + `tolerations` para schedulearse allí; los
+  workloads de aplicación/minería quedan en el nodepool `apps` (sin toleration,
+  el taint los excluye de `infra`).
+
+## Sincronización de relojes (NTP)
+
+No se despliega un daemon NTP propio: **los nodos de ambos clusters ya sincronizan
+sus relojes vía NTP por defecto**, y los contenedores heredan el reloj del kernel
+del nodo (no existe un reloj por contenedor):
+
+- **GKE (Container-Optimized OS)**: `systemd-timesyncd`/`chrony` sincroniza contra
+  el servidor NTP interno de Google (`metadata.google.internal`, respaldado por
+  los relojes atómicos de Google con *leap smearing*).
+- **k3s (nodos propios)**: `systemd-timesyncd` contra los pools NTP de la distro.
+
+Verificación en un nodo: `timedatectl show -p NTPSynchronized` → `yes`.
+
+Los puntos del sistema sensibles al tiempo (deadline de ventanas, TTL de leases
+en Redis, épocas de elección del pool que usan `floor(time()/30)`) toleran el
+desvío típico de NTP (≪1 s); además los TTL críticos los arbitra un único reloj
+(el de Redis), no los relojes de los clientes.
