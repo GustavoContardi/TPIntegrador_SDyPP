@@ -4,8 +4,13 @@ import hashlib
 import os
 
 from common.messaging import InMemoryBus
+from common.metrics import REGISTRY, observe_challenge_latency
 from worker_pkg.miner import parse_miner_output, run_miner
 from worker_pkg.standalone_worker import StandaloneWorker
+
+
+def _sample(name: str, labels: dict | None = None) -> float:
+    return REGISTRY.get_sample_value(name, labels or {}) or 0.0
 
 CPU_SCRIPT = os.path.join(os.path.dirname(__file__), "..", "..", "..",
                           "pilar1-minero", "cpu", "src", "brute_force.py")
@@ -98,3 +103,35 @@ def test_standalone_es_idempotente_por_ventana():
     })
     assert len(publicados) == 1  # no re-publica para la misma ventana
     assert len(calls) == 1
+
+
+def test_run_miner_registra_metricas_por_recurso():
+    """Checklist §1: tasa de éxito, duración y hashrate por tipo de recurso."""
+    cpu = {"resource": "cpu"}
+    tasks_before = _sample("voxchain_worker_mining_tasks_total", cpu)
+    success_before = _sample("voxchain_worker_mining_success_total", cpu)
+
+    base = "L1hW1promulgacion"
+    nonce, _ = run_miner(base, "00", 0, 1_000_000, prefer_gpu=False,
+                         cpu_script=os.path.abspath(CPU_SCRIPT))
+    assert nonce is not None
+
+    assert _sample("voxchain_worker_mining_tasks_total", cpu) == tasks_before + 1
+    assert _sample("voxchain_worker_mining_success_total", cpu) == success_before + 1
+    assert _sample("voxchain_worker_hashrate_hps", cpu) > 0
+    # La duración quedó registrada en el histograma con la longitud del prefijo.
+    assert _sample("voxchain_worker_mining_duration_seconds_count",
+                   {"resource": "cpu", "prefix_len": "2"}) >= 1
+
+
+def test_observe_challenge_latency():
+    count_before = _sample("voxchain_worker_challenge_latency_seconds_count")
+
+    observe_challenge_latency({"published_at": 10.0}, now=10.5)
+    assert _sample("voxchain_worker_challenge_latency_seconds_count") == count_before + 1
+
+    # Sin published_at, con valor no numérico o con latencia negativa: no observa.
+    observe_challenge_latency({}, now=10.5)
+    observe_challenge_latency({"published_at": "no-numérico"}, now=10.5)
+    observe_challenge_latency({"published_at": 99.0}, now=10.5)
+    assert _sample("voxchain_worker_challenge_latency_seconds_count") == count_before + 1

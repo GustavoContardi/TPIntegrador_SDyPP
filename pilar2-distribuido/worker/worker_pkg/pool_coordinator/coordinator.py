@@ -17,6 +17,7 @@ from threading import Lock
 
 from common.blockchain.challenge import prefix_for_zeros
 from common.metrics import (
+    observe_challenge_latency,
     pool_is_leader,
     pool_miners_registered,
     pool_nonces_found_total,
@@ -244,6 +245,7 @@ class PoolCoordinator:
             log.info("pool %s rechaza ventana %s por política de voto",
                      self.pool_id, wid)
             return
+        observe_challenge_latency(challenge, self.now())
         worker_tasks_received_total.inc()
         worker_busy.set(1)
         chunks = fragment_range(0, self.nonce_space, self.fragment_size)

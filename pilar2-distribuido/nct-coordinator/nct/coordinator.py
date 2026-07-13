@@ -32,6 +32,7 @@ from common.storage import LawStatus, WindowResult
 from common.metrics import (
     nct_blocks_sealed_total,
     nct_is_leader,
+    nct_nonce_validation_seconds,
     nct_proposals_total,
     nct_windows_opened_total,
 )
@@ -277,6 +278,9 @@ class NCTCoordinator:
             "voting_window_id": voting_window_id, "law_id": law_id,
             "n_zeros_required": n_zeros_required, "deadline": _iso(deadline),
             "partial_hash_base": base, "action": action,
+            # Epoch de publicación: los workers miden con esto la latencia
+            # RabbitMQ → worker (métrica voxchain_worker_challenge_latency_seconds).
+            "published_at": opened,
         })
         log.info("ventana %s abierta (%s, %d ceros, deadline %s)",
                  voting_window_id, action, n_zeros_required, _iso(deadline))
@@ -312,6 +316,7 @@ class NCTCoordinator:
             log.info("nonce descartado: el autor no puede ganar su propia ventana")
             return
 
+        validation_started = time.perf_counter()
         ok, block_hash_input = verify_nonce(active["partial_hash_base"],
                                             int(nonce), active["n_zeros_required"])
         if not ok:
@@ -330,6 +335,8 @@ class NCTCoordinator:
             return
 
         self._seal(active, int(nonce), winner)
+        nct_nonce_validation_seconds.observe(
+            time.perf_counter() - validation_started)
 
     def _seal(self, active: dict, nonce: int, winner: str) -> None:
         action = active["action"]

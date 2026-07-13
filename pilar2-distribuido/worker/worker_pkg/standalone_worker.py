@@ -12,7 +12,12 @@ import time
 from datetime import datetime, timezone
 
 from common.blockchain.challenge import prefix_for_zeros
-from common.metrics import worker_busy, worker_has_gpu, worker_nonces_found_total
+from common.metrics import (
+    observe_challenge_latency,
+    worker_busy,
+    worker_has_gpu,
+    worker_nonces_found_total,
+)
 
 log = logging.getLogger("voxchain.worker.standalone")
 
@@ -43,6 +48,7 @@ class StandaloneWorker:
         wid = challenge.get("voting_window_id")
         if not wid or wid in self._solved:
             return
+        observe_challenge_latency(challenge, self.now())
         action = challenge.get("action", "")
         if action in self._rejected_actions:
             log.info("%s rechaza ventana %s (acción=%s)", self.worker_id, wid, action)

@@ -334,6 +334,9 @@ resource "helm_release" "kube_prometheus_stack" {
       prometheusSpec = {
         serviceMonitorSelectorNilUsesHelmValues = false
         serviceMonitorSelector = {}
+        # Descubre PrometheusRules en cualquier namespace (voxchain-alerts.yaml)
+        ruleSelectorNilUsesHelmValues = false
+        ruleSelector = {}
         retention = "7d"
         resources = {
           requests = {

@@ -1,0 +1,74 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: voxchain-alerts
+  namespace: voxchain
+  labels:
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: voxchain.consenso
+      rules:
+        - alert: VoxchainSinLiderNCT
+          expr: max(voxchain_nct_is_leader) == 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Ningún NCT es líder"
+            description: >-
+              Hace más de 1 minuto que ningún NCT tiene el lease de liderazgo.
+              El failover por lease Redis debería resolverse en ~12 s
+              (HEARTBEAT_TIMEOUT); si esta alerta dispara, revisar Redis
+              (¿mayoría de réplicas caída?) y los pods nct-primary/nct-standby.
+        - alert: VoxchainNCTSinMetricas
+          expr: absent(voxchain_nct_is_leader)
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Prometheus no scrapea ningún NCT"
+            description: >-
+              No llegan métricas de ningún NCT hace 2 minutos: los pods están
+              caídos o el ServiceMonitor no los descubre.
+        - alert: VoxchainVentanasSinSellar
+          expr: >-
+            increase(voxchain_nct_windows_opened_total[30m]) > 0
+            and increase(voxchain_nct_blocks_sealed_total[30m]) == 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Se abren ventanas pero no se sella ningún bloque"
+            description: >-
+              En los últimos 30 minutos hubo ventanas de votación abiertas pero
+              ningún bloque sellado: las ventanas están venciendo. Puede indicar
+              que no hay workers minando, que la dificultad (N_ZEROS) es muy alta
+              para la capacidad disponible, o que respuesta_nonce no fluye.
+    - name: voxchain.mineria
+      rules:
+        - alert: VoxchainSinGPU
+          expr: max(voxchain_worker_has_gpu) == 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Ningún worker reporta GPU disponible"
+            description: >-
+              Hace 10 minutos que ningún worker tiene GPU: el sistema está
+              minando solo con CPU (fallback activo). Las ventanas tardarán más
+              o vencerán si la dificultad es alta. Verificar el cluster k3s y el
+              binario CUDA.
+        - alert: VoxchainLatenciaDesafioAlta
+          expr: >-
+            histogram_quantile(0.99,
+              rate(voxchain_worker_challenge_latency_seconds_bucket[5m])) > 5
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Latencia RabbitMQ → worker p99 > 5 s"
+            description: >-
+              Los desafíos tardan más de 5 s (p99) en llegar del NCT a los
+              workers. Revisar la salud del cluster RabbitMQ y la red entre
+              clusters (LoadBalancer AMQPS).

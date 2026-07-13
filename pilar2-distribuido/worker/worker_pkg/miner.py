@@ -16,7 +16,15 @@ import os
 import re
 import subprocess
 import sys
+import time
 from typing import Optional
+
+from common.metrics import (
+    worker_hashrate_hps,
+    worker_mining_duration_seconds,
+    worker_mining_success_total,
+    worker_mining_tasks_total,
+)
 
 log = logging.getLogger("voxchain.worker.miner")
 
@@ -39,6 +47,24 @@ def _gpu_available(gpu_bin: str) -> bool:
     return bool(gpu_bin) and os.path.exists(gpu_bin) and os.access(gpu_bin, os.X_OK)
 
 
+def _record_attempt(resource: str, prefix: str, started: float,
+                    nonce, range_min: int, range_max: int) -> None:
+    """Registra métricas de un intento de minería (checklist §1).
+
+    El hashrate se estima con los nonces efectivamente probados: hasta el
+    nonce encontrado, o el rango completo si no hubo solución.
+    """
+    duration = max(time.perf_counter() - started, 1e-9)
+    attempts = (nonce - range_min + 1) if nonce is not None else (range_max - range_min)
+    worker_mining_tasks_total.labels(resource=resource).inc()
+    worker_mining_duration_seconds.labels(
+        resource=resource, prefix_len=str(len(prefix))).observe(duration)
+    if attempts > 0:
+        worker_hashrate_hps.labels(resource=resource).set(attempts / duration)
+    if nonce is not None:
+        worker_mining_success_total.labels(resource=resource).inc()
+
+
 def run_miner(base: str, prefix: str, range_min: int, range_max: int, *,
               gpu_bin: Optional[str] = None, cpu_script: Optional[str] = None,
               prefer_gpu: bool = True, timeout: Optional[float] = None):
@@ -54,21 +80,26 @@ def run_miner(base: str, prefix: str, range_min: int, range_max: int, *,
     )
 
     if prefer_gpu and _gpu_available(gpu_bin):
+        started = time.perf_counter()
         try:
             cmd = [gpu_bin, base, prefix, str(range_min), str(range_max)]
             out = subprocess.run(cmd, capture_output=True, text=True,
                                  timeout=timeout, check=False)
             nonce, hash_hex = parse_miner_output(out.stdout)
+            _record_attempt("gpu", prefix, started, nonce, range_min, range_max)
             if nonce is not None:
                 log.info("GPU encontró nonce %d", nonce)
             return nonce, hash_hex
         except Exception as exc:  # noqa: BLE001
+            worker_mining_tasks_total.labels(resource="gpu").inc()
             log.warning("minero GPU falló (%s); fallback a CPU", exc)
 
     cmd = [sys.executable, cpu_script, base, prefix, str(range_min), str(range_max)]
+    started = time.perf_counter()
     out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
                          check=False)
     nonce, hash_hex = parse_miner_output(out.stdout)
+    _record_attempt("cpu", prefix, started, nonce, range_min, range_max)
     if nonce is not None:
         log.info("CPU encontró nonce %d", nonce)
     return nonce, hash_hex

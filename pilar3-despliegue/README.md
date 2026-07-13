@@ -199,6 +199,36 @@ PR → ci-checks (gitleaks + pytest)
   workloads de aplicación/minería quedan en el nodepool `apps` (sin toleration,
   el taint los excluye de `infra`).
 
+## Plataforma de logging (colector de N servicios × M réplicas)
+
+El colector centralizado es **Cloud Logging de GKE**, activo por defecto en el
+cluster: un agente Fluent Bit corre como DaemonSet gestionado en cada nodo y
+recolecta el stdout/stderr de **todos los pods de todas las réplicas** (API ×2,
+NCT ×2, RabbitMQ ×3, Redis ×3+3, frontend ×2, workers), lo etiqueta con
+namespace/pod/container y lo indexa en Logs Explorer de GCP.
+
+La capa de aplicación complementa esto desde `common/logging_setup.py`:
+
+- **Memoria/stdout**: handler de consola con formato **JSON estructurado**
+  (`timestamp`, `level`, `logger`, `service`, `message`, `exception`) — lo que
+  Cloud Logging parsea como payload estructurado, permitiendo filtrar por
+  servicio y severidad.
+- **Disco**: `RotatingFileHandler` en `/var/log/voxchain/<servicio>.log`
+  (5 MB × 3 backups, montado como `emptyDir`), cumpliendo "registros de
+  actividades gestionados en memoria y disco".
+
+Consulta típica en Logs Explorer:
+
+```
+resource.type="k8s_container"
+resource.labels.namespace_name="voxchain"
+jsonPayload.service="nct"
+severity>=WARNING
+```
+
+En el cluster k3s externo (fuera de GCP) los logs quedan accesibles vía
+`kubectl logs` y los archivos rotativos del `emptyDir`.
+
 ## Sincronización de relojes (NTP)
 
 No se despliega un daemon NTP propio: **los nodos de ambos clusters ya sincronizan
