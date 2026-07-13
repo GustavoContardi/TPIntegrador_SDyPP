@@ -14,10 +14,21 @@ spec:
         app: nct-standby
         component: nct
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: nct
           image: southamerica-east1-docker.pkg.dev/voxchain/voxchain-images/nct:latest
           imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 8080
               name: health
@@ -67,3 +78,9 @@ spec:
               port: 8080
             initialDelaySeconds: 5
             periodSeconds: 5
+          volumeMounts:
+            - name: logs
+              mountPath: /var/log/voxchain
+      volumes:
+        - name: logs
+          emptyDir: {}

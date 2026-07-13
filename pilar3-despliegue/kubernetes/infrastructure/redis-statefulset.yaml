@@ -15,9 +15,28 @@ spec:
         app: redis
     spec:
       terminationGracePeriodSeconds: 30
+      # Corre en el nodepool "infra" (tainted pool=infra:NoSchedule en Terraform)
+      nodeSelector:
+        pool: infra
+      tolerations:
+        - key: pool
+          operator: Equal
+          value: infra
+          effect: NoSchedule
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: redis
           image: redis:7-alpine
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           resources:
             requests:
               cpu: "100m"

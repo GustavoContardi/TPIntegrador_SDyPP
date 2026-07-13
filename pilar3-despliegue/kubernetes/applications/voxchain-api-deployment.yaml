@@ -13,10 +13,21 @@ spec:
       labels:
         app: voxchain-api
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: api
           image: southamerica-east1-docker.pkg.dev/voxchain/voxchain-images/voxchain-api:latest
           imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 8000
               name: http
@@ -66,3 +77,9 @@ spec:
               port: 8000
             initialDelaySeconds: 5
             periodSeconds: 10
+          volumeMounts:
+            - name: logs
+              mountPath: /var/log/voxchain
+      volumes:
+        - name: logs
+          emptyDir: {}

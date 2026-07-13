@@ -14,10 +14,21 @@ spec:
         app: pool-miner
     spec:
       terminationGracePeriodSeconds: 10
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: pool-miner
           image: southamerica-east1-docker.pkg.dev/voxchain/voxchain-images/worker-gpu:latest
           imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 8080
               name: health
@@ -50,3 +61,9 @@ spec:
               port: 8080
             initialDelaySeconds: 5
             periodSeconds: 10
+          volumeMounts:
+            - name: logs
+              mountPath: /var/log/voxchain
+      volumes:
+        - name: logs
+          emptyDir: {}

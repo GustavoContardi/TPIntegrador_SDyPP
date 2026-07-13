@@ -33,10 +33,21 @@ spec:
         app: worker-standalone
     spec:
       terminationGracePeriodSeconds: 10
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: worker
           image: southamerica-east1-docker.pkg.dev/voxchain/voxchain-images/worker-gpu:latest
           imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 8080
               name: health
@@ -103,6 +114,12 @@ spec:
               port: 8080
             initialDelaySeconds: 5
             periodSeconds: 10
+          volumeMounts:
+            - name: logs
+              mountPath: /var/log/voxchain
+      volumes:
+        - name: logs
+          emptyDir: {}
 ---
 # ── 2. POOL COORDINATOR — usuario: gustavo ───────────────────────────────────
 apiVersion: apps/v1
@@ -123,10 +140,21 @@ spec:
         app: worker-pool-coordinator
     spec:
       terminationGracePeriodSeconds: 10
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: worker
           image: southamerica-east1-docker.pkg.dev/voxchain/voxchain-images/worker-gpu:latest
           imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 8080
               name: health
@@ -195,6 +223,12 @@ spec:
               port: 8080
             initialDelaySeconds: 5
             periodSeconds: 10
+          volumeMounts:
+            - name: logs
+              mountPath: /var/log/voxchain
+      volumes:
+        - name: logs
+          emptyDir: {}
 ---
 # Service para que los pool-miners encuentren al coordinator dentro del namespace
 apiVersion: v1
@@ -232,10 +266,21 @@ spec:
         app: worker-pool-miner-1
     spec:
       terminationGracePeriodSeconds: 10
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: worker
           image: southamerica-east1-docker.pkg.dev/voxchain/voxchain-images/worker-gpu:latest
           imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 8080
               name: health
@@ -302,6 +347,12 @@ spec:
               port: 8080
             initialDelaySeconds: 5
             periodSeconds: 10
+          volumeMounts:
+            - name: logs
+              mountPath: /var/log/voxchain
+      volumes:
+        - name: logs
+          emptyDir: {}
 ---
 # ── 4. POOL MINER 2 — usuario: profesor1 ─────────────────────────────────────
 apiVersion: apps/v1
@@ -322,10 +373,21 @@ spec:
         app: worker-pool-miner-2
     spec:
       terminationGracePeriodSeconds: 10
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: worker
           image: southamerica-east1-docker.pkg.dev/voxchain/voxchain-images/worker-gpu:latest
           imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 8080
               name: health
@@ -392,6 +454,12 @@ spec:
               port: 8080
             initialDelaySeconds: 5
             periodSeconds: 10
+          volumeMounts:
+            - name: logs
+              mountPath: /var/log/voxchain
+      volumes:
+        - name: logs
+          emptyDir: {}
 ---
 # ── 5. POOL MINER 3 — usuario: profesor2 ─────────────────────────────────────
 apiVersion: apps/v1
@@ -412,10 +480,21 @@ spec:
         app: worker-pool-miner-3
     spec:
       terminationGracePeriodSeconds: 10
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: worker
           image: southamerica-east1-docker.pkg.dev/voxchain/voxchain-images/worker-gpu:latest
           imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 8080
               name: health
@@ -482,3 +561,9 @@ spec:
               port: 8080
             initialDelaySeconds: 5
             periodSeconds: 10
+          volumeMounts:
+            - name: logs
+              mountPath: /var/log/voxchain
+      volumes:
+        - name: logs
+          emptyDir: {}
