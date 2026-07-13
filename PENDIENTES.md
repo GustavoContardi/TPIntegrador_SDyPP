@@ -39,16 +39,12 @@
 - [x] **NTP documentado** (§2). Nada configurado ni mencionado; los nodos GKE/COS
   sincronizan por defecto contra `metadata.google.internal` — dejarlo declarado.
 
-> **⚠️ Validar en el próximo deploy:** los cambios de securityContext,
-> tolerations y el frontend no-root (nginx-unprivileged, puerto 8080) están
-> aplicados en los manifests y validados sintácticamente, pero falta el
-> `kubectl apply` + verificación en los clusters reales:
-> - Redis/RabbitMQ deben quedar `Running` en el nodepool `infra`
->   (`kubectl get pods -n voxchain -o wide`).
-> - El frontend requiere **rebuild de la imagen** (Dockerfile cambió a
->   `nginx-unprivileged`) antes de aplicar el deployment con puerto 8080.
-> - RabbitMQ como uid 999: si el pod falla por permisos del PVC existente,
->   borrar el PVC (los mensajes durables se pierden) o hacer `chown` vía job.
+> **✅ Validado en el deploy nuevo (2026-07-13, proyecto `voxchain-unlu`):**
+> Redis ×3 + Sentinel ×3 + RabbitMQ ×3 `Running` como no-root (uid 999) en el
+> nodepool `infra` — tolerations y securityContext funcionando en cluster real.
+> Falta solo el frontend `nginx-unprivileged`, que se valida cuando el pipeline
+> `03-apps` buildee las imágenes (el registry nuevo nace vacío).
+> Bitácora completa del despliegue: `docs/informe/despliegue-gcp.md`.
 
 ## 🟠 Prioridad 3 — Métricas por tipo de recurso (§1) ✅
 
