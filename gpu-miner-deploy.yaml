@@ -13,7 +13,7 @@ spec:
     spec:
       containers:
       - name: gpu-miner
-        image: southamerica-east1-docker.pkg.dev/voxchain/voxchain-images/worker-gpu:latest
+        image: southamerica-east1-docker.pkg.dev/voxchain-unlu/voxchain-images/worker-gpu:latest
         env:
         - name: WORKER_MODE
           value: standalone

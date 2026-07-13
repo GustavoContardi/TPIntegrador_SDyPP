@@ -5,7 +5,7 @@ metadata:
 spec:
   acme:
     server: https://acme-v02.api.letsencrypt.org/directory
-    email: admin@voxchain.34.95.143.13.sslip.io
+    email: admin@voxchain.34.95.245.215.sslip.io
     privateKeySecretRef:
       name: letsencrypt-prod-account-key
     solvers:

@@ -23,7 +23,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: nct
-          image: southamerica-east1-docker.pkg.dev/voxchain/voxchain-images/nct:latest
+          image: southamerica-east1-docker.pkg.dev/voxchain-unlu/voxchain-images/nct:latest
           imagePullPolicy: Always
           securityContext:
             allowPrivilegeEscalation: false

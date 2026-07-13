@@ -323,7 +323,7 @@ resource "helm_release" "kube_prometheus_stack" {
         enabled = false
       }
       extraEnvVars = {
-        GF_SERVER_ROOT_URL = "https://grafana.voxchain.34.95.143.13.sslip.io"
+        GF_SERVER_ROOT_URL = "https://grafana.voxchain.34.95.245.215.sslip.io"
       }
       persistence = {
         enabled = true

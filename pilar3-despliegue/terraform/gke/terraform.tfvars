@@ -1,5 +1,5 @@
 # GCP Project ID
-project_id = "voxchain"
+project_id = "voxchain-unlu"
 
 # Region
 region = "southamerica-east1"

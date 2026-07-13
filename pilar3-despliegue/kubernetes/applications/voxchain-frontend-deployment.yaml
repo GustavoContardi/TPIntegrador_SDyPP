@@ -21,7 +21,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: frontend
-          image: southamerica-east1-docker.pkg.dev/voxchain/voxchain-images/voxchain-frontend:latest
+          image: southamerica-east1-docker.pkg.dev/voxchain-unlu/voxchain-images/voxchain-frontend:latest
           imagePullPolicy: Always
           securityContext:
             allowPrivilegeEscalation: false

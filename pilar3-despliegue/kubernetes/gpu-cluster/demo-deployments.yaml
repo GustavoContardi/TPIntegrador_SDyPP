@@ -42,7 +42,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: worker
-          image: southamerica-east1-docker.pkg.dev/voxchain/voxchain-images/worker-gpu:latest
+          image: southamerica-east1-docker.pkg.dev/voxchain-unlu/voxchain-images/worker-gpu:latest
           imagePullPolicy: Always
           securityContext:
             allowPrivilegeEscalation: false
@@ -149,7 +149,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: worker
-          image: southamerica-east1-docker.pkg.dev/voxchain/voxchain-images/worker-gpu:latest
+          image: southamerica-east1-docker.pkg.dev/voxchain-unlu/voxchain-images/worker-gpu:latest
           imagePullPolicy: Always
           securityContext:
             allowPrivilegeEscalation: false
@@ -275,7 +275,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: worker
-          image: southamerica-east1-docker.pkg.dev/voxchain/voxchain-images/worker-gpu:latest
+          image: southamerica-east1-docker.pkg.dev/voxchain-unlu/voxchain-images/worker-gpu:latest
           imagePullPolicy: Always
           securityContext:
             allowPrivilegeEscalation: false
@@ -382,7 +382,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: worker
-          image: southamerica-east1-docker.pkg.dev/voxchain/voxchain-images/worker-gpu:latest
+          image: southamerica-east1-docker.pkg.dev/voxchain-unlu/voxchain-images/worker-gpu:latest
           imagePullPolicy: Always
           securityContext:
             allowPrivilegeEscalation: false
@@ -489,7 +489,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: worker
-          image: southamerica-east1-docker.pkg.dev/voxchain/voxchain-images/worker-gpu:latest
+          image: southamerica-east1-docker.pkg.dev/voxchain-unlu/voxchain-images/worker-gpu:latest
           imagePullPolicy: Always
           securityContext:
             allowPrivilegeEscalation: false
