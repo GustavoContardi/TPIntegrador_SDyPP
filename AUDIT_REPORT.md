@@ -5,6 +5,20 @@
 > Nota de fuente: el documento `Democracia_Via_BlockChain.md` exigido por el prompt **no existe** en el repo
 > (ver §5 Cobertura). Se usó `AGENT.md` + `DOC.md` como contrato; `CONTEXTO.md`/`FUNCIONAMIENTO.md` como apoyo.
 
+## 0. Estado de remediación (actualizado, no forma parte de la auditoría original)
+
+Los 4 hallazgos ALTO de este reporte ya están **resueltos** en el código actual. Este documento se conserva
+como registro histórico point-in-time; para el estado vigente de cada uno, ver:
+
+| Hallazgo | Estado | Dónde se resolvió |
+|---|---|---|
+| A-01 (propuestas/nonces sin firma) | ✅ Resuelto | `common/identity/signing.py` (ECDSA P-256); `nct-coordinator/nct/coordinator.py` `_signature_ok()`/`_nonce_signature_ok()`; `scripts/propose_law.py --privkey` |
+| A-02 (Redis sin AUTH/NetworkPolicy) | ✅ Resuelto | `redis-statefulset.yaml` (`--requirepass "$REDIS_PASSWORD"`) + `redis-networkpolicy.yaml` / `rabbitmq-networkpolicy.yaml` |
+| A-03 (`adminPassword` hardcodeado) | ✅ Resuelto | `main.tf` ahora usa `var.grafana_admin_password` sin default (inyectado vía `TF_VAR_*`) |
+| A-04 (`append_block` sin CAS) | ✅ Resuelto | `nct/coordinator.py` — CAS atómico (Lua) sobre el tip de la cadena |
+
+Los hallazgos MEDIO/BAJO/INFO no fueron re-verificados; tratarlos como snapshot histórico salvo que se audite de nuevo.
+
 ## 1. Resumen ejecutivo
 
 | Severidad | Cantidad |

@@ -17,8 +17,11 @@ import { Law } from '../../core/models/law.model';
     <div class="laws-container">
       <div class="laws-header">
         <h1>Laws</h1>
-        <button mat-icon-button (click)="loadLaws()" title="Refresh">
-          <mat-icon>refresh</mat-icon>
+        <button mat-stroked-button class="action-btn" (click)="loadLaws()">
+          <svg class="btn-svg" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
+          </svg>
+          Refresh
         </button>
       </div>
 
@@ -116,31 +119,68 @@ import { Law } from '../../core/models/law.model';
   `,
   styles: [`
     .laws-container {
-      padding: 20px;
+      padding: 40px 20px;
       max-width: 1400px;
       margin: 0 auto;
     }
     .laws-header {
       display: flex;
+      justify-content: space-between;
       align-items: center;
-      gap: 8px;
+      margin-bottom: 30px;
     }
     h1 {
       color: #e0e0e0;
       margin: 0;
+      font-weight: 500;
+    }
+    .action-btn {
+      --mdc-outlined-button-outline-color: #444;
+      --mdc-outlined-button-label-text-color: #bbb;
+      font-size: 0.8rem !important;
+      height: 32px !important;
+      line-height: 32px !important;
+      padding: 0 10px !important;
+    }
+    .action-btn:hover {
+      --mdc-outlined-button-outline-color: #888;
+      --mdc-outlined-button-label-text-color: #fff;
+      background-color: rgba(255, 255, 255, 0.05);
+    }
+    .btn-svg {
+      width: 14px;
+      height: 14px;
+      margin-right: 6px;
+      vertical-align: middle;
+      display: inline-block;
     }
     mat-card {
       background-color: #1e1e1e;
       color: #e0e0e0;
+      border: 1px solid #333;
+      border-radius: 8px;
     }
     table {
       width: 100%;
+      background: transparent;
     }
-    th {
-      color: #64b5f6;
+    th.mat-mdc-header-cell {
+      color: #e0e0e0;
+      font-weight: 600;
+      font-size: 0.95rem;
+      border-bottom: 1px solid #333 !important;
+      padding: 16px;
+      vertical-align: middle !important;
     }
-    td {
+    td.mat-mdc-cell {
       color: #b0b0b0;
+      font-size: 0.9rem;
+      border-bottom: 1px solid #222 !important;
+      padding: 16px;
+      vertical-align: middle !important;
+    }
+    tr.mat-mdc-row:hover {
+      background-color: rgba(255, 255, 255, 0.03);
     }
   `]
 })

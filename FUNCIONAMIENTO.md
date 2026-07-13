@@ -146,6 +146,9 @@ Redis es la fuente de verdad del estado. Claves principales:
 | `nct:last_author` | string | Último autor cuya ley entró a ventana (para el round-robin). |
 | `pool:leader` | string (TTL) | **Lease de liderazgo del Pool Coordinator** (una clave por pool). |
 | `pool:election:<epoch>` | string (TTL) | **Claim atómico de elección del pool** (SET NX gana la época; evita que dos candidatos asuman el liderazgo en la misma ventana de tiempo). |
+| `pool:policy:<pool_id>` | string (JSON) | Política de voto del pool: `accept` o `reject` por `action` y/o `law_id` puntual. La fija `POST /api/workers/pool/{pool_id}/policy`; el pool coordinator la relee periódicamente. |
+| `pool:health:<pool_id>` | string (JSON, TTL) | Snapshot de salud del pool (miners conectados, rabbitmq, política vigente) que expone `GET /api/workers/pool/{pool_id}/health`. |
+| `worker:owner:<worker_id>` | string | Pubkey/owner_id dueño de un worker registrado dinámicamente; autoriza switch-mode y cambios de política. |
 
 > **Las claves privadas de los individuos NUNCA se persisten.** Solo circula la
 > `author_pubkey`. La clave privada vive y firma exclusivamente en el navegador

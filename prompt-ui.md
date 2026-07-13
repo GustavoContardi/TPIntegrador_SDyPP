@@ -1,5 +1,14 @@
 ## Prompt para agente de IA en IDE
 
+> **Nota (vigencia):** este es el prompt original usado para bootstrapear el frontend, no documentación
+> viva del sistema actual. Quedó desactualizado en un punto concreto: menciona un servicio
+> `transaction-pool` (TrP, puerto 8082) que **nunca se construyó así** — la fragmentación del espacio de
+> nonces la hace cada Pool Coordinator internamente (ver `pilar2-distribuido/worker/README.md` y
+> `pilar2-distribuido/voxchain_api/README.md`, que ya documentan `TRP_HEALTH_URL` como "(eliminado)").
+> Tampoco cubre la página de gestión de Workers (registro dinámico, hot-switch de modo, política de voto
+> de pools) que se construyó después de este spec. Para el estado actual de la API y el frontend, preferir
+> `voxchain_api/README.md` y el código de `voxchain-frontend/src/app/features/`.
+
 ---
 
 ```

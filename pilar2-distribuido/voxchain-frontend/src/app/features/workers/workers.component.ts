@@ -23,6 +23,7 @@ interface WorkerStatus {
 interface PoolPolicy {
   decision: string;
   action?: string;
+  law_id?: string;
 }
 
 interface PoolHealth {
@@ -257,6 +258,13 @@ interface PoolHealth {
               </mat-select>
             </mat-form-field>
           </div>
+
+          <div class="form-field" *ngIf="policyDecision() === 'reject'">
+            <mat-form-field appearance="outline" class="full-width">
+              <mat-label>Law ID to Reject (optional)</mat-label>
+              <input matInput [(ngModel)]="policyLawId" placeholder="Leave empty to reject by action only">
+            </mat-form-field>
+          </div>
         </mat-card-content>
         <mat-card-actions class="form-actions">
           <button mat-button (click)="cancelPolicy()">Cancel</button>
@@ -483,6 +491,7 @@ export class WorkersComponent implements OnInit {
   poolHealth = signal<PoolHealth | null>(null);
   policyDecision = signal<string>('accept');
   policyAction = signal<string>('');
+  policyLawId = signal<string>('');
   poolPolicies = signal<Record<string, PoolPolicy>>({});
 
   showRegisterForm = signal(false);
@@ -537,14 +546,22 @@ export class WorkersComponent implements OnInit {
     if (policy.decision === 'accept') {
       return 'Accept All';
     }
+    if (!policy.action && !policy.law_id) {
+      return 'Reject All';
+    }
+    let label: string;
     if (!policy.action) {
-      return 'Reject All';
+      label = 'Reject All';
+    } else {
+      const actions = policy.action.split(',').map(a => a.trim()).sort();
+      label = (actions.length === 2 && actions.includes('promulgacion') && actions.includes('derogacion'))
+        ? 'Reject All'
+        : `Reject: ${policy.action}`;
     }
-    const actions = policy.action.split(',').map(a => a.trim()).sort();
-    if (actions.length === 2 && actions.includes('promulgacion') && actions.includes('derogacion')) {
-      return 'Reject All';
+    if (policy.law_id) {
+      label += ` (law ${policy.law_id})`;
     }
-    return `Reject: ${policy.action}`;
+    return label;
   }
 
   openSwitchDialog(worker: WorkerStatus) {
@@ -605,6 +622,7 @@ export class WorkersComponent implements OnInit {
         if (data.voting_policy) {
           this.policyDecision.set(data.voting_policy.decision || 'accept');
           this.policyAction.set(data.voting_policy.action || '');
+          this.policyLawId.set(data.voting_policy.law_id || '');
         }
       },
       error: (err) => {
@@ -618,6 +636,7 @@ export class WorkersComponent implements OnInit {
     this.poolHealth.set(null);
     this.policyDecision.set('accept');
     this.policyAction.set('');
+    this.policyLawId.set('');
   }
 
   confirmPolicy() {
@@ -630,6 +649,10 @@ export class WorkersComponent implements OnInit {
 
     if (this.policyDecision() === 'reject' && this.policyAction()) {
       policy.action = this.policyAction();
+    }
+
+    if (this.policyDecision() === 'reject' && this.policyLawId().trim()) {
+      policy.law_id = this.policyLawId().trim();
     }
 
     this.apiService.setPoolPolicy(pool.worker_id, policy).subscribe({

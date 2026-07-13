@@ -301,6 +301,9 @@ Redis es la base de datos y árbitro del sistema. Claves principales:
 | `nct:last_author` | string | Último autor que entró a ventana (para round-robin) |
 | `pool:leader` | string (TTL) | **Lease del Pool Coordinator** activo |
 | `pool:election:<epoch>` | string (NX, TTL) | **Claim atómico** de la elección del pool (SET NX) |
+| `pool:policy:<pool_id>` | string (JSON) | Política de voto del pool: `accept` o `reject` por `action` y/o `law_id` puntual (`POST /api/workers/pool/{pool_id}/policy`) |
+| `pool:health:<pool_id>` | string (JSON, TTL) | Snapshot de salud del pool (miners conectados, rabbitmq, política vigente) que expone `GET /api/workers/pool/{pool_id}/health` |
+| `worker:owner:<worker_id>` | string | Pubkey/owner_id dueño de un worker registrado dinámicamente (autorización de switch-mode / policy) |
 
 ### Ejecución Local
 

@@ -33,7 +33,11 @@ si la ley es aceptada. El minero no elige qué minar. No usa RabbitMQ.
 
 - Los mineros dentro de un **pool** delegan el sentido de voto al dueño del pool.
   Si el dueño rechaza una ley vía `POST /pool/policy`, el pool coordinator no
-  distribuye trabajo para esa ley y los mineros nunca la procesan.
+  distribuye trabajo para esa ley y los mineros nunca la procesan. El rechazo
+  puede ser por `action` (`promulgacion`/`derogacion`), por un `law_id`
+  puntual, o ambos a la vez (`_check_voting_policy`,
+  `pool_coordinator/coordinator.py:216-226`). Desde la UI (Workers →
+  Configure Policy) se puede fijar cualquiera de las dos combinaciones.
 - Los mineros en modo **standalone** deciden por sí mismos qué leyes minar
   mediante la variable `STANDALONE_REJECTED_ACTIONS`.
 - En cualquier momento un minero puede cambiar de modo mediante hot-switch
