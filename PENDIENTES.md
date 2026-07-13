@@ -100,6 +100,16 @@ histogram_quantile(0.95, rate(voxchain_nct_nonce_validation_seconds_bucket[5m]))
 - [ ] **Pull de imágenes del cluster k3s externo** (§3). `worker-deployment.yaml`
   apunta a Artifact Registry sin `imagePullSecrets` — verificar cómo autentica
   (¿repo público?) y documentarlo o agregar el secret.
+- [ ] **Los pipelines de GitHub Actions nunca corrieron** (§5). Descubierto el
+  2026-07-13: la API de Actions reporta 0 workflows registrados y 0 runs en
+  toda la historia del repo (el despliegue anterior fue con
+  `scripts/deploy-manual.sh`). Los workflows existen como código en `main`,
+  pero GitHub no los registró. Para activarlos: hacer un push a `main` (p. ej.
+  el merge de `dev`→`main` para la entrega) y verificar que `ci-checks`,
+  `03-apps`, etc. aparezcan y corran en la pestaña Actions. Los GitHub Secrets
+  ya están cargados (WIF, SA, RabbitMQ, K3S_KUBECONFIG). La checklist pide
+  pipelines demostrables — hay que poder mostrar al menos un run verde de cada
+  uno antes de la exposición.
 - [x] **Diagrama de arquitectura en pilar 1** (§6). Agregado diagrama ASCII del
   pipeline GPU/CPU (grid-stride, fallback, interfaz CLI común) en
   `pilar1-minero/README.md`; corregida además la tabla de hits que apuntaba a

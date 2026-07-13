@@ -1,0 +1,13 @@
+# Puente para el Ingress de voxchain: un Ingress solo puede referenciar
+# services de su propio namespace, y Grafana (kube-prometheus-stack) vive en
+# `monitoring`. Este ExternalName resuelve al service real cruzando namespaces.
+apiVersion: v1
+kind: Service
+metadata:
+  name: kube-prometheus-stack-grafana
+  namespace: voxchain
+spec:
+  type: ExternalName
+  externalName: kube-prometheus-stack-grafana.monitoring.svc.cluster.local
+  ports:
+    - port: 80

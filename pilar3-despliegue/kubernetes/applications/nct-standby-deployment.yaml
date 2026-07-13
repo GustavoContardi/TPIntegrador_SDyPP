@@ -73,8 +73,13 @@ spec:
               port: 8080
             initialDelaySeconds: 15
             periodSeconds: 15
+          # Readiness = liderazgo: /health devuelve 200 solo en el líder, así el
+          # Service `nct` (selector component=nct) enruta únicamente al líder.
+          # El follower queda 0/1 a propósito (liveness sigue siendo TCP para
+          # que no lo mate kubelet).
           readinessProbe:
-            tcpSocket:
+            httpGet:
+              path: /health
               port: 8080
             initialDelaySeconds: 5
             periodSeconds: 5

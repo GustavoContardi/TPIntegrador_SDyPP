@@ -189,6 +189,49 @@ El plan creó **21 recursos**:
    LB de RabbitMQ), `rabbitmq-ca` (CA nueva) y `rabbitmq-credentials` (password
    nuevo desde Secret Manager) en el namespace `g-git-push-cv`.
 
+### 7.1 Lo que el despliegue desde cero destapó (deuda del deploy manual)
+
+Redesplegar en un proyecto virgen reveló **tres configuraciones que en el
+despliegue anterior se habían hecho a mano y nunca se versionaron** — el
+argumento más concreto a favor de la infraestructura declarativa:
+
+1. **GitHub Actions nunca corrió.** La API de Actions reporta 0 workflows
+   registrados y 0 runs en toda la historia del repo: los pipelines existían
+   como código pero el despliegue real siempre fue `scripts/deploy-manual.sh`.
+   (Pendiente: push a `main` para registrarlos y mostrar runs verdes.)
+   Como workaround se buildearon las imágenes localmente replicando los
+   comandos exactos del workflow `03-apps`.
+2. **El usuario de RabbitMQ no existía en ningún manifest.** Los NCT
+   crasheaban con `ACCESS_REFUSED`: el usuario `voxchain-worker` se había
+   creado a mano con `rabbitmqctl` en el cluster viejo. Fix declarativo:
+   `RABBITMQ_DEFAULT_USER/PASS` desde el Secret (sincronizado por ESO) en el
+   StatefulSet — el broker nace con el usuario correcto en el primer arranque.
+   De paso se observó la **auto-recuperación real**: los NCT reintentaron la
+   conexión en loop, crashearon con backoff y levantaron solos al arreglarse
+   el broker, sin intervención.
+3. **El readiness del NCT no implementaba el diseño documentado.** El Service
+   `nct` selecciona primary y standby, y `/health` devuelve 503 en el
+   follower → la API reportaba `nct: error` de forma intermitente (50% de los
+   requests). FUNCIONAMIENTO.md ya decía que el readiness debía ser `/health`
+   (readiness = liderazgo), pero los deployments usaban `tcpSocket`. Con el
+   fix, el follower queda `0/1 NotReady` **a propósito** y el Service enruta
+   solo al líder.
+4. **El Ingress de Grafana apuntaba a un service de otro namespace** (un
+   Ingress solo puede referenciar services de su namespace; Grafana vive en
+   `monitoring`). Fix: service `ExternalName` puente, versionado en
+   `monitoring/grafana-bridge-service.yaml`.
+
+**Estado final del despliegue:**
+
+```
+https://voxchain.34.95.245.215.sslip.io/api/health
+→ {"api":"ok","nct":"ok","redis":"ok","workers":"unknown"}   (TLS Let's Encrypt)
+
+https://grafana.voxchain.34.95.245.215.sslip.io  → HTTP 200
+```
+
+`workers: unknown` es lo esperado hasta conectar el cluster k3s (paso 7.7).
+
 ## 8. Resumen en una frase (para abrir la explicación)
 
 *"Con una cuenta nueva y un comando de OpenTofu reconstruimos toda la
