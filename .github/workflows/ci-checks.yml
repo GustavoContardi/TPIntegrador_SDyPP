@@ -31,5 +31,5 @@ jobs:
           cache: pip
       - run: pip install -r nct-coordinator/requirements.txt
       - run: pip install -r worker/requirements.txt
-      - run: pip install pytest fakeredis
+      - run: pip install pytest "fakeredis[lua]"
       - run: pytest -v --tb=short -x -k "not integration"
