@@ -25,7 +25,7 @@ from common.messaging import build_rabbitmq
 from common.redis import create_redis
 from worker_pkg.admin_server import start_admin_server
 from worker_pkg.identity import WorkerSigner
-from worker_pkg.miner import _gpu_available, run_miner
+from worker_pkg.miner import gpu_usable, run_miner
 from worker_pkg.pool_worker import PoolWorker
 from worker_pkg.pool_coordinator import PoolCoordinator
 from worker_pkg.standalone_worker import StandaloneWorker
@@ -283,7 +283,7 @@ def main() -> None:
     signal.signal(signal.SIGTERM, lambda *_: None)
     setup_logging("worker")
     worker_id = os.getenv("WORKER_ID", f"worker-{socket.gethostname()}")
-    has_gpu = _gpu_available(os.getenv("MINER_GPU_BIN", ""))
+    has_gpu = gpu_usable(os.getenv("MINER_GPU_BIN", ""))
 
     # Leer modo desde ConfigMap (persistencia), fallback a env var
     mode = WorkerManager._read_mode_from_configmap(worker_id) or os.getenv("WORKER_MODE", "standalone")

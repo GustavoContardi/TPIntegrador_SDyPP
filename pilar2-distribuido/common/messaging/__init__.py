@@ -43,4 +43,5 @@ def build_rabbitmq(url: str):
     from common import config
     from .rabbitmq import RabbitMQMessaging
 
-    return RabbitMQMessaging(url, ssl_ca_path=config.RABBITMQ_TLS_CA_PATH)
+    return RabbitMQMessaging(url, ssl_ca_path=config.RABBITMQ_TLS_CA_PATH,
+                             ssl_server_hostname=config.RABBITMQ_TLS_SERVER_NAME)

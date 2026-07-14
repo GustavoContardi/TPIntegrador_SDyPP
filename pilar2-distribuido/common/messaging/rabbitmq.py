@@ -35,11 +35,16 @@ log = logging.getLogger("voxchain.messaging")
 
 class RabbitMQMessaging(Messaging):
     def __init__(self, url: str, connect_retries: int = 30,
-                 retry_delay: float = 2.0, ssl_ca_path: str = ""):
+                 retry_delay: float = 2.0, ssl_ca_path: str = "",
+                 ssl_server_hostname: str = ""):
         self.url = url
         self.connect_retries = connect_retries
         self.retry_delay = retry_delay
         self.ssl_ca_path = ssl_ca_path
+        # Los workers externos se conectan por IP del LoadBalancer, pero el
+        # cert del broker solo tiene SANs DNS: server_hostname permite validar
+        # contra el nombre del cert aunque la URL use la IP (SNI override).
+        self.ssl_server_hostname = ssl_server_hostname
         self._conn = None
         self._ch = None
         self._handlers: dict[str, Callable[[dict], None]] = {}
@@ -53,7 +58,11 @@ class RabbitMQMessaging(Messaging):
         if self.url.startswith("amqps://") and self.ssl_ca_path:
             import ssl
             context = ssl.create_default_context(cafile=self.ssl_ca_path)
-            params.ssl_options = pika.SSLOptions(context)
+            if self.ssl_server_hostname:
+                params.ssl_options = pika.SSLOptions(
+                    context, server_hostname=self.ssl_server_hostname)
+            else:
+                params.ssl_options = pika.SSLOptions(context)
         last_err = None
         for attempt in range(1, self.connect_retries + 1):
             try:

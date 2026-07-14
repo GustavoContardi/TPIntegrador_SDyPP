@@ -52,6 +52,9 @@ FRAGMENT_SIZE = get_int("FRAGMENT_SIZE", 1_000_000)
 
 # TLS para AMQPS (Pilar 3 — workers GPU externos)
 RABBITMQ_TLS_CA_PATH = get("RABBITMQ_TLS_CA_PATH", "")
+# Nombre a validar contra el cert cuando la URL usa la IP del LoadBalancer
+# (el cert del broker solo tiene SANs DNS). Vacío = validación estándar.
+RABBITMQ_TLS_SERVER_NAME = get("RABBITMQ_TLS_SERVER_NAME", "")
 
 # Identidad / firmas (A-01, AGENT.md 3.1): cada propuesta debe venir firmada por
 # la clave privada del autor y el NCT/API verifican la firma contra author_pubkey.

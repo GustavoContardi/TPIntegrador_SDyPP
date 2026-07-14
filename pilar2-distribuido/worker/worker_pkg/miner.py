@@ -47,6 +47,41 @@ def _gpu_available(gpu_bin: str) -> bool:
     return bool(gpu_bin) and os.path.exists(gpu_bin) and os.access(gpu_bin, os.X_OK)
 
 
+_gpu_selftest_ok: Optional[bool] = None
+
+
+def gpu_selftest(gpu_bin: str) -> bool:
+    """Distingue 'GPU rota' de 'rango sin solución' (resultado cacheado).
+
+    En un nodo sin GPU el binario CUDA falla *silenciosamente*: las llamadas
+    CUDA fallan pero el proceso sale 0 sin nonce, así que el fallback por
+    excepción nunca se dispara y el worker mina al vacío. Este self-test usa
+    un desafío que casi seguro tiene solución en el rango — prefijo "0" en
+    [0, 512), P(no haya nonce con GPU sana) = (15/16)^512 ≈ 4e-15 — de modo
+    que "no encontró" implica "la GPU no funciona".
+    """
+    global _gpu_selftest_ok
+    if _gpu_selftest_ok is None:
+        try:
+            out = subprocess.run([gpu_bin, "selftest", "0", "0", "512"],
+                                 capture_output=True, text=True,
+                                 timeout=30, check=False)
+            nonce, _ = parse_miner_output(out.stdout)
+            _gpu_selftest_ok = nonce is not None
+        except Exception:  # noqa: BLE001
+            _gpu_selftest_ok = False
+        if _gpu_selftest_ok:
+            log.info("self-test GPU OK (binario %s)", gpu_bin)
+        else:
+            log.warning("self-test GPU FALLÓ (¿nodo sin GPU?): se minará con CPU")
+    return _gpu_selftest_ok
+
+
+def gpu_usable(gpu_bin: str) -> bool:
+    """GPU lista para minar: el binario existe Y pasa el self-test."""
+    return _gpu_available(gpu_bin) and gpu_selftest(gpu_bin)
+
+
 def _record_attempt(resource: str, prefix: str, started: float,
                     nonce, range_min: int, range_max: int) -> None:
     """Registra métricas de un intento de minería (checklist §1).
@@ -79,7 +114,7 @@ def run_miner(base: str, prefix: str, range_min: int, range_max: int, *,
         "/app/pilar1-minero/cpu/src/brute_force.py",
     )
 
-    if prefer_gpu and _gpu_available(gpu_bin):
+    if prefer_gpu and gpu_usable(gpu_bin):
         started = time.perf_counter()
         try:
             cmd = [gpu_bin, base, prefix, str(range_min), str(range_max)]

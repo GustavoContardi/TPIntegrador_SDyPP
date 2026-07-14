@@ -43,6 +43,41 @@ spec:
               value: "pool-worker"
             - name: POOL_COORDINATOR_URL
               value: "http://pool-coordinator:9001"
+            # El worker conecta messaging en todos los modos (recibe comandos
+            # switch_mode por RabbitMQ) y reporta su estado a Redis en GKE.
+            - name: RABBITMQ_USER
+              valueFrom:
+                secretKeyRef:
+                  name: rabbitmq-credentials
+                  key: username
+            - name: RABBITMQ_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: rabbitmq-credentials
+                  key: password
+            - name: RABBITMQ_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: worker-config
+                  key: rabbitmq-host
+            - name: RABBITMQ_URL
+              value: "amqps://$(RABBITMQ_USER):$(RABBITMQ_PASS)@$(RABBITMQ_HOST):5671/"
+            - name: RABBITMQ_TLS_CA_PATH
+              value: /etc/rabbitmq-ca/ca.crt
+            - name: RABBITMQ_TLS_SERVER_NAME
+              value: rabbitmq.voxchain.svc.cluster.local
+            - name: REDIS_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: worker-config
+                  key: redis-host
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-credentials
+                  key: password
+            - name: REDIS_URL
+              value: "redis://:$(REDIS_PASSWORD)@$(REDIS_HOST):6379/0"
             - name: WORKER_CAPACITY
               value: "1"
             - name: LOG_DIR
@@ -64,6 +99,12 @@ spec:
           volumeMounts:
             - name: logs
               mountPath: /var/log/voxchain
+            - name: rabbitmq-ca
+              mountPath: /etc/rabbitmq-ca
+              readOnly: true
       volumes:
         - name: logs
           emptyDir: {}
+        - name: rabbitmq-ca
+          secret:
+            secretName: rabbitmq-ca

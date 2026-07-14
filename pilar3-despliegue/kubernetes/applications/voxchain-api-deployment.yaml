@@ -62,6 +62,14 @@ spec:
               value: "http://nct:8080/health"
             - name: LOG_DIR
               value: "/var/log/voxchain"
+            # Spawn dinámico de workers (Register Worker): la API crea el
+            # Deployment en el cluster k3s EXTERNO usando este kubeconfig;
+            # WORKER_NAMESPACE fija el namespace destino (≠ del namespace
+            # del propio pod).
+            - name: KUBECONFIG
+              value: /etc/k3s/kubeconfig
+            - name: WORKER_NAMESPACE
+              value: g-git-push-cv
           envFrom:
             - configMapRef:
                 name: voxchain-config
@@ -80,6 +88,16 @@ spec:
           volumeMounts:
             - name: logs
               mountPath: /var/log/voxchain
+            - name: k3s-kubeconfig
+              mountPath: /etc/k3s
+              readOnly: true
       volumes:
         - name: logs
           emptyDir: {}
+        # Secret creado fuera del repo:
+        # kubectl create secret generic k3s-kubeconfig -n voxchain \
+        #   --from-file=kubeconfig=<kubeconfig del namespace k3s>
+        - name: k3s-kubeconfig
+          secret:
+            secretName: k3s-kubeconfig
+            optional: true

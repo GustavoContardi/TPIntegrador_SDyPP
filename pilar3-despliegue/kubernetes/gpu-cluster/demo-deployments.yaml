@@ -80,8 +80,13 @@ spec:
                 configMapKeyRef:
                   name: worker-config
                   key: rabbitmq-host
+            # AMQPS: el LoadBalancer externo de RabbitMQ solo expone 5671 (TLS).
             - name: RABBITMQ_URL
-              value: "amqp://$(RABBITMQ_USER):$(RABBITMQ_PASS)@$(RABBITMQ_HOST):5672/"
+              value: "amqps://$(RABBITMQ_USER):$(RABBITMQ_PASS)@$(RABBITMQ_HOST):5671/"
+            - name: RABBITMQ_TLS_CA_PATH
+              value: /etc/rabbitmq-ca/ca.crt
+            - name: RABBITMQ_TLS_SERVER_NAME
+              value: rabbitmq.voxchain.svc.cluster.local
             - name: REDIS_HOST
               valueFrom:
                 configMapKeyRef:
@@ -117,9 +122,15 @@ spec:
           volumeMounts:
             - name: logs
               mountPath: /var/log/voxchain
+            - name: rabbitmq-ca
+              mountPath: /etc/rabbitmq-ca
+              readOnly: true
       volumes:
         - name: logs
           emptyDir: {}
+        - name: rabbitmq-ca
+          secret:
+            secretName: rabbitmq-ca
 ---
 # ── 2. POOL COORDINATOR — usuario: gustavo ───────────────────────────────────
 apiVersion: apps/v1
@@ -191,8 +202,13 @@ spec:
                 configMapKeyRef:
                   name: worker-config
                   key: rabbitmq-host
+            # AMQPS: el LoadBalancer externo de RabbitMQ solo expone 5671 (TLS).
             - name: RABBITMQ_URL
-              value: "amqp://$(RABBITMQ_USER):$(RABBITMQ_PASS)@$(RABBITMQ_HOST):5672/"
+              value: "amqps://$(RABBITMQ_USER):$(RABBITMQ_PASS)@$(RABBITMQ_HOST):5671/"
+            - name: RABBITMQ_TLS_CA_PATH
+              value: /etc/rabbitmq-ca/ca.crt
+            - name: RABBITMQ_TLS_SERVER_NAME
+              value: rabbitmq.voxchain.svc.cluster.local
             - name: REDIS_HOST
               valueFrom:
                 configMapKeyRef:
@@ -226,9 +242,15 @@ spec:
           volumeMounts:
             - name: logs
               mountPath: /var/log/voxchain
+            - name: rabbitmq-ca
+              mountPath: /etc/rabbitmq-ca
+              readOnly: true
       volumes:
         - name: logs
           emptyDir: {}
+        - name: rabbitmq-ca
+          secret:
+            secretName: rabbitmq-ca
 ---
 # Service para que los pool-miners encuentren al coordinator dentro del namespace
 apiVersion: v1
@@ -315,8 +337,13 @@ spec:
                 configMapKeyRef:
                   name: worker-config
                   key: rabbitmq-host
+            # AMQPS: el LoadBalancer externo de RabbitMQ solo expone 5671 (TLS).
             - name: RABBITMQ_URL
-              value: "amqp://$(RABBITMQ_USER):$(RABBITMQ_PASS)@$(RABBITMQ_HOST):5672/"
+              value: "amqps://$(RABBITMQ_USER):$(RABBITMQ_PASS)@$(RABBITMQ_HOST):5671/"
+            - name: RABBITMQ_TLS_CA_PATH
+              value: /etc/rabbitmq-ca/ca.crt
+            - name: RABBITMQ_TLS_SERVER_NAME
+              value: rabbitmq.voxchain.svc.cluster.local
             - name: REDIS_HOST
               valueFrom:
                 configMapKeyRef:
@@ -350,9 +377,15 @@ spec:
           volumeMounts:
             - name: logs
               mountPath: /var/log/voxchain
+            - name: rabbitmq-ca
+              mountPath: /etc/rabbitmq-ca
+              readOnly: true
       volumes:
         - name: logs
           emptyDir: {}
+        - name: rabbitmq-ca
+          secret:
+            secretName: rabbitmq-ca
 ---
 # ── 4. POOL MINER 2 — usuario: profesor1 ─────────────────────────────────────
 apiVersion: apps/v1
@@ -422,8 +455,13 @@ spec:
                 configMapKeyRef:
                   name: worker-config
                   key: rabbitmq-host
+            # AMQPS: el LoadBalancer externo de RabbitMQ solo expone 5671 (TLS).
             - name: RABBITMQ_URL
-              value: "amqp://$(RABBITMQ_USER):$(RABBITMQ_PASS)@$(RABBITMQ_HOST):5672/"
+              value: "amqps://$(RABBITMQ_USER):$(RABBITMQ_PASS)@$(RABBITMQ_HOST):5671/"
+            - name: RABBITMQ_TLS_CA_PATH
+              value: /etc/rabbitmq-ca/ca.crt
+            - name: RABBITMQ_TLS_SERVER_NAME
+              value: rabbitmq.voxchain.svc.cluster.local
             - name: REDIS_HOST
               valueFrom:
                 configMapKeyRef:
@@ -457,9 +495,15 @@ spec:
           volumeMounts:
             - name: logs
               mountPath: /var/log/voxchain
+            - name: rabbitmq-ca
+              mountPath: /etc/rabbitmq-ca
+              readOnly: true
       volumes:
         - name: logs
           emptyDir: {}
+        - name: rabbitmq-ca
+          secret:
+            secretName: rabbitmq-ca
 ---
 # ── 5. POOL MINER 3 — usuario: profesor2 ─────────────────────────────────────
 apiVersion: apps/v1
@@ -529,8 +573,13 @@ spec:
                 configMapKeyRef:
                   name: worker-config
                   key: rabbitmq-host
+            # AMQPS: el LoadBalancer externo de RabbitMQ solo expone 5671 (TLS).
             - name: RABBITMQ_URL
-              value: "amqp://$(RABBITMQ_USER):$(RABBITMQ_PASS)@$(RABBITMQ_HOST):5672/"
+              value: "amqps://$(RABBITMQ_USER):$(RABBITMQ_PASS)@$(RABBITMQ_HOST):5671/"
+            - name: RABBITMQ_TLS_CA_PATH
+              value: /etc/rabbitmq-ca/ca.crt
+            - name: RABBITMQ_TLS_SERVER_NAME
+              value: rabbitmq.voxchain.svc.cluster.local
             - name: REDIS_HOST
               valueFrom:
                 configMapKeyRef:
@@ -564,6 +613,12 @@ spec:
           volumeMounts:
             - name: logs
               mountPath: /var/log/voxchain
+            - name: rabbitmq-ca
+              mountPath: /etc/rabbitmq-ca
+              readOnly: true
       volumes:
         - name: logs
           emptyDir: {}
+        - name: rabbitmq-ca
+          secret:
+            secretName: rabbitmq-ca

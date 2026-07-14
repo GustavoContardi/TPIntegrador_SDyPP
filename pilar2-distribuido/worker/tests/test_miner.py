@@ -105,6 +105,29 @@ def test_standalone_es_idempotente_por_ventana():
     assert len(calls) == 1
 
 
+def test_gpu_rota_silenciosa_cae_a_cpu(tmp_path):
+    """Bug real del despliegue: en un nodo sin GPU el binario CUDA sale 0 sin
+    nonce (fallo silencioso), y el fallback por excepción nunca se disparaba —
+    el worker minaba al vacío. El self-test debe detectarlo y usar CPU."""
+    import worker_pkg.miner as miner_mod
+    fake_gpu = tmp_path / "gpu_bin"
+    fake_gpu.write_text("#!/bin/sh\necho 'No se encontró nonce en el rango especificado'\nexit 0\n")
+    fake_gpu.chmod(0o755)
+
+    miner_mod._gpu_selftest_ok = None  # resetear el cache del self-test
+    try:
+        base = "L1hW1promulgacion"
+        nonce, h = run_miner(base, "00", 0, 1_000_000,
+                             gpu_bin=str(fake_gpu),
+                             cpu_script=os.path.abspath(CPU_SCRIPT),
+                             prefer_gpu=True)
+        assert nonce is not None, "debió caer a CPU y encontrar el nonce"
+        assert hashlib.md5(f"{base}{nonce}".encode()).hexdigest().startswith("00")
+        assert miner_mod._gpu_selftest_ok is False
+    finally:
+        miner_mod._gpu_selftest_ok = None
+
+
 def test_run_miner_registra_metricas_por_recurso():
     """Checklist §1: tasa de éxito, duración y hashrate por tipo de recurso."""
     cpu = {"resource": "cpu"}

@@ -84,6 +84,20 @@ histogram_quantile(0.95, rate(voxchain_nct_nonce_validation_seconds_bucket[5m]))
 - [ ] (Opcional) Agregar paneles con estas queries al dashboard de Grafana
   (`pilar3-despliegue/kubernetes/monitoring/voxchain-dashboard.yaml`).
 
+## 🔵 Decisión de diseño abierta (heredada del TODO de workers, ya resuelto)
+
+- [ ] **¿Persistir el modo del worker entre reinicios?** El ConfigMap
+  `worker-modes` y el RBAC de `backend-proxy` son restos de un diseño a medio
+  hacer: el worker LEE el ConfigMap al arrancar pero nada lo escribe, así que
+  un switch-mode por RabbitMQ se pierde si el pod se reinicia. Decidir:
+  (a) conectar `switch_worker_mode` para que patchee el ConfigMap (la API ya
+  tiene acceso al k3s vía kubeconfig, mismo mecanismo del spawn), o
+  (b) aceptar el switch efímero y borrar el código/RBAC muerto
+  (`backend-proxy-rbac.yaml`, `worker-modes-configmap.yaml`,
+  `_read_mode_from_configmap`). Nota: el SA `gustavo` no puede crear
+  roles/rolebindings en el k3s, así que el RBAC de backend-proxy no se puede
+  aplicar de todos modos.
+
 ## 🟢 Prioridad 4 — Plataforma / defensa
 
 - [x] **Plataforma de logging (colector)** (§2). Resuelto con la opción (a):

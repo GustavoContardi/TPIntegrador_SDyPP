@@ -24,14 +24,27 @@ logger = logging.getLogger("voxchain.api.workers")
 
 # Kubernetes dynamic pod spawning configuration
 K8S_ENABLED = False
-NAMESPACE = "g-git-push-cv"
 
-if os.path.exists("/var/run/secrets/kubernetes.io/serviceaccount/namespace"):
-    try:
-        with open("/var/run/secrets/kubernetes.io/serviceaccount/namespace", "r") as f:
-            NAMESPACE = f.read().strip()
-    except Exception as e:
-        logger.warning(f"Failed to read Kubernetes namespace from secret: {e}")
+# Namespace DESTINO de los workers spawneados. Con KUBECONFIG apuntando al
+# cluster k3s externo, el namespace del propio pod de la API (voxchain, en
+# GKE) NO es el destino: hay que fijarlo explícitamente vía env.
+NAMESPACE = os.getenv("WORKER_NAMESPACE", "")
+if not NAMESPACE:
+    NAMESPACE = "g-git-push-cv"
+    if os.path.exists("/var/run/secrets/kubernetes.io/serviceaccount/namespace"):
+        try:
+            with open("/var/run/secrets/kubernetes.io/serviceaccount/namespace", "r") as f:
+                NAMESPACE = f.read().strip()
+        except Exception as e:
+            logger.warning(f"Failed to read Kubernetes namespace from secret: {e}")
+
+# Imagen del worker y si el spawn reserva GPU (los workers del cluster k3s
+# actual NO reservan nvidia.com/gpu; pedirla dejaría el pod Pending).
+WORKER_IMAGE = os.getenv(
+    "WORKER_IMAGE",
+    "southamerica-east1-docker.pkg.dev/voxchain-unlu/voxchain-images/worker-gpu:latest",
+)
+SPAWN_REQUEST_GPU = os.getenv("SPAWN_REQUEST_GPU", "false").lower() == "true"
 
 try:
     from kubernetes import client, config as k8s_config
@@ -84,9 +97,17 @@ def _spawn_k8s_worker(worker_id: str, private_key_pem: str):
     # 2. Create Deployment for the worker pod
     deployment_name = f"worker-dep-{worker_id}"
     
+    # El env replica el de worker-deployment.yaml del gpu-cluster: AMQPS 5671
+    # con CA propia (el LB externo no expone el puerto plano) y Redis de GKE
+    # con password, para que el worker reporte su estado al backend.
+    resources = (client.V1ResourceRequirements(limits={"nvidia.com/gpu": "1"})
+                 if SPAWN_REQUEST_GPU
+                 else client.V1ResourceRequirements(
+                     requests={"cpu": "100m", "memory": "256Mi"},
+                     limits={"cpu": "500m", "memory": "512Mi"}))
     container = client.V1Container(
         name="gpu-miner",
-        image="southamerica-east1-docker.pkg.dev/voxchain/voxchain-images/worker-gpu:latest",
+        image=WORKER_IMAGE,
         image_pull_policy="Always",
         env=[
             client.V1EnvVar(name="WORKER_ID", value=worker_id),
@@ -110,35 +131,60 @@ def _spawn_k8s_worker(worker_id: str, private_key_pem: str):
                     config_map_key_ref=client.V1ConfigMapKeySelector(name="worker-config", key="rabbitmq-host")
                 )
             ),
-            client.V1EnvVar(name="RABBITMQ_URL", value="amqp://$(RABBITMQ_USER):$(RABBITMQ_PASS)@$(RABBITMQ_HOST):5672/"),
+            client.V1EnvVar(name="RABBITMQ_URL", value="amqps://$(RABBITMQ_USER):$(RABBITMQ_PASS)@$(RABBITMQ_HOST):5671/"),
+            client.V1EnvVar(name="RABBITMQ_TLS_CA_PATH", value="/etc/rabbitmq-ca/ca.crt"),
+            client.V1EnvVar(name="RABBITMQ_TLS_SERVER_NAME", value="rabbitmq.voxchain.svc.cluster.local"),
             client.V1EnvVar(
                 name="REDIS_HOST",
                 value_from=client.V1EnvVarSource(
                     config_map_key_ref=client.V1ConfigMapKeySelector(name="worker-config", key="redis-host", optional=True)
                 )
             ),
-            client.V1EnvVar(name="REDIS_URL", value="redis://$(REDIS_HOST):6379/0"),
+            client.V1EnvVar(
+                name="REDIS_PASSWORD",
+                value_from=client.V1EnvVarSource(
+                    secret_key_ref=client.V1SecretKeySelector(name="redis-credentials", key="password", optional=True)
+                )
+            ),
+            client.V1EnvVar(name="REDIS_URL", value="redis://:$(REDIS_PASSWORD)@$(REDIS_HOST):6379/0"),
             client.V1EnvVar(name="WORKER_CAPACITY", value="1"),
             client.V1EnvVar(name="LOG_DIR", value="/var/log/voxchain"),
         ],
-        resources=client.V1ResourceRequirements(
-            limits={"nvidia.com/gpu": "1"}
+        resources=resources,
+        security_context=client.V1SecurityContext(
+            allow_privilege_escalation=False,
+            capabilities=client.V1Capabilities(drop=["ALL"]),
         ),
         volume_mounts=[
-            client.V1VolumeMount(name="key-volume", mount_path="/app/keys", read_only=True)
+            client.V1VolumeMount(name="key-volume", mount_path="/app/keys", read_only=True),
+            client.V1VolumeMount(name="rabbitmq-ca", mount_path="/etc/rabbitmq-ca", read_only=True),
+            client.V1VolumeMount(name="logs", mount_path="/var/log/voxchain"),
         ]
     )
-    
+
     template = client.V1PodTemplateSpec(
         metadata=client.V1ObjectMeta(labels={"app": f"worker-gpu-{worker_id}"}),
         spec=client.V1PodSpec(
             termination_grace_period_seconds=10,
+            security_context=client.V1PodSecurityContext(
+                run_as_non_root=True, run_as_user=1000, run_as_group=1000,
+                fs_group=1000,
+                seccomp_profile=client.V1SeccompProfile(type="RuntimeDefault"),
+            ),
             containers=[container],
             volumes=[
                 client.V1Volume(
                     name="key-volume",
                     secret=client.V1SecretVolumeSource(secret_name=secret_name)
-                )
+                ),
+                client.V1Volume(
+                    name="rabbitmq-ca",
+                    secret=client.V1SecretVolumeSource(secret_name="rabbitmq-ca")
+                ),
+                client.V1Volume(
+                    name="logs",
+                    empty_dir=client.V1EmptyDirVolumeSource()
+                ),
             ]
         )
     )
