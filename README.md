@@ -10,8 +10,7 @@ Cierre de la cursada: Sistema distribuido completo de minería blockchain con CU
 | [`pilar3-despliegue/`](pilar3-despliegue/README.md) | Kubernetes (GKE + k3s), Terraform/OpenTofu, CI/CD, observabilidad |
 
 Documentos de referencia: [`FUNCIONAMIENTO.md`](FUNCIONAMIENTO.md) (guía de
-defensa: flujos y modos de fallo), [`PENDIENTES.md`](PENDIENTES.md) (estado
-contra la checklist oficial).
+defensa: flujos y modos de fallo).
 
 ## Herramientas de IA utilizadas
 
