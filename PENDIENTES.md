@@ -10,13 +10,23 @@
 
 ## 🔴 Prioridad 1 — Bloqueantes de la entrega
 
-- [ ] **Correr los escenarios de carga y guardar resultados** (§4, §7).
-  Los scripts ya existen (`pilar3-despliegue/load-tests/scenarios/` y
-  `pilar2-distribuido/tests/stress/`), pero `pilar1-minero/benchmarks/resultados/`
-  está vacío y no hay corridas documentadas de N transacciones con M vs 2xM recursos.
-  - [ ] Bulks de transacciones: 1 → 100.000 (`test_bulk.py`)
-  - [ ] Dificultad de prefijo: 1 → 8 (`test_difficulty.py`)
-  - [ ] Fragmentación del pool: 1% → 50% (`test_fragmentation.py`)
+- [x] **Correr los escenarios de carga y guardar resultados** (§4, §7).
+  ✅ Corridos el 2026-07-14 contra el despliegue real (GKE + workers k3s) con
+  `run_all_cloud.sh` (nuevo: varía `N_ZEROS` en el ConfigMap de GKE y
+  `FRAGMENT_SIZE` en los coordinators del k3s entre corridas, y restaura al
+  terminar). Resultados en `pilar3-despliegue/load-tests/resultados/*.csv`.
+  Los scripts originales tenían bugs contra el API real (campo `author` en vez
+  de `author_pubkey`, `--api-url` ignorado, fragmentación que no medía sellado)
+  — arreglados.
+  - [x] Bulks de transacciones (`test_bulk.py`): 1/10/100/1000 → throughput
+    escala de 0.6 a 23 props/s; el lote de 100.000 de la checklist queda
+    pendiente si se considera necesario (a 23 props/s serían ~72 min de ingesta).
+  - [x] Dificultad de prefijo (`test_difficulty.py`): 1→6 ceros, curva
+    exponencial (0.3s → 107s). Con 7-8 ceros y workers CPU el sellado se va a
+    horas; documentar como límite de la config CPU-only.
+  - [x] Fragmentación del pool (`test_fragmentation.py`): 1%→50%. A dificultad 4
+    el nonce ganador aparece muy temprano en el espacio, así que el tamaño del
+    fragmento casi no incide (2.5-3.7s; 0.47s con 50%).
   - [ ] Ingreso/egreso de nodos GPU con generación dinámica de CPU (documentar corrida)
 - [ ] **Grabar el video** explicando servicios, componentes y configuraciones (§6).
   `docs/video/` está vacío. Requisito binario de la entrega.
@@ -97,6 +107,23 @@ histogram_quantile(0.95, rate(voxchain_nct_nonce_validation_seconds_bucket[5m]))
   `_read_mode_from_configmap`). Nota: el SA `gustavo` no puede crear
   roles/rolebindings en el k3s, así que el RBAC de backend-proxy no se puede
   aplicar de todos modos.
+
+## 🐛 Bug de failover encontrado el 2026-07-14 (fix en repo, falta redeploy)
+
+- [ ] **Rebuild + redeploy de la imagen del NCT con el fix de failover.**
+  Al correr los load tests se descubrió que un NCT follower que arranca fresco
+  y nunca recibe un heartbeat jamás dispara la elección
+  (`nct/monitor.py`: `_last_heartbeat = 0.0` cortocircuitaba el `tick()`).
+  Escenario real: el líder muere mientras el follower se reinicia → clúster
+  acéfalo hasta reinicio manual. Además, `rollout restart` del NCT se
+  deadlockea: el pod nuevo (surge) no puede tomar el lease mientras el viejo
+  lo renueva → nunca pasa a Ready (para reiniciar: scale 0 → esperar TTL del
+  lease 15 s → scale 1, como hace `run_all_cloud.sh`).
+  Fix aplicado en `monitor.py` (el timeout corre desde el arranque/stepdown)
+  con test de regresión (`test_follower_fresco_con_lider_muerto_dispara_eleccion`,
+  verificado que falla contra el código viejo); 44/44 tests del NCT verdes.
+  **La imagen desplegada en GKE todavía tiene el bug** — rebuildear y rolear
+  en el próximo deploy.
 
 ## 🟢 Prioridad 4 — Plataforma / defensa
 

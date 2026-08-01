@@ -20,7 +20,7 @@ API_URL = "http://localhost:8000"
 
 
 def propose_law(api_url: str, text: str) -> dict | None:
-    payload = f'{{"text":"{text}","author":"pk-test-{uuid.uuid4().hex[:8]}"}}'.encode()
+    payload = f'{{"text":"{text}","author_pubkey":"pk-test-{uuid.uuid4().hex[:8]}"}}'.encode()
     req = Request(
         f"{api_url}/api/laws",
         data=payload,

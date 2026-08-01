@@ -1,0 +1,6 @@
+fragment_pct,fragment_size,tasks_created,time_to_seal_s,law_id
+1,500000,100,3.66,ley-1c7296d3
+5,2500000,20,2.519,ley-60fd8baa
+10,5000000,10,2.785,ley-4dfbebef
+25,12500000,4,2.493,ley-3a4a6308
+50,25000000,2,0.475,ley-906d4671

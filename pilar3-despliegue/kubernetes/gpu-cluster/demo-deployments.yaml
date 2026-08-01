@@ -125,12 +125,21 @@ spec:
             - name: rabbitmq-ca
               mountPath: /etc/rabbitmq-ca
               readOnly: true
+            - name: privkey
+              mountPath: /keys
+              readOnly: true
       volumes:
         - name: logs
           emptyDir: {}
         - name: rabbitmq-ca
           secret:
             secretName: rabbitmq-ca
+        - name: privkey
+          secret:
+            secretName: worker-privkeys
+            items:
+              - key: valentin.pem
+                path: privkey.pem
 ---
 # ── 2. POOL COORDINATOR — usuario: gustavo ───────────────────────────────────
 apiVersion: apps/v1

@@ -33,7 +33,11 @@ def _req(method: str, path: str, data: bytes | None = None) -> dict:
 
 
 def run_fragmentation_test(api_url: str, fragment_pct: int,
-                           nonce_space: int) -> dict:
+                           nonce_space: int,
+                           timeout: float = 300.0) -> dict:
+    # FRAGMENT_SIZE es config del pool coordinator (env en el cluster de
+    # workers); este script asume que el runner ya lo dejó en el valor que
+    # corresponde a fragment_pct y mide el tiempo hasta el sellado.
     fragment_size = int(nonce_space * fragment_pct / 100)
     tasks_count = nonce_space // max(fragment_size, 1)
     text = f"Test fragmentación {fragment_pct}% ({uuid.uuid4().hex[:8]})"
@@ -45,36 +49,54 @@ def run_fragmentation_test(api_url: str, fragment_pct: int,
 
     payload = json.dumps({
         "text": text,
-        "author": f"pk-test-{uuid.uuid4().hex[:8]}",
-        "fragment_size": fragment_size,
+        "author_pubkey": f"pk-test-{uuid.uuid4().hex[:8]}",
     }).encode()
 
     result = _req("POST", "/api/laws", payload)
     law_hash = result.get("body", {}).get("law_id", "")
 
-    elapsed = time.monotonic() - start
-
-    if law_hash:
-        print(f"propuesta enviada en {elapsed:.2f}s")
-    else:
+    if not law_hash:
         print(f"Fallo: {result}")
+        return {
+            "fragment_pct": fragment_pct,
+            "fragment_size": fragment_size,
+            "tasks_created": tasks_count,
+            "time_to_seal_s": -1,
+            "law_id": "",
+        }
+
+    time_to_seal = None
+    while time.monotonic() - start < timeout:
+        chain = _req("GET", "/api/chain")
+        blocks = chain.get("body", [])
+        if any(law_hash in str(block) for block in blocks):
+            time_to_seal = round(time.monotonic() - start, 3)
+            break
+        time.sleep(2)
+
+    if time_to_seal:
+        print(f"bloque sellado en {time_to_seal:.2f}s")
+    else:
+        print("Fallo: timeout esperando el sellado")
 
     return {
         "fragment_pct": fragment_pct,
         "fragment_size": fragment_size,
         "tasks_created": tasks_count,
-        "proposal_time_s": round(elapsed, 3),
+        "time_to_seal_s": time_to_seal if time_to_seal else -1,
         "law_id": law_hash,
     }
 
 
 def main():
+    global API_URL
     parser = argparse.ArgumentParser(description="Fragmentation test")
     parser.add_argument("--api-url", default=API_URL)
     parser.add_argument("--nonce-space", type=int, default=NONCE_SPACE)
     parser.add_argument("--fragments-pct", default="1,5,10,25,50")
     parser.add_argument("--output", default="resultados_fragmentacion.csv")
     args = parser.parse_args()
+    API_URL = args.api_url
 
     percentages = [int(s.strip()) for s in args.fragments_pct.split(",")]
     results = []
@@ -91,7 +113,7 @@ def main():
     print(f"\nResultados guardados en {args.output}")
     for r in results:
         print(f"  {r['fragment_pct']:>3}% | size={r['fragment_size']:>8} | "
-              f"tasks={r['tasks_created']:>5} | prop={r['proposal_time_s']:.2f}s")
+              f"tasks={r['tasks_created']:>5} | seal={r['time_to_seal_s']:.2f}s")
 
 
 if __name__ == "__main__":

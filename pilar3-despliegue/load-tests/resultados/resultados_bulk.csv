@@ -1,0 +1,5 @@
+size,total_time_s,throughput_proposals_s,blocks_sealed
+1,1.682,0.59,14
+10,1.472,6.79,24
+100,5.265,18.99,40
+1000,43.481,23.0,95

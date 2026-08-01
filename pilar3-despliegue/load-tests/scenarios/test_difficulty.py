@@ -35,7 +35,7 @@ def propose_and_wait(api_url: str, text: str, poll_interval: float = 2.0,
     start = time.monotonic()
     result = _req("POST", "/api/laws", json.dumps({
         "text": text,
-        "author": f"pk-test-{uuid.uuid4().hex[:8]}"
+        "author_pubkey": f"pk-test-{uuid.uuid4().hex[:8]}"
     }).encode())
 
     law_hash = result.get("body", {}).get("law_id", "")
@@ -74,14 +74,17 @@ def run_difficulty_test(api_url: str, n_zeros: int) -> dict:
 
 
 def main():
+    global API_URL
     parser = argparse.ArgumentParser(description="Difficulty load test")
     parser.add_argument("--api-url", default=API_URL)
+    parser.add_argument("--min-zeros", type=int, default=1)
     parser.add_argument("--max-zeros", type=int, default=8)
     parser.add_argument("--output", default="resultados_dificultad.csv")
     args = parser.parse_args()
+    API_URL = args.api_url
 
     results = []
-    for n in range(1, args.max_zeros + 1):
+    for n in range(args.min_zeros, args.max_zeros + 1):
         result = run_difficulty_test(args.api_url, n)
         results.append(result)
 
