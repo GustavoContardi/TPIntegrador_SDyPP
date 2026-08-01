@@ -45,7 +45,12 @@ class NCTHeartbeatMonitor:
         self.dead_threshold = dead_threshold
         self.on_elected = on_elected
 
-        self._last_heartbeat = 0.0
+        # Un follower que arranca trata "ahora" como el último heartbeat visto:
+        # si el líder ya estaba muerto (p. ej. murió mientras este nodo se
+        # reiniciaba), el timeout corre desde el arranque y la elección se
+        # dispara igual. Con 0.0 el nodo esperaba un heartbeat que nunca iba a
+        # llegar y el sistema quedaba sin líder para siempre.
+        self._last_heartbeat = self.now()
         self._election_in_progress = False
         self._is_leader = initial_is_leader
 
@@ -58,8 +63,6 @@ class NCTHeartbeatMonitor:
 
     @property
     def leader_alive(self) -> bool:
-        if self._last_heartbeat == 0.0:
-            return False
         return (self.now() - self._last_heartbeat) < self.heartbeat_timeout
 
     def notify_stepdown(self) -> None:
@@ -67,13 +70,11 @@ class NCTHeartbeatMonitor:
         log.info("monitor activado tras step_down (%s): empezando a observar heartbeats",
                  self.candidate_id)
         self._is_leader = False
-        self._last_heartbeat = 0.0
+        self._last_heartbeat = self.now()
         self._election_in_progress = False
 
     def tick(self) -> None:
         if self._is_leader or self._election_in_progress:
-            return
-        if self._last_heartbeat == 0.0:
             return
         if self.leader_alive:
             return

@@ -327,3 +327,33 @@ def test_primary_step_down_activa_su_monitor(bus, store):
     # El monitor estaba cableado desde el inicio; wire() registró nct.heartbeat.
     consumed = bus.consumed_queues()
     assert EXCHANGE_HEARTBEAT in consumed
+
+
+# ---- BUG 4: follower fresco con líder ya muerto ---------------------------
+
+def test_follower_fresco_con_lider_muerto_dispara_eleccion(bus, store):
+    """Un follower que arranca y NUNCA recibe un heartbeat debe promoverse.
+
+    Escenario real (visto en GKE 2026-07-14): el líder muere mientras el
+    follower se reinicia. El follower arranca fresco, no puede adquirir el
+    lease al inicio (todavía no expiró) y queda esperando heartbeats que
+    nadie envía. Con _last_heartbeat=0.0 la elección no se disparaba nunca
+    y el clúster quedaba acéfalo hasta un reinicio manual.
+    """
+    clock = Clock()
+    nct, monitor = _full_node(bus, store, nct_id="nct-primary",
+                              is_leader=False, clock=clock)
+
+    # Nadie envió heartbeats todavía y no hay líder en Redis (lease expirado).
+    assert store.get_leader() is None
+
+    # Antes del timeout no debe haber elección.
+    clock.t += 5
+    monitor.tick()
+    assert nct.is_leader is False
+
+    # Pasado el timeout sin ningún heartbeat, la elección debe dispararse.
+    clock.t += 12
+    monitor.tick()
+    assert nct.is_leader is True
+    assert store.get_leader() == "nct-primary"
