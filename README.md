@@ -9,9 +9,6 @@ Cierre de la cursada: Sistema distribuido completo de minería blockchain con CU
 | [`pilar2-distribuido/`](pilar2-distribuido/README.md) | Servicios distribuidos: API, NCT, workers, pools, RabbitMQ, Redis |
 | [`pilar3-despliegue/`](pilar3-despliegue/README.md) | Kubernetes (GKE + k3s), Terraform/OpenTofu, CI/CD, observabilidad |
 
-Documentos de referencia: [`FUNCIONAMIENTO.md`](FUNCIONAMIENTO.md) (guía de
-defensa: flujos y modos de fallo).
-
 ## Herramientas de IA utilizadas
 
 Declaración requerida por la consigna (§6 de la checklist):
