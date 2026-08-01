@@ -56,5 +56,6 @@ logs/
 gustavo.yaml
 gpu-check.yaml
 
-# Resumen personal (fuera de git)
+# Notas personales de seguimiento (fuera de git)
 RESUMEN-PILARES.md
+PENDIENTES.md
