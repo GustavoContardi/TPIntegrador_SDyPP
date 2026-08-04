@@ -8,6 +8,7 @@ on:
 
 env:
   K8S_DIR: pilar3-despliegue/kubernetes
+  PROJECT_ID: voxchain-unlu
 
 jobs:
   deploy:
@@ -32,6 +33,25 @@ jobs:
           cluster_name: voxchain
           location: southamerica-east1-a
 
+      # Los ExternalSecret de infrastructure/ leen estos secretos de GCP Secret
+      # Manager. Si faltan, los StatefulSets arrancan sin credenciales y el
+      # fallo aparece mucho después y sin relación aparente. Mejor cortar acá.
+      # Se crean una sola vez por entorno con scripts/bootstrap-secrets.sh.
+      - name: Check bootstrap secrets exist
+        run: |
+          FALTAN=""
+          for s in rabbitmq-ca-crt rabbitmq-tls-crt rabbitmq-tls-key \
+                   rabbitmq-user rabbitmq-pass rabbitmq-erlang-cookie redis-pass; do
+            gcloud secrets describe "$s" --project="${{ env.PROJECT_ID }}" >/dev/null 2>&1 \
+              || FALTAN="$FALTAN $s"
+          done
+          if [ -n "$FALTAN" ]; then
+            echo "::error::Faltan secretos en Secret Manager:$FALTAN"
+            echo "Creálos con: pilar3-despliegue/kubernetes/scripts/bootstrap-secrets.sh"
+            exit 1
+          fi
+          echo "Los 7 secretos están presentes."
+
       - name: Create namespace
         run: |
           kubectl apply -f ${{ env.K8S_DIR }}/namespace.yaml
@@ -40,7 +60,17 @@ jobs:
         run: |
           kubectl apply -f ${{ env.K8S_DIR }}/infrastructure/
 
+      # Los ClusterIssuer de Let's Encrypt. El controlador de cert-manager lo
+      # instala OpenTofu (01-infra); acá van sólo los Issuer, que dependen de
+      # sus CRDs y por eso no pueden vivir en el Terraform.
+      - name: Deploy cert-manager issuers
+        run: |
+          kubectl apply -f ${{ env.K8S_DIR }}/cert-manager/
+
+      # rollout status y no `wait --for=condition=available`: esa condición
+      # existe en Deployments, no en StatefulSets — la versión anterior de este
+      # paso no podía pasar nunca.
       - name: Verify deployments
         run: |
-          kubectl wait --for=condition=available --timeout=120s \
-            -n voxchain statefulset/rabbitmq
+          kubectl rollout status -n voxchain statefulset/rabbitmq --timeout=180s
+          kubectl rollout status -n voxchain statefulset/redis --timeout=180s

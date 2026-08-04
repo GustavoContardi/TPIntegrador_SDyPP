@@ -45,6 +45,10 @@ Thumbs.db
 *.tfstate.*
 .terraform/
 crash.log
+# Planes guardados: son binarios y traen los valores de las variables adentro
+# (incluida la password de Grafana).
+tfplan
+*.tfplan
 
 # Docker
 .docker/
@@ -61,3 +65,4 @@ RESUMEN-PILARES.md
 PENDIENTES.md
 FUNCIONAMIENTO.md
 RESUMEN-ESCALADO.md
+GUION-VIDEO.md
