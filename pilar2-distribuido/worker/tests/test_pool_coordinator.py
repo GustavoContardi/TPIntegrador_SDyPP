@@ -192,6 +192,58 @@ class TestPoolCoordinator:
         )
         assert nonce_published
 
+    def _fragmentar(self, coordinator, wid: str, fragmentos: int = 4):
+        coordinator.fragment_size = 25
+        coordinator.nonce_space = 25 * fragmentos
+        coordinator.handle_challenge({
+            "voting_window_id": wid,
+            "law_id": f"law-{wid}",
+            "action": "promulgacion",
+            "partial_hash_base": "abc",
+            "n_zeros_required": 4,
+        })
+
+    def test_submit_result_descarta_fragmentos_de_la_ventana_ganada(self, coordinator):
+        # Regresión: al ganar una ventana quedaban en la cola los fragmentos
+        # sin repartir, y los mineros seguían barriéndolos antes de atender la
+        # ventana siguiente. Con NONCE_SPACE grande eso agrega minutos de
+        # trabajo inútil al sellado de cada ley.
+        mid = coordinator.register_miner()
+        self._fragmentar(coordinator, "win-1", fragmentos=10)
+        assert len(coordinator._pending_fragments) == 10
+
+        coordinator.submit_result(mid, {"voting_window_id": "win-1", "nonce": 7,
+                                        "block_hash_candidato": "0xbeef"})
+
+        assert len(coordinator._pending_fragments) == 0
+        assert coordinator.get_next_task(mid) is None
+
+    def test_nuevo_desafio_descarta_fragmentos_de_ventanas_previas(self, coordinator):
+        # Cubre la ventana que vence sin ganador: no pasa por submit_result,
+        # así que sus fragmentos se limpian al llegar el desafío siguiente.
+        mid = coordinator.register_miner()
+        self._fragmentar(coordinator, "win-1", fragmentos=10)
+        self._fragmentar(coordinator, "win-2", fragmentos=10)
+
+        assert len(coordinator._pending_fragments) == 10
+        wids = {f["voting_window_id"] for f in coordinator._pending_fragments}
+        assert wids == {"win-2"}
+
+    def test_descartar_no_toca_fragmentos_de_otra_ventana(self, coordinator):
+        self._fragmentar(coordinator, "win-1", fragmentos=4)
+        # Se inyecta a mano una ventana ajena (el flujo normal no las mezcla).
+        coordinator._pending_fragments.append({
+            "voting_window_id": "win-9", "law_id": "law-9", "action": "promulgacion",
+            "partial_hash_base": "zzz", "n_zeros_required": 4,
+            "range_min": 0, "range_max": 25,
+        })
+
+        assert coordinator._discard_fragments("win-1") == 4
+
+        restantes = list(coordinator._pending_fragments)
+        assert len(restantes) == 1
+        assert restantes[0]["voting_window_id"] == "win-9"
+
     def test_purge_stale_miners(self, coordinator):
         mid = coordinator.register_miner()
         coordinator._miners[mid]["last_seen"] = 0  # simular miner muerto

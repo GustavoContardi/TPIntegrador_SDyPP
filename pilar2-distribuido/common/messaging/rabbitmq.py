@@ -1,14 +1,21 @@
 """Implementación de ``Messaging`` sobre RabbitMQ con pika (BlockingConnection).
 
-Un único hilo por servicio: se consume con ``process_data_events`` y se publica
-sobre el mismo canal, intercalando trabajo periódico vía el callback ``tick``.
-La topología (colas + exchange topic) se declara de forma idempotente al conectar.
+Se consume con ``process_data_events`` y se publica sobre el mismo canal,
+intercalando trabajo periódico vía el callback ``tick``. La topología (colas +
+exchange topic) se declara de forma idempotente al conectar.
+
+``BlockingConnection`` no es thread-safe. La mayoría de los servicios publican
+desde el mismo hilo que consume, pero el Pool Coordinator no: publica el nonce
+ganador desde el hilo del auto-minero y desde el del servidor HTTP. Por eso
+``_publish`` detecta si lo llaman desde otro hilo y, en ese caso, delega en
+``add_callback_threadsafe`` (ver detalle en ``_publish``).
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from typing import Callable
 
@@ -51,6 +58,9 @@ class RabbitMQMessaging(Messaging):
         # consumer tag por stream activo (None mientras no se consume el stream).
         self._consumer_tags: dict[str, str] = {}
         self._consuming = False
+        # Hilo dueño de la conexión (el que corre start_consuming). Sirve para
+        # que _publish sepa si lo están llamando desde afuera de ese hilo.
+        self._io_thread: threading.Thread | None = None
 
     # -- conexión / topología ----------------------------------------------
     def connect(self) -> None:
@@ -101,12 +111,23 @@ class RabbitMQMessaging(Messaging):
     def _publish(self, exchange: str, routing_key: str, payload: dict) -> None:
         if self._ch is None:
             self.connect()
-        self._ch.basic_publish(
-            exchange=exchange,
-            routing_key=routing_key,
-            body=json.dumps(payload).encode(),
-            properties=pika.BasicProperties(delivery_mode=2),  # persistente
-        )
+        body = json.dumps(payload).encode()
+        props = pika.BasicProperties(delivery_mode=2)  # persistente
+
+        def _do() -> None:
+            self._ch.basic_publish(exchange=exchange, routing_key=routing_key,
+                                   body=body, properties=props)
+
+        # Publicar desde otro hilo mientras el hilo dueño está dentro de
+        # process_data_events corrompe los buffers internos de pika: la conexión
+        # muere con "tx buffer size underflow" y se lleva puesto al servicio.
+        # add_callback_threadsafe encola la publicación para que la ejecute el
+        # hilo dueño en su próxima vuelta (es el mecanismo que pika documenta
+        # justamente para este caso).
+        if self._consuming and threading.current_thread() is not self._io_thread:
+            self._conn.add_callback_threadsafe(_do)
+        else:
+            _do()
 
     def publish_proposal(self, law): self._publish("", QUEUE_PROPUESTAS, law)
     def publish_challenge(self, challenge):
@@ -245,6 +266,7 @@ class RabbitMQMessaging(Messaging):
     def start_consuming(self, tick=None, tick_interval: float = 1.0) -> None:
         if self._ch is None:
             self.connect()
+        self._io_thread = threading.current_thread()
         self._consuming = True
         self._bind_consumers()
         log.info("consumiendo (%s)", ", ".join(self._consumer_tags) or "sin handlers")

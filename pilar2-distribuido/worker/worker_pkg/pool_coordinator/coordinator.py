@@ -184,6 +184,18 @@ class PoolCoordinator:
                 return None
             return self._pending_fragments.popleft()
 
+    def _discard_fragments(self, wid: str) -> int:
+        """Saca de la cola los fragmentos pendientes de la ventana ``wid``."""
+        with self._lock:
+            quedan = deque(f for f in self._pending_fragments
+                           if f.get("voting_window_id") != wid)
+            descartados = len(self._pending_fragments) - len(quedan)
+            self._pending_fragments = quedan
+        if descartados:
+            log.info("pool %s descartó %d fragmentos de la ventana %s",
+                     self.pool_id, descartados, wid)
+        return descartados
+
     def submit_result(self, miner_id: str, result: dict) -> bool:
         wid = result.get("voting_window_id")
         nonce = result.get("nonce")
@@ -193,6 +205,13 @@ class PoolCoordinator:
         if wid in self._solved:
             return False
         self._solved.add(wid)
+        # La ventana ya está ganada: los fragmentos que quedaron sin repartir
+        # sólo generan trabajo inútil. Si no se descartan, los mineros siguen
+        # barriendo el espacio de nonces de una ventana cerrada y recién
+        # atienden la siguiente cuando terminan, lo que retrasa el sellado de
+        # cada ley por el resto de la cola (con NONCE_SPACE grande son cientos
+        # de fragmentos).
+        self._discard_fragments(wid)
         pool_nonces_found_total.inc()
         winner = self.signer.identity(self.pool_id) if self.signer else self.pool_id
         payload = {
@@ -251,6 +270,15 @@ class PoolCoordinator:
         chunks = fragment_range(0, self.nonce_space, self.fragment_size)
         log.info("pool %s desafío %s fragmentado en %d tareas",
                  self.pool_id, wid, len(chunks))
+        # El NCT tiene una sola ventana activa por vez, así que lo que haya
+        # quedado de otra ventana ya no sirve. Cubre el caso de una ventana que
+        # venció sin ganador (ahí no pasa por submit_result).
+        with self._lock:
+            otras_ventanas = {f.get("voting_window_id")
+                              for f in self._pending_fragments
+                              if f.get("voting_window_id") != wid}
+        for vieja in otras_ventanas:
+            self._discard_fragments(vieja)
         with self._lock:
             for rmin, rmax in chunks:
                 self._pending_fragments.append({

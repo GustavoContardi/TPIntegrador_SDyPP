@@ -1,0 +1,4 @@
+miners,n_zeros,laws,sealed,timed_out,total_time_s,mean_time_per_law_s,stdev_time_per_law_s,throughput_laws_min,total_nonces,hashrate_nonces_s
+1,6,10,10,0,234.11,23.411,21.223,2.56,123762579,528651
+2,6,10,10,0,212.114,21.211,26.725,2.83,189885546,895203
+4,6,10,10,0,164.238,16.424,12.635,3.65,240318623,1463233

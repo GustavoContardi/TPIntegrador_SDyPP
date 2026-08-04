@@ -1,0 +1,145 @@
+# VoxChain — stack para el experimento "N transacciones con M recursos" vs
+# "con 2xM recursos" (checklist §4 y §7).
+#
+# Difiere del docker-compose.yml principal en tres puntos, y los tres importan
+# para que la medición signifique algo:
+#
+#   1. Los mineros corren en modo POOL (un coordinator + N pool-workers), no en
+#      standalone. En standalone cada worker mina el rango [0, NONCE_SPACE)
+#      completo sobre la misma base: todos hacen exactamente el MISMO trabajo y
+#      encuentran el MISMO nonce, así que duplicar workers no da speedup, sólo
+#      redundancia. El pool fragmenta el espacio de nonces y reparte tareas, que
+#      es el modo que efectivamente escala con la cantidad de mineros.
+#
+#   2. Un único servicio `pool-worker`, sin puertos publicados y sin WORKER_ID
+#      fijo, para poder `docker compose up --scale pool-worker=N`. El WORKER_ID
+#      cae al hostname del contenedor (ver worker/main.py), único por réplica.
+#
+#   3. Cada minero está limitado a 1 CPU. Sin esto, "2xM recursos" serían el
+#      doble de procesos peleándose por los mismos cores y el gráfico saldría
+#      plano por saturación, no por el diseño del sistema.
+#
+# No incluye el NCT standby ni el frontend: no aportan al experimento y comen
+# CPU que necesitan los mineros.
+#
+# Uso: pilar3-despliegue/load-tests/scenarios/run_scaling.sh
+name: voxchain-scaling
+
+x-app-env: &app-env
+  RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+  REDIS_URL: redis://redis:6379/0
+  N_ZEROS: "${N_ZEROS:-6}"
+  HEALTH_PORT: "8080"
+  REQUIRE_SIGNATURES: "false"
+  PROPOSAL_MAX_AGE_SECONDS: "300"
+
+x-miner-env: &miner-env
+  # Espacio de nonces amplio a propósito: con N_ZEROS=6 la solución aparece
+  # cada ~16,7 M nonces en promedio, así que 200 M hace despreciable el caso
+  # "no hay solución en el rango" (que falsearía la medición con un timeout).
+  NONCE_SPACE: "${NONCE_SPACE:-200000000}"
+  # 400 fragmentos por ventana: suficientes para que los mineros se repartan
+  # trabajo parejo en vez de que uno solo se lleve el fragmento ganador.
+  FRAGMENT_SIZE: "${FRAGMENT_SIZE:-500000}"
+
+services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  coordinator:
+    build:
+      context: ..
+      dockerfile: pilar2-distribuido/nct-coordinator/Dockerfile
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      <<: *app-env
+      # Ventanas largas a propósito: el tiempo de sellado es exponencial y con
+      # pocos mineros la cola de la distribución supera con facilidad los 120 s
+      # del compose principal. Si vence la ventana, la ley no se sella y la
+      # corrida se contamina con un timeout que no mide capacidad de cómputo.
+      WINDOW_SECONDS_PROMULGACION: "600"
+      WINDOW_SECONDS_DEROGACION: "600"
+      NCT_MODE: "primary"
+      NCT_ID: "nct-primary"
+      ELECTION_N_ZEROS: "2"
+      HEARTBEAT_INTERVAL: "3"
+      HEARTBEAT_TIMEOUT: "12"
+      LEADER_LEASE_TTL: "15"
+    ports:
+      - "8081:8080"
+
+  voxchain-api:
+    build:
+      context: ..
+      dockerfile: pilar2-distribuido/voxchain_api/Dockerfile
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      <<: *app-env
+      NCT_HEALTH_URL: http://coordinator:8080/health
+      PORT: "8000"
+    ports:
+      - "8000:8000"
+
+  # Reparte fragmentos Y auto-mina (ver _auto_mine_loop en pool_coordinator).
+  # Por eso cuenta como UN minero: M mineros = este + (M-1) pool-workers.
+  pool-coordinator:
+    build:
+      context: ..
+      dockerfile: pilar2-distribuido/worker/Dockerfile
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      <<: [*app-env, *miner-env]
+      WORKER_MODE: "pool-coordinator"
+      WORKER_ID: "pool-coordinator-1"
+      WORKER_CAPACITY: "1"
+      POOL_HTTP_PORT: "9001"
+    cpus: 1.0
+    ports:
+      # Publicado para que run_scaling.sh consulte /health y confirme cuántos
+      # mineros hay registrados antes de empezar a medir.
+      - "9001:9001"
+
+  # El servicio escalable: `--scale pool-worker=N` es la perilla de "recursos".
+  pool-worker:
+    build:
+      context: ..
+      dockerfile: pilar2-distribuido/worker/Dockerfile
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      pool-coordinator:
+        condition: service_started
+    environment:
+      <<: [*app-env, *miner-env]
+      WORKER_MODE: "pool-worker"
+      WORKER_CAPACITY: "1"
+      POOL_COORDINATOR_URL: "http://pool-coordinator:9001"
+    cpus: 1.0
+    # Sin `ports`: publicar un puerto fijo rompe el escalado (conflicto de
+    # bind en la segunda réplica). Sin WORKER_ID: cae al hostname, único.
