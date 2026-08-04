@@ -26,34 +26,42 @@ nonce válido ⇔ md5(partial_hash_base + str(nonce)) empieza con n ceros
         │ scripts/propose_law.py          │  law:* window:* block:*      │
         │ (flujo 1: propuestas)           │  chain  active_window        │
         ▼                                 │  cooldown:* window_counter   │
- ┌───────────────┐   propuestas (cola)    └───────────────▲──────────────┘
- │   RabbitMQ    │◄───────────────────────────────┐       │ persiste estado
- │               │                                │       │ y sella bloques
- │ exchange      │   desafio_activo (topic)       │       │
+ ┌───────────────┐   propuestas (cola)    │  leader lease (NCT y pool)   │
+ │   RabbitMQ    │◄───────────────────────└───────────────▲──────────────┘
+ │               │                                │       │ persiste estado
+ │ exchanges     │   desafio_activo (topic)       │       │ y sella bloques
  │ + colas       │────────────┐        ┌──────────┴───────────────┐
- └───────┬───────┘            │        │           NCT            │
+ └───────┬───────┘            │        │       NCT primary        │
          │                    │        │  - cola round-robin autor│
          │ respuesta_nonce    │        │  - abre/cierra ventana   │
          │ (cola) red→NCT     │        │  - dificultad fija n/n+1 │
          │                    │        │  - verifica nonce, sella │
-         │                    │        │  - Bully-por-esfuerzo*   │
+         │                    │        │  - publica heartbeats    │
+         │                    │        └──────────────────────────┘
+         │                    │                     ▲ nct.heartbeat
+         │                    │        ┌────────────┴─────────────┐
+         │                    │        │       NCT standby        │
+         │                    │        │  - monitorea heartbeats  │
+         │                    │        │  - toma el lease en Redis│
+         │                    │        │    si el líder calla     │
          │                    ▼        └──────────────────────────┘
          │          ┌──────────────────┐
-         │          │ Transaction Pool │  suscrito a desafio_activo
-         │          │  - fragmenta el  │
+         │          │ Pool Coordinator │  worker en modo pool-coordinator
+         │          │  - fragmenta el  │  (suscrito a desafio_activo)
          │          │    espacio nonce │
+         │          │  - auto-mina     │
          │          └───────┬──────────┘
-         │     tareas_trp   │   ▲ keepalive_trp
-         │   (cola, interno)│   │ (cola, interno)
+         │       HTTP       │   ▲ registro + heartbeat
+         │  /work/next/<id> │   │
          │                  ▼   │
          │            ┌──────────────────┐   invoca minero Pilar 1
-         └───────────►│  Worker  x2      │──► GPU 05_brute_force_range
-            nonce     │  - mina rango    │    └ fallback CPU brute_force.py
+         └───────────►│  pool-workers    │──► GPU 05_brute_force_range
+            nonce     │  - minan rango   │    └ fallback CPU brute_force.py
             ganador   └──────────────────┘
-
-   (*) Bully-por-esfuerzo: piezas de PoW implementadas; coordinación
-       distribuida pendiente (test xfail). Ver nct-coordinator/nct/bully.py
 ```
+
+> El reparto de fragmentos va por **HTTP**, no por cola: el coordinator necesita
+> saber qué minero tiene cada rango para reasignarlo si deja de reportar.
 
 ### Flujos de RabbitMQ
 
@@ -66,33 +74,47 @@ cuarto que toque al NCT):
 | 2 | `desafio_activo`  | exchange *topic*| NCT → red   | `voting_window_id, law_id, n_zeros_required, deadline, partial_hash_base, action` |
 | 3 | `respuesta_nonce` | cola            | red → NCT   | `voting_window_id, nonce, winning_node_or_pool, block_hash_candidato` |
 
-**Dos flujos internos de distribución de trabajo TrP↔worker** (permitidos por
-AGENT.md 10 como flujo interno; documentados aquí *antes* de codearse, no tocan al
-NCT):
+**Failover del NCT** (AGENT.md 4):
 
-| # | Nombre          | Tipo | Dirección       | Contenido |
-|---|-----------------|------|-----------------|-----------|
-| 4 | `tareas_trp`    | cola | TrP → workers   | desafío + `range_min, range_max` (rango de nonces) |
-| 5 | `keepalive_trp` | cola | workers → TrP   | `worker_id, capacity, has_gpu, ts` |
+| # | Nombre          | Tipo             | Dirección            | Contenido |
+|---|-----------------|------------------|----------------------|-----------|
+| 4 | `nct.heartbeat` | exchange *topic* | NCT activo → backups | `nct_id, ts, active_window_id, last_block_hash` |
 
-**Dos flujos del Bully distribuido para failover del NCT** (AGENT.md 4):
+No hay cola de elección: el arbitraje entre standbys lo hace **Redis
+atómicamente** con un lease. Los NCT son homogéneos dentro del mismo clúster, sin
+ventaja de cómputo entre ellos, así que una prueba de trabajo entre pares no
+aportaría nada. Ver `nct/monitor.py`.
 
-| # | Nombre            | Tipo            | Dirección            | Contenido |
-|---|-------------------|-----------------|----------------------|-----------|
-| 6 | `nct.heartbeat`   | exchange *topic*| NCT activo → backups | `nct_id, ts, active_window_id, last_block_hash` |
-| 7 | `nct_election`    | cola            | backups → backups    | `candidate_id, nonce, seed, n_zeros` |
+**Coordinación del pool de minado:**
+
+| # | Nombre           | Tipo             | Dirección          | Contenido |
+|---|------------------|------------------|--------------------|-----------|
+| 5 | `pool.election`  | exchange *topic* | workers ↔ workers  | mini-PoW para elegir coordinator (`POOL_ELECTION_N_ZEROS`) |
+| 6 | `worker.command` | exchange *topic* | backend → worker   | `switch_mode`, `stop` |
+
+**Colas declaradas pero sin uso activo:** `tareas_trp` y `keepalive_trp` son
+restos del diseño original con un servicio TrP separado. `tareas_trp` no tiene
+publicadores ni consumidores; `keepalive_trp` sólo tiene publicador. Se declaran
+en la topología por compatibilidad, pero el reparto de trabajo real va por HTTP.
 
 ---
 
 ## Componentes
 
-| Servicio                                   | Rol |
-|--------------------------------------------|-----|
-| [`nct-coordinator/`](nct-coordinator/)     | NCT **primario**: cola round-robin, cooldown, apertura/cierre de ventana, verificación de nonce, sellado del bloque y publicación de heartbeats |
-| [`nct-coordinator/`](nct-coordinator/) (standby) | NCT **standby**: monitorea heartbeats del líder; si falla, dispara elección distribuida y asume como nuevo líder |
-| [`transaction-pool/`](transaction-pool/)   | TrP: fragmenta el espacio de nonces (bolsa de tareas), trackea capacidad por keep-alives |
-| [`worker/`](worker/)                        | Worker: mina el rango asignado invocando el minero de Pilar 1 (GPU/CPU) y publica el nonce |
-| `common/`                                   | Paquete compartido: `blockchain`, `storage` (Redis), `messaging` (RabbitMQ), health, logging, config |
+| Servicio | Rol |
+|---|---|
+| [`nct-coordinator/`](nct-coordinator/) | NCT **primario**: cola round-robin, cooldown, apertura/cierre de ventana, verificación de nonce, sellado del bloque y publicación de heartbeats |
+| [`nct-coordinator/`](nct-coordinator/) (standby) | NCT **standby**: monitorea heartbeats del líder; si deja de recibirlos, toma el lease de liderazgo en Redis |
+| [`worker/`](worker/) modo `pool-coordinator` | Fragmenta el espacio de nonces, reparte tareas por HTTP, trackea capacidad por keep-alives y además auto-mina |
+| [`worker/`](worker/) modo `pool-worker` | Pide rangos al coordinator y los mina invocando el minero de Pilar 1 (GPU/CPU) |
+| [`worker/`](worker/) modo `standalone` | Mina el espacio completo por su cuenta y publica el nonce directo al NCT (modo competitivo) |
+| [`voxchain_api/`](voxchain_api/) | API REST (FastAPI): propuestas, cadena, cuentas demo, estado de workers |
+| [`voxchain-frontend/`](voxchain-frontend/) | SPA en Angular; firma las propuestas en el navegador |
+| `common/` | Paquete compartido: `blockchain`, `storage` (Redis), `messaging` (RabbitMQ), health, logging, métricas, config |
+
+> El diseño original tenía un servicio `transaction-pool/` separado (TrP). Su rol
+> quedó absorbido por el worker en modo `pool-coordinator`, que hace lo mismo sin
+> un despliegue adicional.
 
 ---
 
@@ -100,7 +122,9 @@ NCT):
 
 ```bash
 cd pilar2-distribuido
-docker compose up --build          # RabbitMQ + Redis + NCT + TrP + 2 workers
+# RabbitMQ + Redis + NCT primary + NCT standby + 2 workers standalone
+# + 1 pool-coordinator + API + frontend
+docker compose up --build
 
 # en otra terminal: proponer una ley (flujo 1)
 docker compose run --rm coordinator \
@@ -108,14 +132,25 @@ docker compose run --rm coordinator \
   --text "Presupuesto participativo 2026" --author pk-ciudadano-1
 ```
 
-El sistema, sin más intervención, abre la ventana, el TrP fragmenta, los workers
-resuelven el PoW y el NCT sella el bloque en Redis con encadenamiento válido.
+El sistema, sin más intervención, abre la ventana, los workers resuelven el PoW
+y el NCT sella el bloque en Redis con encadenamiento válido.
+
+Para el **experimento de escalado** (N transacciones con M vs 2xM mineros) hay
+un compose aparte, con los mineros en modo pool y un servicio escalable:
+
+```bash
+../pilar3-despliegue/load-tests/scenarios/run_scaling.sh --miners 1,2,4 --laws 10
+```
+
+Ver [`docker-compose.scale.yml`](docker-compose.scale.yml) y la sección 4 del
+[informe](../docs/informe/INFORME.md).
 
 ### Health endpoints (JSON, sin GUI)
 
+- API: <http://localhost:8000/api/health> → `{"api","nct","redis","workers"}`
 - NCT: <http://localhost:8081/health> → `{"nct":"ok","redis":"ok","rabbitmq":"ok"}`
-- TrP: <http://localhost:8082/health>
-- Worker: puerto `8080` en la red interna (2 réplicas, sin puerto de host).
+- Pool coordinator: <http://localhost:9001/health> → incluye `miners` registrados
+- Frontend: <http://localhost:4200>
 - RabbitMQ management: <http://localhost:15672> (guest/guest, sólo dev local).
 
 ### Tests
@@ -132,7 +167,7 @@ pytest -m integration  # sólo el flujo extremo a extremo
 
 ## Decisiones de diseño
 
-- **Núcleo agnóstico del transporte.** NCT, TrP y Worker reciben un `Messaging` y
+- **Núcleo agnóstico del transporte.** NCT, pool coordinator y worker reciben un `Messaging` y
   un `VoxChainStore`. En producción se inyecta RabbitMQ + Redis; en tests, un bus
   en memoria + `fakeredis`. El mismo código de dominio corre en ambos.
 - **Una sola ventana activa** (AGENT.md 3.3): estado único `active_window` en
@@ -147,7 +182,7 @@ pytest -m integration  # sólo el flujo extremo a extremo
   valor del nonce.
 - **Suscripción a colas de trabajo gateada por liderazgo** (AGENT.md 4): sólo el
   NCT líder consume `propuestas` y `respuesta_nonce`. Un standby es follower:
-  escucha `nct.heartbeat` y `nct_election`, pero **no** se suscribe a las colas de
+  escucha `nct.heartbeat`, pero **no** se suscribe a las colas de
   trabajo, porque RabbitMQ las reparte round-robin entre consumidores y un
   follower suscrito se quedaría con (y descartaría) la mitad de los mensajes. La
   promoción follower→líder (al ganar la elección) abre esos consumidores; la
@@ -162,7 +197,7 @@ pytest -m integration  # sólo el flujo extremo a extremo
 - **Orden round-robin por autor**, no FIFO (3.3): un autor no encadena turnos
   consecutivos si hay leyes de otros.
 - **Dificultad fija n / n+1** (3.6, 10): `n` es configuración; **prohibido** el
-  ajuste dinámico por carga de red. Si no hay workers GPU, el TrP **loguea** la
+  ajuste dinámico por carga de red. Si no hay workers GPU, el pool coordinator **loguea** la
   necesidad de escalar CPU pero **no** reduce el prefijo (se documenta como
   pregunta abierta porque P5 lo sugería; reducirlo rompería el consenso).
 - **Ley pendiente → `discarded`** (3.2): si la ventana vence sin nonce, la ley se
@@ -179,12 +214,27 @@ pytest -m integration  # sólo el flujo extremo a extremo
 - **Seguridad** (DOC.md): cero secretos en el repo; URLs y credenciales por
   variables de entorno; las **claves privadas nunca** se persisten ni viajan por
   RabbitMQ (sólo `author_pubkey`).
-- **Tolerancia a fallos del NCT** (4): Bully-por-esfuerzo. Piezas de PoW listas;
-  coordinación distribuida pendiente (test `xfail`). La ventana en curso se pierde
-  por diseño.
+- **Tolerancia a fallos del NCT** (4): cada NCT que no es líder corre un
+  `NCTHeartbeatMonitor`; si el líder deja de emitir durante `HEARTBEAT_TIMEOUT`,
+  intenta tomar el lease de liderazgo en Redis. **El arbitraje es atómico en
+  Redis, no una elección distribuida por PoW**: los NCT son homogéneos y sin
+  ventaja de cómputo entre sí, así que gana quien detectó la caída antes. La
+  ventana en curso se pierde por diseño (se prefiere descartarla antes que
+  arriesgar un sellado doble). Cubierto por `tests/test_bully.py` y
+  `tests/test_failover_y_cierre.py`.
+- **Elección del coordinator del pool**: ahí sí hay mini-PoW
+  (`POOL_ELECTION_N_ZEROS`, 2 ceros por defecto), porque los candidatos son
+  mineros y el criterio de esfuerzo es coherente con el resto del sistema.
 
 ## Limitaciones conocidas
 
-- La elección distribuida del NCT está stubbeada (ver `nct/bully.py`).
+- **Una ventana activa por vez**: el NCT sella de a una ley, así que hay un techo
+  duro de throughput que no se corrige agregando mineros. Es la limitación más
+  importante del diseño.
+- **Colas clásicas durables, no *quorum queues***: RabbitMQ corre con 3 réplicas,
+  pero cada cola vive en un solo nodo. Los mensajes sobreviven a un reinicio, pero
+  si cae el nodo que hospeda la cola, esa cola queda indisponible.
+- El pool coordinator es un punto único mientras vive (tiene failover por lease,
+  pero reparte todo el trabajo desde un solo proceso).
 - Sybil y concentración de poder en pools son vulnerabilidades **por diseño**
   documentado (AGENT.md 9), no bugs.

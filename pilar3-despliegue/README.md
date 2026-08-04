@@ -10,7 +10,7 @@ GCP — GKE (Cluster 1)                    GPU Cluster — k3s (Cluster 2)
 │ RabbitMQ ───LB:5671 (AMQPS)──┼─────────┼──► Worker Deployment      │
 │ Redis (interno)              │ TLS     │   - KEDA ScaledObject     │
 │ NCT primary + standby        │ self-   │   - HPA (max 10)          │
-│ TrP                          │ signed  │   - GPU tolerations       │
+│ Pool Coordinator             │ signed  │   - GPU tolerations       │
 │ voxchain-api :8000           │         │   - CA cert volume        │
 │ voxchain-frontend :443       │         │                           │
 └──────────────────────────────┘         └───────────────────────────┘
@@ -176,13 +176,13 @@ PR → ci-checks (gitleaks + pytest)
 - OpenTofu declarativo para reproducibilidad
 - GKE regional (1 nodo/AZ) para HA del plano de control
 - Nodepool `infra` tainted para aislar Redis/RabbitMQ
-- Nodepool `apps` con autoscaling para NCT, TrP, API, Frontend
+- Nodepool `apps` con autoscaling para NCT, API, Frontend
 - RabbitMQ con TLS autofirmado (AMQPS puerto 5671) para workers externos
 - Workers GPU en k3s separado, conectados vía LoadBalancer externo
 - KEDA para autoscaling event-driven de workers (por profundidad de cola RabbitMQ)
 - External Secrets Operator en GKE para sincronizar secrets de GCP Secret Manager
 - Workload Identity Federation para CI/CD (sin keys estáticas)
-- HPA para escalado horizontal de API y TrP por CPU
+- HPA para escalado horizontal de API y workers por CPU
 - **Observabilidad (U5.5)**: kube-prometheus-stack (Prometheus + Grafana + Alertmanager)
   desplegado via Helm en el namespace `monitoring`. Cada servicio expone `/metrics`
   con métricas de aplicación (propuestas, bloques, workers, latencia). ServiceMonitors
