@@ -18,10 +18,10 @@ import logging
 import threading
 import time
 from typing import Callable
-from urllib.parse import urlsplit, urlunsplit
 
 import pika
 
+from ..redaction import redact_url
 from .base import (
     Messaging,
     QUEUE_PROPUESTAS,
@@ -39,27 +39,6 @@ from .base import (
 )
 
 log = logging.getLogger("voxchain.messaging")
-
-def redact_url(url: str) -> str:
-    """Reemplaza la contraseña de una URL AMQP por ``***``.
-
-    La URL de conexión trae las credenciales embebidas
-    (``amqp://usuario:contraseña@host``). Loguearla tal cual mandaba la
-    contraseña de RabbitMQ en texto plano a Cloud Logging, donde la ve cualquiera
-    con permiso de lectura de logs.
-    """
-    try:
-        partes = urlsplit(url)
-    except ValueError:  # pragma: no cover - URL no parseable
-        return "***"
-    if not partes.password:
-        return url
-    credencial = f"{partes.username or ''}:***@"
-    puerto = f":{partes.port}" if partes.port else ""
-    netloc = f"{credencial}{partes.hostname or ''}{puerto}"
-    return urlunsplit((partes.scheme, netloc, partes.path, partes.query,
-                       partes.fragment))
-
 
 class RabbitMQMessaging(Messaging):
     def __init__(self, url: str, connect_retries: int = 30,

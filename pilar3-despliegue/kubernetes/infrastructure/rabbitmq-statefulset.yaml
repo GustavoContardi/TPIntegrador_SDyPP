@@ -29,6 +29,15 @@ spec:
         runAsUser: 999
         runAsGroup: 999
         fsGroup: 999
+        # Sin esto, en CADA montaje del PVC Kubernetes recorre el volumen
+        # reasignando grupo y agregando permisos de grupo. Eso convierte el 0400
+        # de /var/lib/rabbitmq/.erlang.cookie en 0440, y Erlang se niega a
+        # arrancar: "Cookie file must be accessible by owner only". El primer
+        # arranque anda —la cookie todavía no existe— y el fallo aparece recién
+        # al reiniciar el pod, que es el peor momento para descubrirlo.
+        # OnRootMismatch salta la recursión si la raíz del volumen ya tiene el
+        # GID esperado, así que los permisos de la cookie quedan intactos.
+        fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
       containers:

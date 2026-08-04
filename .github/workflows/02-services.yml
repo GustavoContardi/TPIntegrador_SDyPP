@@ -9,6 +9,10 @@ on:
 env:
   K8S_DIR: pilar3-despliegue/kubernetes
   PROJECT_ID: voxchain-unlu
+  # Identidad de los workers del clúster externo. Tiene que coincidir con el
+  # username de gpu-cluster/rabbitmq-credentials-secret.yaml y con el secret
+  # RABBITMQ_USER del repo.
+  WORKER_USER: voxchain-worker
 
 jobs:
   deploy:
@@ -86,3 +90,24 @@ jobs:
         run: |
           kubectl rollout status -n voxchain statefulset/rabbitmq --timeout=180s
           kubectl rollout status -n voxchain statefulset/redis --timeout=180s
+
+      # Identidad separada para los workers del clúster externo. El StatefulSet
+      # sólo crea el usuario administrador de RABBITMQ_DEFAULT_USER; éste estaba
+      # declarado en el secret del k3s (gpu-cluster/rabbitmq-credentials-secret)
+      # pero no lo creaba nadie, así que al recrear la infraestructura los
+      # workers recibían ACCESS_REFUSED y nadie minaba.
+      #
+      # La contraseña se toma de la variable de entorno del propio pod, en vez
+      # de leerla acá y pasarla como argumento: así no atraviesa el runner ni
+      # queda en los logs de Actions. Idempotente: si el usuario ya existe,
+      # add_user falla y se le actualiza la contraseña.
+      - name: Ensure external worker user
+        run: |
+          # ${{ env.WORKER_USER }} lo sustituye GitHub antes de que exista el
+          # shell; $RABBITMQ_DEFAULT_PASS queda literal y lo expande el pod.
+          kubectl exec -n voxchain rabbitmq-0 -- sh -c '
+            rabbitmqctl add_user ${{ env.WORKER_USER }} "$RABBITMQ_DEFAULT_PASS" \
+              || rabbitmqctl change_password ${{ env.WORKER_USER }} "$RABBITMQ_DEFAULT_PASS"
+            rabbitmqctl set_permissions -p / ${{ env.WORKER_USER }} ".*" ".*" ".*"
+            rabbitmqctl list_users
+          ' 2>&1 | tail -5
