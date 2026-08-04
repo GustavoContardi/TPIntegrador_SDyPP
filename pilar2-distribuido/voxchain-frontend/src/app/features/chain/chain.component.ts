@@ -12,25 +12,25 @@ import { Block } from '../../core/models/block.model';
   imports: [CommonModule, MatCardModule, MatTableModule, MatButtonModule],
   template: `
     <div class="chain-container">
-      <h1>Blockchain</h1>
+      <h1>Cadena de bloques</h1>
       
       <mat-card>
         <mat-card-content>
           <table mat-table [dataSource]="blocks()">
             <ng-container matColumnDef="block_hash">
-              <th mat-header-cell *matHeaderCellDef>Block Hash</th>
+              <th mat-header-cell *matHeaderCellDef>Hash del bloque</th>
               <td mat-cell *matCellDef="let block">
                 <code>{{ block.block_hash.slice(0, 12) }}...</code>
               </td>
             </ng-container>
 
             <ng-container matColumnDef="law_id">
-              <th mat-header-cell *matHeaderCellDef>Law ID</th>
+              <th mat-header-cell *matHeaderCellDef>ID de ley</th>
               <td mat-cell *matCellDef="let block">{{ block.law_id }}</td>
             </ng-container>
 
             <ng-container matColumnDef="action">
-              <th mat-header-cell *matHeaderCellDef>Action</th>
+              <th mat-header-cell *matHeaderCellDef>Acción</th>
               <td mat-cell *matCellDef="let block">{{ block.action }}</td>
             </ng-container>
 
@@ -40,12 +40,12 @@ import { Block } from '../../core/models/block.model';
             </ng-container>
 
             <ng-container matColumnDef="winning_node">
-              <th mat-header-cell *matHeaderCellDef>Winner</th>
+              <th mat-header-cell *matHeaderCellDef>Ganador</th>
               <td mat-cell *matCellDef="let block">{{ block.winning_node_or_pool }}</td>
             </ng-container>
 
             <ng-container matColumnDef="timestamp">
-              <th mat-header-cell *matHeaderCellDef>Timestamp</th>
+              <th mat-header-cell *matHeaderCellDef>Fecha</th>
               <td mat-cell *matCellDef="let block">{{ block.timestamp }}</td>
             </ng-container>
 

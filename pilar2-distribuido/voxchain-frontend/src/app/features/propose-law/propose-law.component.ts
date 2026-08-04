@@ -23,12 +23,12 @@ import { Law } from '../../core/models/law.model';
   ],
   template: `
     <div class="propose-container">
-      <h1>Propose Law</h1>
+      <h1>Proponer ley</h1>
 
       <div *ngIf="!identityService.identity()" class="no-identity">
         <mat-card>
           <mat-card-content>
-            <p>You need to <a routerLink="/identity">register an identity</a> before proposing a law.</p>
+            <p>Necesitás <a routerLink="/identity">crear una identidad</a> antes de proponer una ley.</p>
           </mat-card-content>
         </mat-card>
       </div>
@@ -37,7 +37,7 @@ import { Law } from '../../core/models/law.model';
         <mat-card-content>
           <div class="form">
             <mat-form-field appearance="outline" class="full-width">
-              <mat-label>Action</mat-label>
+              <mat-label>Acción</mat-label>
               <mat-select [(ngModel)]="action">
                 <mat-option value="promulgacion">Promulgar</mat-option>
                 <mat-option value="derogacion">Derogar</mat-option>
@@ -46,25 +46,25 @@ import { Law } from '../../core/models/law.model';
 
             <div *ngIf="action === 'derogacion'">
               <mat-form-field appearance="outline" class="full-width">
-                <mat-label>Law ID to Repeal</mat-label>
-                <mat-select [(ngModel)]="lawIdToRepeal" placeholder="Select a promulgated law">
+                <mat-label>ID de la ley a derogar</mat-label>
+                <mat-select [(ngModel)]="lawIdToRepeal" placeholder="Elegí una ley promulgada">
                   <mat-option *ngFor="let law of promulgatedLaws()" [value]="law.law_id">
                     {{ law.law_id }}
                   </mat-option>
                 </mat-select>
-                <mat-hint>Select the promulgated law you want to repeal</mat-hint>
+                <mat-hint>Elegí la ley promulgada que querés derogar</mat-hint>
               </mat-form-field>
               <p *ngIf="promulgatedLaws().length === 0" class="hint">No hay leyes promulgadas para derogar.</p>
             </div>
 
             <div *ngIf="action !== 'derogacion'">
               <mat-form-field appearance="outline" class="full-width">
-                <mat-label>Law Text</mat-label>
-                <textarea matInput [(ngModel)]="text" rows="10" placeholder="Enter the law text here..."></textarea>
+                <mat-label>Texto de la ley</mat-label>
+                <textarea matInput [(ngModel)]="text" rows="10" placeholder="Escribí acá el texto de la ley..."></textarea>
               </mat-form-field>
 
               <div class="file-upload">
-                <p class="hint">Or upload a text file:</p>
+                <p class="hint">O subí un archivo de texto:</p>
                 <input type="file" accept=".txt" (change)="onFileSelected($event)" />
               </div>
             </div>

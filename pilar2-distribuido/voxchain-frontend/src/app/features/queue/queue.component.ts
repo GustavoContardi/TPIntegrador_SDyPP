@@ -18,12 +18,12 @@ import { RouterModule } from '@angular/router';
   imports: [CommonModule, RouterModule, MatCardModule, MatButtonModule, MatTabsModule, MatTableModule, MatIconModule],
   template: `
     <div class="queue-container">
-      <h1>Voting Queue</h1>
+      <h1>Cola de votación</h1>
 
       <div *ngIf="!identityService.identity()" class="no-identity">
         <mat-card>
           <mat-card-content>
-            <p>You need to <a routerLink="/identity">register an identity</a> to participate.</p>
+            <p>Necesitás <a routerLink="/identity">crear una identidad</a> para participar.</p>
           </mat-card-content>
         </mat-card>
       </div>
@@ -31,16 +31,16 @@ import { RouterModule } from '@angular/router';
       <div *ngIf="(activeWindow() || eventsService.activeWindow()) as window" class="active-window">
         <mat-card>
           <mat-card-header>
-            <mat-card-title>Active Voting Window</mat-card-title>
-            <span class="status-badge active">OPEN</span>
+            <mat-card-title>Ventana de votación activa</mat-card-title>
+            <span class="status-badge active">ABIERTA</span>
           </mat-card-header>
           <mat-card-content>
             <div class="window-details">
-              <p><strong>Window:</strong> {{ window.voting_window_id }}</p>
-              <p><strong>Law:</strong> {{ window.law_id }}</p>
-              <p><strong>Action:</strong> {{ window.action }}</p>
-              <p><strong>Difficulty:</strong> {{ window.n_zeros_required }} zeros</p>
-              <p><strong>Deadline:</strong> {{ window.deadline }}</p>
+              <p><strong>Ventana:</strong> {{ window.voting_window_id }}</p>
+              <p><strong>Ley:</strong> {{ window.law_id }}</p>
+              <p><strong>Acción:</strong> {{ window.action }}</p>
+              <p><strong>Dificultad:</strong> {{ window.n_zeros_required }} ceros</p>
+              <p><strong>Vence:</strong> {{ window.deadline }}</p>
               <div class="challenge-box">
                 <p><strong>Challenge (partial_hash_base):</strong></p>
                 <code>{{ window.partial_hash_base }}</code>
@@ -49,7 +49,7 @@ import { RouterModule } from '@angular/router';
           </mat-card-content>
           <mat-card-actions>
             <button mat-raised-button color="primary" (click)="participate(window)" [disabled]="!identityService.identity()">
-              Participate in this Window
+              Participar en esta ventana
             </button>
           </mat-card-actions>
         </mat-card>
@@ -58,18 +58,18 @@ import { RouterModule } from '@angular/router';
       <div *ngIf="!activeWindow() && nextLaw() as next" class="next-law">
         <mat-card>
           <mat-card-header>
-            <mat-card-title>Next Law</mat-card-title>
-            <span class="status-badge upcoming">UPCOMING</span>
+            <mat-card-title>Próxima ley</mat-card-title>
+            <span class="status-badge upcoming">EN ESPERA</span>
           </mat-card-header>
           <mat-card-content>
-            <p><strong>Law ID:</strong> {{ next.law_id }}</p>
-            <p><strong>Author:</strong> {{ next.author_pubkey.slice(0, 16) }}...</p>
-            <p><strong>Action:</strong> {{ next.action }}</p>
-            <p><strong>Status:</strong> {{ next.status }}</p>
+            <p><strong>ID de ley:</strong> {{ next.law_id }}</p>
+            <p><strong>Autor:</strong> {{ next.author_pubkey.slice(0, 16) }}...</p>
+            <p><strong>Acción:</strong> {{ next.action }}</p>
+            <p><strong>Estado:</strong> {{ next.status }}</p>
           </mat-card-content>
           <mat-card-actions>
             <button mat-raised-button color="primary" (click)="prepareForNext(next)" [disabled]="!identityService.identity()">
-              Prepare for this Law
+              Prepararse para esta ley
             </button>
           </mat-card-actions>
         </mat-card>
@@ -86,7 +86,7 @@ import { RouterModule } from '@angular/router';
                     <div class="info">
                       <p class="law-id">{{ law.law_id }}</p>
                       <p class="meta">{{ law.action }} — {{ law.author_pubkey.slice(0, 16) }}...</p>
-                      <button mat-button color="accent" (click)="showLawText(law.law_id)" class="view-text-btn">View Text</button>
+                      <button mat-button color="accent" (click)="showLawText(law.law_id)" class="view-text-btn">Ver texto</button>
                       <div *ngIf="lawTexts()[law.law_id]" class="law-text-box">
                         <pre>{{ lawTexts()[law.law_id] }}</pre>
                       </div>
@@ -94,7 +94,7 @@ import { RouterModule } from '@angular/router';
                   </div>
                 </mat-card-content>
               </mat-card>
-              <p *ngIf="queue().length === 0" class="empty-queue">No laws in queue.</p>
+              <p *ngIf="queue().length === 0" class="empty-queue">No hay leyes en la cola.</p>
             </div>
           </ng-template>
         </mat-tab>
@@ -107,16 +107,16 @@ import { RouterModule } from '@angular/router';
                     <div class="info">
                       <p class="law-id">{{ law.law_id }}</p>
                       <p class="meta">{{ law.action }} — {{ law.author_pubkey.slice(0, 16) }}...</p>
-                      <button mat-button color="accent" (click)="showLawText(law.law_id)" class="view-text-btn">View Text</button>
+                      <button mat-button color="accent" (click)="showLawText(law.law_id)" class="view-text-btn">Ver texto</button>
                       <div *ngIf="lawTexts()[law.law_id]" class="law-text-box">
                         <pre>{{ lawTexts()[law.law_id] }}</pre>
                       </div>
                     </div>
-                    <span class="status-badge voted">PROMULGATED</span>
+                    <span class="status-badge voted">PROMULGADA</span>
                   </div>
                 </mat-card-content>
               </mat-card>
-              <p *ngIf="history().length === 0" class="empty-queue">No laws processed yet.</p>
+              <p *ngIf="history().length === 0" class="empty-queue">Todavía no se procesó ninguna ley.</p>
             </div>
           </ng-template>
         </mat-tab>

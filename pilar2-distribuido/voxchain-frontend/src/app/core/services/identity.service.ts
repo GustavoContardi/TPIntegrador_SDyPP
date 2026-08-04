@@ -50,7 +50,16 @@ export class IdentityService {
     }
   }
 
-  async generateKeypair(): Promise<Identity> {
+  /**
+   * Genera una identidad propia en el navegador.
+   *
+   * `displayName` es un nombre para mostrar y nada más: vive sólo en este
+   * navegador y NO viaja al backend. Lo único que el sistema puede verificar es
+   * la posesión de la clave privada, así que un nombre enviado al servidor sería
+   * un dato no verificable dentro del protocolo. Quien identifica a una cuenta
+   * ante el resto de la red es su clave pública.
+   */
+  async generateKeypair(displayName?: string): Promise<Identity> {
     const keypair = await crypto.subtle.generateKey(
       { name: 'ECDSA', namedCurve: 'P-256' },
       true,
@@ -63,7 +72,13 @@ export class IdentityService {
     const pubkey = this.arrayBufferToBase64(pubkeyRaw);
     const exportedPrivkey = this.arrayBufferToBase64(privkeyRaw);
 
-    const identity: Identity = { pubkey, exportedPrivkey, isDemo: false };
+    const name = displayName?.trim();
+    const identity: Identity = {
+      pubkey,
+      exportedPrivkey,
+      isDemo: false,
+      ...(name ? { username: name } : {}),
+    };
     localStorage.setItem(this.storageKey, JSON.stringify(identity));
     this.identity.set(identity);
     return identity;

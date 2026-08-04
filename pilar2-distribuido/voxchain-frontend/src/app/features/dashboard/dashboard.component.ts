@@ -14,12 +14,12 @@ import { Window } from '../../core/models/window.model';
   imports: [CommonModule, MatCardModule, MatButtonModule],
   template: `
     <div class="dashboard-container">
-      <h1>Dashboard</h1>
+      <h1>Panel</h1>
       
       <div class="metrics">
         <mat-card>
           <mat-card-header>
-            <mat-card-title>Total Blocks</mat-card-title>
+            <mat-card-title>Bloques totales</mat-card-title>
           </mat-card-header>
           <mat-card-content>
             <p class="metric-value">{{ chainLength() }}</p>
@@ -28,7 +28,7 @@ import { Window } from '../../core/models/window.model';
 
         <mat-card>
           <mat-card-header>
-            <mat-card-title>Promulgated Laws</mat-card-title>
+            <mat-card-title>Leyes promulgadas</mat-card-title>
           </mat-card-header>
           <mat-card-content>
             <p class="metric-value">{{ promulgatedLaws() }}</p>
@@ -37,7 +37,7 @@ import { Window } from '../../core/models/window.model';
 
         <mat-card>
           <mat-card-header>
-            <mat-card-title>Pending Laws</mat-card-title>
+            <mat-card-title>Leyes pendientes</mat-card-title>
           </mat-card-header>
           <mat-card-content>
             <p class="metric-value">{{ pendingLaws() }}</p>
@@ -46,7 +46,7 @@ import { Window } from '../../core/models/window.model';
 
         <mat-card>
           <mat-card-header>
-            <mat-card-title>Active Window</mat-card-title>
+            <mat-card-title>Ventana activa</mat-card-title>
           </mat-card-header>
           <mat-card-content>
             <p class="metric-value">{{ activeWindow() ? 'Yes' : 'No' }}</p>
@@ -55,18 +55,18 @@ import { Window } from '../../core/models/window.model';
       </div>
 
       <div class="recent-activity">
-        <h2>Recent Activity</h2>
+        <h2>Actividad reciente</h2>
         <mat-card *ngIf="recentBlocks().length > 0">
           <mat-card-content>
             <div class="block-item" *ngFor="let block of recentBlocks()">
-              <p><strong>Block:</strong> {{ block.block_hash.slice(0, 12) }}...</p>
-              <p><strong>Law:</strong> {{ block.law_id }}</p>
-              <p><strong>Action:</strong> {{ block.action }}</p>
-              <p><strong>Timestamp:</strong> {{ block.timestamp }}</p>
+              <p><strong>Bloque:</strong> {{ block.block_hash.slice(0, 12) }}...</p>
+              <p><strong>Ley:</strong> {{ block.law_id }}</p>
+              <p><strong>Acción:</strong> {{ block.action }}</p>
+              <p><strong>Fecha:</strong> {{ block.timestamp }}</p>
             </div>
           </mat-card-content>
         </mat-card>
-        <p *ngIf="recentBlocks().length === 0">No recent activity</p>
+        <p *ngIf="recentBlocks().length === 0">Sin actividad reciente</p>
       </div>
     </div>
   `,

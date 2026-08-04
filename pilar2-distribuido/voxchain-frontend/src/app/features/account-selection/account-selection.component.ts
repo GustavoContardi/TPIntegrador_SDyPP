@@ -21,7 +21,7 @@ import { IdentityService } from '../../core/services/identity.service';
   ],
   template: `
     <div class="account-selection-container">
-      <h1>Select Demo Account</h1>
+      <h1>Elegir cuenta demo</h1>
       <p class="subtitle">Choose one of the 5 pre-configured demo accounts to access VoxChain</p>
 
       <div class="accounts-grid" *ngIf="!loading()">
@@ -42,8 +42,8 @@ import { IdentityService } from '../../core/services/identity.service';
           </mat-card-header>
           <mat-card-content>
             <div class="account-details">
-              <p><strong>Mode:</strong> {{ account.mode }}</p>
-              <p><strong>Public Key:</strong> <code class="pubkey">{{ account.pubkey.slice(0, 32) }}...</code></p>
+              <p><strong>Modo:</strong> {{ account.mode }}</p>
+              <p><strong>Clave pública:</strong> <code class="pubkey">{{ account.pubkey.slice(0, 32) }}...</code></p>
               <p *ngIf="account.status === 'occupied'" class="occupied-info">
                 Occupied since: {{ formatTime(account.occupied_at) }}
               </p>
@@ -69,7 +69,7 @@ import { IdentityService } from '../../core/services/identity.service';
 
       <div class="loading-container" *ngIf="loading()">
         <mat-spinner></mat-spinner>
-        <p>Loading accounts...</p>
+        <p>Cargando cuentas...</p>
       </div>
     </div>
   `,
@@ -210,7 +210,7 @@ export class AccountSelectionComponent implements OnInit {
       },
       error: (err) => {
         console.error('Failed to load accounts:', err);
-        this.snackBar.open('Failed to load accounts. Retrying...', 'Close', { duration: 3000 });
+        this.snackBar.open('No se pudieron cargar las cuentas. Reintentando...', 'Cerrar', { duration: 3000 });
         setTimeout(() => this.loadAccounts(), 3000);
       }
     });
@@ -218,7 +218,7 @@ export class AccountSelectionComponent implements OnInit {
 
   async selectAccount(account: DemoAccount) {
     if (account.status === 'occupied') {
-      this.snackBar.open('This account is already in use by another session', 'Close', { duration: 3000 });
+      this.snackBar.open('Esa cuenta ya está en uso por otra sesión', 'Cerrar', { duration: 3000 });
       return;
     }
 
@@ -237,7 +237,7 @@ export class AccountSelectionComponent implements OnInit {
           isDemo: true
         });
         
-        this.snackBar.open(`Account "${account.username}" selected successfully`, 'Close', { duration: 2000 });
+        this.snackBar.open(`Cuenta "${account.username}" seleccionada`, 'Cerrar', { duration: 2000 });
         
         // Reload accounts to update status
         this.loadAccounts();
@@ -250,10 +250,10 @@ export class AccountSelectionComponent implements OnInit {
     } catch (error: any) {
       console.error('Failed to reserve account:', error);
       if (error.status === 409) {
-        this.snackBar.open('This account is already in use by another session', 'Close', { duration: 3000 });
+        this.snackBar.open('Esa cuenta ya está en uso por otra sesión', 'Cerrar', { duration: 3000 });
         this.loadAccounts();
       } else {
-        this.snackBar.open('Failed to select account. Please try again.', 'Close', { duration: 3000 });
+        this.snackBar.open('No se pudo seleccionar la cuenta. Probá de nuevo.', 'Cerrar', { duration: 3000 });
       }
     }
   }
@@ -265,12 +265,12 @@ export class AccountSelectionComponent implements OnInit {
       if (response?.status === 'released') {
         this.accountsService.setSelectedAccount(null);
         this.selectedAccount.set(null);
-        this.snackBar.open(`Account "${account.username}" released`, 'Close', { duration: 2000 });
+        this.snackBar.open(`Cuenta "${account.username}" liberada`, 'Cerrar', { duration: 2000 });
         this.loadAccounts();
       }
     } catch (error: any) {
       console.error('Failed to release account:', error);
-      this.snackBar.open('Failed to release account. Please try again.', 'Close', { duration: 3000 });
+      this.snackBar.open('No se pudo liberar la cuenta. Probá de nuevo.', 'Cerrar', { duration: 3000 });
     }
   }
 

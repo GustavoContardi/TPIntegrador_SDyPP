@@ -16,7 +16,7 @@ import { Law } from '../../core/models/law.model';
   template: `
     <div class="laws-container">
       <div class="laws-header">
-        <h1>Laws</h1>
+        <h1>Leyes</h1>
         <button mat-stroked-button class="action-btn" (click)="loadLaws()">
           <svg class="btn-svg" viewBox="0 0 24 24" fill="currentColor">
             <path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
@@ -32,22 +32,22 @@ import { Law } from '../../core/models/law.model';
               <ng-template matTabContent>
                 <table mat-table [dataSource]="allLaws()">
                   <ng-container matColumnDef="law_id">
-                    <th mat-header-cell *matHeaderCellDef>Law ID</th>
+                    <th mat-header-cell *matHeaderCellDef>ID de ley</th>
                     <td mat-cell *matCellDef="let law">{{ law.law_id }}</td>
                   </ng-container>
 
                   <ng-container matColumnDef="author">
-                    <th mat-header-cell *matHeaderCellDef>Author</th>
+                    <th mat-header-cell *matHeaderCellDef>Autor</th>
                     <td mat-cell *matCellDef="let law">{{ law.author_pubkey.slice(0, 12) }}...</td>
                   </ng-container>
 
                   <ng-container matColumnDef="status">
-                    <th mat-header-cell *matHeaderCellDef>Status</th>
+                    <th mat-header-cell *matHeaderCellDef>Estado</th>
                     <td mat-cell *matCellDef="let law">{{ law.status }}</td>
                   </ng-container>
 
                   <ng-container matColumnDef="action">
-                    <th mat-header-cell *matHeaderCellDef>Action</th>
+                    <th mat-header-cell *matHeaderCellDef>Acción</th>
                     <td mat-cell *matCellDef="let law">{{ law.action }}</td>
                   </ng-container>
 
@@ -60,22 +60,22 @@ import { Law } from '../../core/models/law.model';
               <ng-template matTabContent>
                 <table mat-table [dataSource]="pendingLaws()">
                   <ng-container matColumnDef="law_id">
-                    <th mat-header-cell *matHeaderCellDef>Law ID</th>
+                    <th mat-header-cell *matHeaderCellDef>ID de ley</th>
                     <td mat-cell *matCellDef="let law">{{ law.law_id }}</td>
                   </ng-container>
 
                   <ng-container matColumnDef="author">
-                    <th mat-header-cell *matHeaderCellDef>Author</th>
+                    <th mat-header-cell *matHeaderCellDef>Autor</th>
                     <td mat-cell *matCellDef="let law">{{ law.author_pubkey.slice(0, 12) }}...</td>
                   </ng-container>
 
                   <ng-container matColumnDef="status">
-                    <th mat-header-cell *matHeaderCellDef>Status</th>
+                    <th mat-header-cell *matHeaderCellDef>Estado</th>
                     <td mat-cell *matCellDef="let law">{{ law.status }}</td>
                   </ng-container>
 
                   <ng-container matColumnDef="action">
-                    <th mat-header-cell *matHeaderCellDef>Action</th>
+                    <th mat-header-cell *matHeaderCellDef>Acción</th>
                     <td mat-cell *matCellDef="let law">{{ law.action }}</td>
                   </ng-container>
 
@@ -88,22 +88,22 @@ import { Law } from '../../core/models/law.model';
               <ng-template matTabContent>
                 <table mat-table [dataSource]="promulgatedLaws()">
                   <ng-container matColumnDef="law_id">
-                    <th mat-header-cell *matHeaderCellDef>Law ID</th>
+                    <th mat-header-cell *matHeaderCellDef>ID de ley</th>
                     <td mat-cell *matCellDef="let law">{{ law.law_id }}</td>
                   </ng-container>
 
                   <ng-container matColumnDef="author">
-                    <th mat-header-cell *matHeaderCellDef>Author</th>
+                    <th mat-header-cell *matHeaderCellDef>Autor</th>
                     <td mat-cell *matCellDef="let law">{{ law.author_pubkey.slice(0, 12) }}...</td>
                   </ng-container>
 
                   <ng-container matColumnDef="status">
-                    <th mat-header-cell *matHeaderCellDef>Status</th>
+                    <th mat-header-cell *matHeaderCellDef>Estado</th>
                     <td mat-cell *matCellDef="let law">{{ law.status }}</td>
                   </ng-container>
 
                   <ng-container matColumnDef="action">
-                    <th mat-header-cell *matHeaderCellDef>Action</th>
+                    <th mat-header-cell *matHeaderCellDef>Acción</th>
                     <td mat-cell *matCellDef="let law">{{ law.action }}</td>
                   </ng-container>
 

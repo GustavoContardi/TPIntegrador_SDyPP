@@ -51,7 +51,7 @@ interface PoolHealth {
   template: `
     <div class="workers-container">
       <div class="header-container">
-        <h1>Workers Management</h1>
+        <h1>Gestión de mineros</h1>
         <button 
           mat-raised-button 
           color="accent" 
@@ -67,24 +67,24 @@ interface PoolHealth {
       <!-- Register New Worker Card -->
       <mat-card class="register-card" *ngIf="showRegisterForm()">
         <mat-card-header>
-          <mat-card-title>Register Custom Node (Worker)</mat-card-title>
-          <mat-card-subtitle>Cryptographically bind a worker to your citizen identity</mat-card-subtitle>
+          <mat-card-title>Registrar un nodo propio (minero)</mat-card-title>
+          <mat-card-subtitle>Vincula criptográficamente un minero a tu identidad</mat-card-subtitle>
         </mat-card-header>
         <mat-card-content>
           <p class="form-hint">
-            Registering a worker ID maps it to your public key. Any management actions (like Switch Mode or Configure Policy) will require your signature. 
-            The worker container should run with <code>WORKER_PRIVKEY_PEM</code> containing your private key.
+            Registrar un ID de minero lo asocia a tu clave pública. Cualquier acción de administración (cambiar el modo o configurar la política) va a pedir tu firma. 
+            El contenedor del minero tiene que correr con <code>WORKER_PRIVKEY_PEM</code> apuntando a tu clave privada.
           </p>
           <div class="form-field">
             <mat-form-field appearance="outline" class="full-width">
-              <mat-label>Worker ID</mat-label>
-              <input matInput [(ngModel)]="newWorkerId" placeholder="e.g. citizen-miner-1">
-              <mat-hint>Choose a unique name to identify your worker container</mat-hint>
+              <mat-label>ID del minero</mat-label>
+              <input matInput [(ngModel)]="newWorkerId" placeholder="Ej: minero-ciudadano-1">
+              <mat-hint>Elegí un nombre único para identificar tu contenedor</mat-hint>
             </mat-form-field>
           </div>
         </mat-card-content>
         <mat-card-actions class="form-actions">
-          <button mat-button (click)="cancelRegister()">Cancel</button>
+          <button mat-button (click)="cancelRegister()">Cancelar</button>
           <button mat-raised-button color="accent" (click)="confirmRegister()" [disabled]="!newWorkerId().trim() || registering()">
             {{ registering() ? 'Registering...' : 'Register Worker' }}
           </button>
@@ -94,23 +94,23 @@ interface PoolHealth {
       <!-- Worker Status Card -->
       <mat-card class="workers-card">
         <mat-card-header>
-          <mat-card-title>Active & Registered Workers</mat-card-title>
+          <mat-card-title>Mineros activos y registrados</mat-card-title>
         </mat-card-header>
         <mat-card-content>
           <div class="table-container">
             <table mat-table [dataSource]="workers()">
               <ng-container matColumnDef="worker_id">
-                <th mat-header-cell *matHeaderCellDef>Worker ID</th>
+                <th mat-header-cell *matHeaderCellDef>ID del minero</th>
                 <td mat-cell *matCellDef="let worker">
                   <div class="worker-id-wrapper">
                     {{ worker.worker_id }}
-                    <span class="owner-badge" *ngIf="isWorkerOwned(worker)">Mine</span>
+                    <span class="owner-badge" *ngIf="isWorkerOwned(worker)">Mío</span>
                   </div>
                 </td>
               </ng-container>
 
               <ng-container matColumnDef="pubkey">
-                <th mat-header-cell *matHeaderCellDef>Public Key</th>
+                <th mat-header-cell *matHeaderCellDef>Clave pública</th>
                 <td mat-cell *matCellDef="let worker">
                   <span *ngIf="worker.pubkey" class="pubkey-text" [title]="worker.pubkey">
                     {{ worker.pubkey.slice(0, 16) }}...
@@ -120,7 +120,7 @@ interface PoolHealth {
               </ng-container>
 
               <ng-container matColumnDef="mode">
-                <th mat-header-cell *matHeaderCellDef>Mode</th>
+                <th mat-header-cell *matHeaderCellDef>Modo</th>
                 <td mat-cell *matCellDef="let worker">
                   <span [class.mode-badge]="true" [class.mode-standalone]="worker.mode === 'standalone'" 
                         [class.mode-pool-coordinator]="worker.mode === 'pool-coordinator'"
@@ -131,12 +131,12 @@ interface PoolHealth {
               </ng-container>
 
               <ng-container matColumnDef="pool_url">
-                <th mat-header-cell *matHeaderCellDef>Pool URL</th>
+                <th mat-header-cell *matHeaderCellDef>URL del pool</th>
                 <td mat-cell *matCellDef="let worker">{{ worker.pool_url || '-' }}</td>
               </ng-container>
 
               <ng-container matColumnDef="policy">
-                <th mat-header-cell *matHeaderCellDef>Policy</th>
+                <th mat-header-cell *matHeaderCellDef>Política</th>
                 <td mat-cell *matCellDef="let worker">
                   <span [class.policy-badge]="true" [class.policy-accept]="getPolicyDisplay(worker) === 'Accept All'"
                         [class.policy-reject]="getPolicyDisplay(worker).startsWith('Reject')">
@@ -146,7 +146,7 @@ interface PoolHealth {
               </ng-container>
 
               <ng-container matColumnDef="running">
-                <th mat-header-cell *matHeaderCellDef>Running</th>
+                <th mat-header-cell *matHeaderCellDef>Corriendo</th>
                 <td mat-cell *matCellDef="let worker">
                   <span [class.running-text]="worker.running" [class.stopped-text]="!worker.running">
                     {{ worker.running ? 'Running' : 'Stopped' }}
@@ -155,7 +155,7 @@ interface PoolHealth {
               </ng-container>
 
               <ng-container matColumnDef="actions">
-                <th mat-header-cell *matHeaderCellDef>Actions</th>
+                <th mat-header-cell *matHeaderCellDef>Acciones</th>
                 <td mat-cell *matCellDef="let worker">
                   <div class="actions-cell">
                     <button 
@@ -194,32 +194,32 @@ interface PoolHealth {
       <!-- Switch Worker Mode Form -->
       <mat-card class="switch-card" *ngIf="selectedWorker()">
         <mat-card-header>
-          <mat-card-title>Switch Worker Mode</mat-card-title>
+          <mat-card-title>Cambiar el modo de un minero</mat-card-title>
         </mat-card-header>
         <mat-card-content>
-          <p><strong>Worker:</strong> {{ selectedWorker()?.worker_id }}</p>
-          <p><strong>Current Mode:</strong> {{ selectedWorker()?.mode }}</p>
+          <p><strong>Minero:</strong> {{ selectedWorker()?.worker_id }}</p>
+          <p><strong>Modo actual:</strong> {{ selectedWorker()?.mode }}</p>
 
           <div class="form-field">
             <mat-form-field appearance="outline" class="full-width">
-              <mat-label>Target Mode</mat-label>
+              <mat-label>Modo destino</mat-label>
               <mat-select [(value)]="targetMode">
-                <mat-option value="standalone">Standalone</mat-option>
-                <mat-option value="pool-coordinator">Pool Coordinator</mat-option>
-                <mat-option value="pool-worker">Pool Worker</mat-option>
+                <mat-option value="standalone">Competitivo</mat-option>
+                <mat-option value="pool-coordinator">Coordinador del pool</mat-option>
+                <mat-option value="pool-worker">Minero del pool</mat-option>
               </mat-select>
             </mat-form-field>
           </div>
 
           <div class="form-field" *ngIf="targetMode() === 'pool-worker'">
             <mat-form-field appearance="outline" class="full-width">
-              <mat-label>Pool Coordinator URL</mat-label>
+              <mat-label>URL del coordinador del pool</mat-label>
               <input matInput [(ngModel)]="poolUrl" placeholder="http://pool-coordinator:9001">
             </mat-form-field>
           </div>
         </mat-card-content>
         <mat-card-actions class="form-actions">
-          <button mat-button (click)="cancelSwitch()">Cancel</button>
+          <button mat-button (click)="cancelSwitch()">Cancelar</button>
           <button mat-raised-button color="primary" (click)="confirmSwitch()" [disabled]="!canSwitch()">
             Switch Mode
           </button>
@@ -229,45 +229,45 @@ interface PoolHealth {
       <!-- Configure Policy Form -->
       <mat-card class="policy-card" *ngIf="selectedPoolCoordinator()">
         <mat-card-header>
-          <mat-card-title>Configure Pool Voting Policy</mat-card-title>
+          <mat-card-title>Configurar la política de voto del pool</mat-card-title>
         </mat-card-header>
         <mat-card-content>
-          <p><strong>Pool Coordinator:</strong> {{ selectedPoolCoordinator()?.worker_id }}</p>
+          <p><strong>Coordinador del pool:</strong> {{ selectedPoolCoordinator()?.worker_id }}</p>
           <div *ngIf="poolHealth()">
-            <p><strong>Miners Connected:</strong> {{ poolHealth()?.miners }}</p>
-            <p><strong>Current Policy:</strong> {{ poolHealth()?.voting_policy?.decision }}</p>
+            <p><strong>Mineros conectados:</strong> {{ poolHealth()?.miners }}</p>
+            <p><strong>Política actual:</strong> {{ poolHealth()?.voting_policy?.decision }}</p>
           </div>
 
           <div class="form-field">
             <mat-form-field appearance="outline" class="full-width">
-              <mat-label>Decision</mat-label>
+              <mat-label>Decisión</mat-label>
               <mat-select [(value)]="policyDecision">
-                <mat-option value="accept">Accept All</mat-option>
-                <mat-option value="reject">Reject Specific</mat-option>
+                <mat-option value="accept">Aceptar todas</mat-option>
+                <mat-option value="reject">Rechazar específica</mat-option>
               </mat-select>
             </mat-form-field>
           </div>
 
           <div class="form-field" *ngIf="policyDecision() === 'reject'">
             <mat-form-field appearance="outline" class="full-width">
-              <mat-label>Action to Reject</mat-label>
+              <mat-label>Acción a rechazar</mat-label>
               <mat-select [(value)]="policyAction">
                 <mat-option value="promulgacion">Promulgación</mat-option>
                 <mat-option value="derogacion">Derogación</mat-option>
-                <mat-option value="">Reject All</mat-option>
+                <mat-option value="">Rechazar todas</mat-option>
               </mat-select>
             </mat-form-field>
           </div>
 
           <div class="form-field" *ngIf="policyDecision() === 'reject'">
             <mat-form-field appearance="outline" class="full-width">
-              <mat-label>Law ID to Reject (optional)</mat-label>
-              <input matInput [(ngModel)]="policyLawId" placeholder="Leave empty to reject by action only">
+              <mat-label>ID de ley a rechazar (opcional)</mat-label>
+              <input matInput [(ngModel)]="policyLawId" placeholder="Vacío para rechazar sólo por acción">
             </mat-form-field>
           </div>
         </mat-card-content>
         <mat-card-actions class="form-actions">
-          <button mat-button (click)="cancelPolicy()">Cancel</button>
+          <button mat-button (click)="cancelPolicy()">Cancelar</button>
           <button mat-raised-button color="primary" (click)="confirmPolicy()">
             Update Policy
           </button>
@@ -275,11 +275,11 @@ interface PoolHealth {
       </mat-card>
 
       <div class="info-section">
-        <h3>Worker Modes</h3>
+        <h3>Modos de minero</h3>
         <ul>
-          <li><strong>Standalone:</strong> Worker mines independently by subscribing to NCT challenges.</li>
-          <li><strong>Pool Coordinator:</strong> Worker acts as a pool leader, fragments work, and manages pool workers.</li>
-          <li><strong>Pool Worker:</strong> Worker connects to a pool coordinator and mines assigned fragments.</li>
+          <li><strong>Competitivo:</strong> el minero trabaja por su cuenta, suscrito directamente a los desafíos del NCT.</li>
+          <li><strong>Coordinador del pool:</strong> fragmenta el espacio de nonces, reparte el trabajo y administra a los mineros del pool.</li>
+          <li><strong>Minero del pool:</strong> se conecta a un coordinador y mina los fragmentos que le asignan.</li>
         </ul>
       </div>
     </div>
@@ -597,18 +597,18 @@ export class WorkersComponent implements OnInit {
       next: () => {
         this.loadWorkers();
         this.cancelSwitch();
-        this.snackBar.open(`Worker mode switch command published for ${worker.worker_id}`, 'Close', { duration: 3000 });
+        this.snackBar.open(`Orden de cambio de modo enviada a ${worker.worker_id}`, 'Cerrar', { duration: 3000 });
       },
       error: (err) => {
         console.error('Failed to switch worker mode:', err);
-        this.snackBar.open('Failed to switch mode: ' + (err.error?.detail || err.message), 'Close', { duration: 4000 });
+        this.snackBar.open('No se pudo cambiar el modo: ' + (err.error?.detail || err.message), 'Cerrar', { duration: 4000 });
       }
     });
   }
 
   openPolicyDialog(worker: WorkerStatus) {
     if (worker.mode !== 'pool-coordinator') {
-      this.snackBar.open('Only pool coordinators can have voting policies', 'Close', { duration: 3000 });
+      this.snackBar.open('Sólo los coordinadores de pool tienen política de voto', 'Cerrar', { duration: 3000 });
       return;
     }
     this.selectedPoolCoordinator.set(worker);
@@ -660,11 +660,11 @@ export class WorkersComponent implements OnInit {
         this.loadPoolHealth(pool.worker_id);
         this.loadPoolPolicy(pool.worker_id);
         this.cancelPolicy();
-        this.snackBar.open('Pool policy updated successfully', 'Close', { duration: 3000 });
+        this.snackBar.open('Política del pool actualizada', 'Cerrar', { duration: 3000 });
       },
       error: (err) => {
         console.error('Failed to set pool policy:', err);
-        this.snackBar.open('Failed to set pool policy: ' + (err.error?.detail || err.message), 'Close', { duration: 4000 });
+        this.snackBar.open('No se pudo fijar la política del pool: ' + (err.error?.detail || err.message), 'Cerrar', { duration: 4000 });
       }
     });
   }
@@ -705,7 +705,7 @@ export class WorkersComponent implements OnInit {
   async confirmRegister() {
     const id = this.identityService.identity();
     if (!id || id.isDemo) {
-      this.snackBar.open('Only custom cryptographic identities can register new nodes.', 'Close', { duration: 3000 });
+      this.snackBar.open('Sólo las identidades propias pueden registrar nodos.', 'Cerrar', { duration: 3000 });
       return;
     }
 
@@ -730,19 +730,19 @@ export class WorkersComponent implements OnInit {
 
       this.apiService.registerWorker(workerId, id.pubkey, timestamp, signature, pemKey).subscribe({
         next: () => {
-          this.snackBar.open(`Worker "${workerId}" registered and deployed to cluster successfully!`, 'Close', { duration: 3000 });
+          this.snackBar.open(`Minero "${workerId}" registrado y desplegado en el clúster.`, 'Cerrar', { duration: 3000 });
           this.cancelRegister();
           this.loadWorkers();
         },
         error: (err) => {
           console.error(err);
-          this.snackBar.open('Registration failed: ' + (err.error?.detail || err.message), 'Close', { duration: 4000 });
+          this.snackBar.open('Falló el registro: ' + (err.error?.detail || err.message), 'Cerrar', { duration: 4000 });
           this.registering.set(false);
         }
       });
     } catch (err: any) {
       console.error(err);
-      this.snackBar.open('Signing failed: ' + err.message, 'Close', { duration: 4000 });
+      this.snackBar.open('Falló la firma: ' + err.message, 'Cerrar', { duration: 4000 });
       this.registering.set(false);
     }
   }
@@ -754,7 +754,7 @@ export class WorkersComponent implements OnInit {
 
     const id = this.identityService.identity();
     if (!id || id.isDemo) {
-      this.snackBar.open('Only custom cryptographic identities can unregister nodes.', 'Close', { duration: 3000 });
+      this.snackBar.open('Sólo las identidades propias pueden dar de baja nodos.', 'Cerrar', { duration: 3000 });
       return;
     }
 
@@ -765,17 +765,17 @@ export class WorkersComponent implements OnInit {
 
       this.apiService.unregisterWorker(worker.worker_id, timestamp, signature).subscribe({
         next: () => {
-          this.snackBar.open(`Worker "${worker.worker_id}" unregistered.`, 'Close', { duration: 3000 });
+          this.snackBar.open(`Minero "${worker.worker_id}" dado de baja.`, 'Cerrar', { duration: 3000 });
           this.loadWorkers();
         },
         error: (err) => {
           console.error(err);
-          this.snackBar.open('Failed to unregister: ' + (err.error?.detail || err.message), 'Close', { duration: 4000 });
+          this.snackBar.open('No se pudo dar de baja: ' + (err.error?.detail || err.message), 'Cerrar', { duration: 4000 });
         }
       });
     } catch (err: any) {
       console.error(err);
-      this.snackBar.open('Signing failed: ' + err.message, 'Close', { duration: 4000 });
+      this.snackBar.open('Falló la firma: ' + err.message, 'Cerrar', { duration: 4000 });
     }
   }
 }

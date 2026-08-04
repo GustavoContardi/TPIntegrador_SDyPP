@@ -9,7 +9,7 @@ import { ApiService } from '../../core/services/api.service';
   imports: [CommonModule, MatCardModule],
   template: `
     <div class="health-container">
-      <h1>Health Status</h1>
+      <h1>Estado del sistema</h1>
       
       <div class="health-cards">
         <mat-card [class.status-ok]="health().api === 'ok'" [class.status-error]="health().api !== 'ok'">
@@ -32,7 +32,7 @@ import { ApiService } from '../../core/services/api.service';
 
         <mat-card [class.status-ok]="health().workers === 'ok'" [class.status-error]="health().workers !== 'ok'">
           <mat-card-header>
-            <mat-card-title>Workers</mat-card-title>
+            <mat-card-title>Mineros</mat-card-title>
           </mat-card-header>
           <mat-card-content>
             <p class="status">{{ health().workers }}</p>

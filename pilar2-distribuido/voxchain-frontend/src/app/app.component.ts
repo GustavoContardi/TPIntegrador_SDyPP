@@ -13,14 +13,14 @@ import { IdentityService } from './core/services/identity.service';
     <mat-toolbar color="primary">
       <span>VoxChain</span>
       <span class="spacer"></span>
-      <a mat-button routerLink="/dashboard">Dashboard</a>
-      <a mat-button routerLink="/chain">Chain</a>
-      <a mat-button routerLink="/laws">Laws</a>
-      <a mat-button routerLink="/health">Health</a>
-      <a mat-button routerLink="/workers">Workers</a>
-      <a mat-button routerLink="/queue" *ngIf="identityService.identity()">Vote</a>
-      <a mat-button routerLink="/propose" *ngIf="identityService.identity()">Propose Law</a>
-      <a mat-button routerLink="/identity" *ngIf="!identityService.identity()">Register</a>
+      <a mat-button routerLink="/dashboard">Panel</a>
+      <a mat-button routerLink="/chain">Cadena</a>
+      <a mat-button routerLink="/laws">Leyes</a>
+      <a mat-button routerLink="/health">Estado</a>
+      <a mat-button routerLink="/workers">Mineros</a>
+      <a mat-button routerLink="/queue" *ngIf="identityService.identity()">Votar</a>
+      <a mat-button routerLink="/propose" *ngIf="identityService.identity()">Proponer ley</a>
+      <a mat-button routerLink="/identity" *ngIf="!identityService.identity()">Registrarse</a>
       <span *ngIf="identityService.identity() as id" class="identity-badge">
         {{ identityService.getPubkeyShort() }}
       </span>
