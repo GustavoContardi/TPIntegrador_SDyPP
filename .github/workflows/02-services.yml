@@ -103,11 +103,24 @@ jobs:
       # add_user falla y se le actualiza la contraseña.
       - name: Ensure external worker user
         run: |
+          # El paso anterior puede haber disparado un reinicio rodante del
+          # StatefulSet, así que primero se espera a que el nodo atienda.
+          kubectl exec -n voxchain rabbitmq-0 -- rabbitmqctl await_startup --timeout 120
+
           # ${{ env.WORKER_USER }} lo sustituye GitHub antes de que exista el
           # shell; $RABBITMQ_DEFAULT_PASS queda literal y lo expande el pod.
+          # Sin pipe a `tail`: el código de salida tiene que ser el de
+          # rabbitmqctl y no el del pipe, o un fallo pasa por verde.
           kubectl exec -n voxchain rabbitmq-0 -- sh -c '
+            set -e
             rabbitmqctl add_user ${{ env.WORKER_USER }} "$RABBITMQ_DEFAULT_PASS" \
               || rabbitmqctl change_password ${{ env.WORKER_USER }} "$RABBITMQ_DEFAULT_PASS"
-            rabbitmqctl set_permissions -p / ${{ env.WORKER_USER }} ".*" ".*" ".*"
-            rabbitmqctl list_users
-          ' 2>&1 | tail -5
+            rabbitmqctl set_permissions --vhost / ${{ env.WORKER_USER }} ".*" ".*" ".*"
+          '
+
+          # Verificación explícita: que el usuario exista no alcanza, porque sin
+          # permisos sobre el vhost el login falla igual.
+          kubectl exec -n voxchain rabbitmq-0 -- rabbitmqctl list_permissions \
+            | grep -q "^${{ env.WORKER_USER }}" \
+            || { echo "::error::${{ env.WORKER_USER }} quedó sin permisos en el vhost /"; exit 1; }
+          echo "${{ env.WORKER_USER }} con permisos en /"
