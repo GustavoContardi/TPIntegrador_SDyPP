@@ -32,6 +32,12 @@ están; el entorno virtual se crea solo la primera vez.
 Después de `./run.sh demo` el sistema queda en <http://localhost:4200> (frontend)
 y <http://localhost:8000/api/health> (estado).
 
+Cuánto tarda `demo`: **~75 s** con las imágenes ya construidas, casi todo en
+levantar los contenedores y esperar los healthchecks (el minado a dificultad 4
+son un par de segundos). **La primera vez tarda varios minutos más**, porque hay
+que construir las cuatro imágenes desde cero — incluido el build de Angular del
+frontend.
+
 Para el despliegue en Kubernetes, la guía paso a paso está en el
 [README de Pilar 3](pilar3-despliegue/README.md).
 
