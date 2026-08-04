@@ -41,7 +41,19 @@ spec:
             limits:
               cpu: "500m"
               memory: "512Mi"
+              # Para minar con GPU, descomentar esta línea Y las dos variables
+              # NVIDIA de más abajo. Las dos cosas van juntas: pedir el recurso
+              # sin las variables no expone la placa, y poner las variables sin
+              # pedir el recurso hace que el pod falle al crearse en cualquier
+              # nodo sin driver. Sin nada de esto, el minero detecta que no hay
+              # GPU utilizable y cae al minero de CPU, que es el comportamiento
+              # por defecto y el que se usa hoy.
+              # nvidia.com/gpu: 1
           env:
+            # - name: NVIDIA_VISIBLE_DEVICES
+            #   value: "all"
+            # - name: NVIDIA_DRIVER_CAPABILITIES
+            #   value: "compute,utility"
             - name: MY_POD_IP
               valueFrom:
                 fieldRef:
