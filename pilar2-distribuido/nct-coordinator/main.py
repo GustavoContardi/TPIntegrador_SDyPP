@@ -104,7 +104,9 @@ def main() -> None:
             "rabbitmq": "ok" if messaging.is_healthy() else "down",
         }
 
-    start_health_server(config.HEALTH_PORT, health)
+    # "standby" describe el rol, no una falla: un follower conectado a Redis y
+    # RabbitMQ está sano. Sin esto la readinessProbe del standby nunca pasa.
+    start_health_server(config.HEALTH_PORT, health, ok_values=("ok", "standby"))
     log.info("health en :%d/health", config.HEALTH_PORT)
 
     def composite_tick() -> None:

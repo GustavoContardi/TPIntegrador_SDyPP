@@ -18,6 +18,7 @@ import logging
 import threading
 import time
 from typing import Callable
+from urllib.parse import urlsplit, urlunsplit
 
 import pika
 
@@ -38,6 +39,26 @@ from .base import (
 )
 
 log = logging.getLogger("voxchain.messaging")
+
+def redact_url(url: str) -> str:
+    """Reemplaza la contraseña de una URL AMQP por ``***``.
+
+    La URL de conexión trae las credenciales embebidas
+    (``amqp://usuario:contraseña@host``). Loguearla tal cual mandaba la
+    contraseña de RabbitMQ en texto plano a Cloud Logging, donde la ve cualquiera
+    con permiso de lectura de logs.
+    """
+    try:
+        partes = urlsplit(url)
+    except ValueError:  # pragma: no cover - URL no parseable
+        return "***"
+    if not partes.password:
+        return url
+    credencial = f"{partes.username or ''}:***@"
+    puerto = f":{partes.port}" if partes.port else ""
+    netloc = f"{credencial}{partes.hostname or ''}{puerto}"
+    return urlunsplit((partes.scheme, netloc, partes.path, partes.query,
+                       partes.fragment))
 
 
 class RabbitMQMessaging(Messaging):
@@ -79,7 +100,7 @@ class RabbitMQMessaging(Messaging):
                 self._conn = pika.BlockingConnection(params)
                 self._ch = self._conn.channel()
                 self._declare_topology()
-                log.info("conectado a RabbitMQ (%s)", self.url)
+                log.info("conectado a RabbitMQ (%s)", redact_url(self.url))
                 return
             except pika.exceptions.AMQPConnectionError as exc:  # pragma: no cover
                 last_err = exc

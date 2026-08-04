@@ -27,8 +27,21 @@ def json_response(handler, data, status=200):
     if body:
         handler.wfile.write(body)
 
-def start_health_server(port: int, status_provider: Callable[[], dict]) -> ThreadingHTTPServer:
-    """Arranca el server en un hilo daemon y devuelve la instancia."""
+def start_health_server(
+    port: int,
+    status_provider: Callable[[], dict],
+    ok_values: tuple[str, ...] = ("ok",),
+) -> ThreadingHTTPServer:
+    """Arranca el server en un hilo daemon y devuelve la instancia.
+
+    ``ok_values`` son los valores de estado que cuentan como sanos. Existe
+    porque no todo campo del status describe una dependencia: el NCT reporta
+    además su *rol* (``"ok"`` si es líder, ``"standby"`` si no). Con el criterio
+    ingenuo de exigir que todos los valores sean ``"ok"``, un standby —que está
+    conectado, al día y listo para tomar el relevo— respondía 503, su
+    readinessProbe fallaba para siempre y su Deployment nunca terminaba de
+    desplegarse. Un rol no es un diagnóstico.
+    """
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):  # noqa: N802
@@ -45,7 +58,7 @@ def start_health_server(port: int, status_provider: Callable[[], dict]) -> Threa
                 self.end_headers()
                 return
             status = status_provider()
-            all_ok = all(v == "ok" for v in status.values())
+            all_ok = all(v in ok_values for v in status.values())
             body = json.dumps(status).encode()
             self.send_response(200 if all_ok else 503)
             self.send_header("Content-Type", "application/json")

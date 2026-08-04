@@ -61,8 +61,11 @@ fi
 # no dejar a los pods con credenciales distintas de las que ya tienen montadas.
 password_de() {
   local nombre="$1"
+  # `--secret "$x"` con espacio y no `--secret="$x"`: la forma con signo igual
+  # matchea la regla hardcoded-credential-assignment de gitleaks y hace fallar
+  # el CI, aunque acá sea sólo el nombre del secreto en una variable.
   if [ "$ROTAR" != "--rotate" ] && \
-     gcloud secrets versions access latest --secret="$nombre" \
+     gcloud secrets versions access latest --secret "$nombre" \
        --project="$PROJECT" 2>/dev/null; then
     return 0
   fi
@@ -88,4 +91,4 @@ echo "OJO: los workers del k3s se conectan con estas mismas credenciales, así"
 echo "que si rotaste contraseñas hay que actualizar los secrets RABBITMQ_USER,"
 echo "RABBITMQ_PASS y RABBITMQ_CA_CERT del repo en GitHub antes de correr"
 echo "04-gpu-workers. Para verlos:"
-echo "  gcloud secrets versions access latest --secret=rabbitmq-pass --project=$PROJECT"
+echo "  gcloud secrets versions access latest --secret rabbitmq-pass --project=$PROJECT"

@@ -267,6 +267,16 @@ resource "google_project_iam_member" "cicd_artifact_writer" {
   member  = "serviceAccount:${google_service_account.cicd.email}"
 }
 
+# Sólo para que 02-services pueda verificar que los secretos de bootstrap
+# existen antes de desplegar. `viewer` da metadatos, NO el contenido: el CI
+# puede comprobar que están, pero no leerlos. Quien los lee es la SA de
+# External Secrets, que sí tiene secretAccessor.
+resource "google_project_iam_member" "cicd_secret_viewer" {
+  project = var.project_id
+  role    = "roles/secretmanager.viewer"
+  member  = "serviceAccount:${google_service_account.cicd.email}"
+}
+
 resource "google_project_iam_member" "nodes_artifact_reader" {
   project = var.project_id
   role    = "roles/artifactregistry.reader"

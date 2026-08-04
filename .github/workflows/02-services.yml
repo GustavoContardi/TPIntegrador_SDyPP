@@ -39,11 +39,23 @@ jobs:
       # Se crean una sola vez por entorno con scripts/bootstrap-secrets.sh.
       - name: Check bootstrap secrets exist
         run: |
+          # Se distingue "no existe" de "no puedo consultarlo": si se tragan los
+          # errores de permiso, una SA sin roles/secretmanager.viewer reporta
+          # los 7 como faltantes y manda a recrear secretos que ya están.
           FALTAN=""
           for s in rabbitmq-ca-crt rabbitmq-tls-crt rabbitmq-tls-key \
                    rabbitmq-user rabbitmq-pass rabbitmq-erlang-cookie redis-pass; do
-            gcloud secrets describe "$s" --project="${{ env.PROJECT_ID }}" >/dev/null 2>&1 \
-              || FALTAN="$FALTAN $s"
+            SALIDA="$(gcloud secrets describe "$s" \
+              --project="${{ env.PROJECT_ID }}" 2>&1 >/dev/null)" && continue
+            case "$SALIDA" in
+              *PERMISSION_DENIED*|*"does not have"*|*Forbidden*)
+                echo "::error::Sin permiso para consultar Secret Manager."
+                echo "La SA de CI necesita roles/secretmanager.viewer (está en el Terraform)."
+                echo "$SALIDA"
+                exit 1
+                ;;
+            esac
+            FALTAN="$FALTAN $s"
           done
           if [ -n "$FALTAN" ]; then
             echo "::error::Faltan secretos en Secret Manager:$FALTAN"

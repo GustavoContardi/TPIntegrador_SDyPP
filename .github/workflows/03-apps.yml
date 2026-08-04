@@ -102,6 +102,13 @@ jobs:
           cluster_name: voxchain
           location: ${{ env.ZONE }}
 
+      # Idempotente, y evita depender de que 02-services haya corrido antes:
+      # sus filtros de `paths` son distintos, así que puede perfectamente
+      # dispararse este workflow y no el otro.
+      - name: Ensure namespace exists
+        run: |
+          kubectl apply -f ${{ env.K8S_DIR }}/namespace.yaml
+
       # Deployments, Services, ConfigMap e Ingress de las apps. Hasta ahora
       # ningún workflow los aplicaba: se hacía a mano, así que un clúster
       # recreado desde cero quedaba sin las apps.

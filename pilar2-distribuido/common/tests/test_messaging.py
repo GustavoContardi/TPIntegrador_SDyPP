@@ -116,3 +116,25 @@ def test_publicador_puro_no_difiere_aunque_cambie_de_hilo():
 
     assert len(m._ch.publicados) == 1
     assert m._conn.diferidos == []
+
+
+# -- redacción de credenciales en logs -------------------------------------
+# Regresión: al conectar se logueaba `self.url` tal cual, y la URL de AMQP trae
+# la contraseña embebida, así que la credencial de RabbitMQ terminaba en texto
+# plano en Cloud Logging.
+
+def test_redact_url_oculta_la_password():
+    from common.messaging.rabbitmq import redact_url
+
+    limpia = redact_url("amqp://voxchain:SuperSecreta123@rabbitmq:5672/")
+    assert "SuperSecreta123" not in limpia
+    assert limpia == "amqp://voxchain:***@rabbitmq:5672/"
+
+
+def test_redact_url_conserva_lo_demas():
+    from common.messaging.rabbitmq import redact_url
+
+    # Sin contraseña no hay nada que ocultar: se devuelve igual.
+    assert redact_url("amqp://rabbitmq:5672/") == "amqp://rabbitmq:5672/"
+    # amqps y host sin puerto explícito.
+    assert redact_url("amqps://u:p@broker.example/") == "amqps://u:***@broker.example/"
