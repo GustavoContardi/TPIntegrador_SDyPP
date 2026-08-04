@@ -531,8 +531,8 @@ El criterio fue **cifrar el borde y segmentar el interior**; un mTLS completo
 | Pipeline | Disparo | Qué hace |
 |---|---|---|
 | `01-infra` | manual | OpenTofu: VPC, GKE, node pools, Artifact Registry, WIF, ESO, kube-prometheus-stack |
-| `02-services` | push a `main` | Redis, RabbitMQ, secretos, certificados |
-| `03-apps` | push a `main` | Build y deploy de NCT, API y frontend |
+| `02-services` | push a `main` | Verifica los secretos de bootstrap, despliega Redis y RabbitMQ y los `ClusterIssuer` de cert-manager |
+| `03-apps` | push a `main` | Job `build`: las 5 imágenes (NCT, worker, worker-gpu, API, frontend). Job `deploy`: aplica manifests de apps, HPAs y monitoreo, y fija las imágenes al SHA del commit |
 | `04-gpu-workers` | push a `main` | Deploy de los workers al clúster k3s |
 | `ci-checks` | push/PR a `main` y `dev` | **gitleaks** (falla si hay un secreto hardcodeado) + suite de tests |
 
@@ -550,6 +550,34 @@ en los pipelines.
 > hasta que se habilitan explícitamente. Se resolvió por API. Es un modo de falla
 > silencioso: los pipelines parecían correctos porque lo eran, simplemente nunca
 > se disparaban.
+
+**Tres agujeros que sólo aparecieron al recrear la infraestructura desde cero.**
+Mientras el clúster de julio siguió vivo, la cadena de despliegue *parecía*
+completa; recrearla mostró que se apoyaba en pasos manuales no declarados:
+
+1. La imagen `worker-gpu` — la que usan **todos** los manifests del k3s — no la
+   construía ningún pipeline. Se había subido a mano.
+2. Nadie aplicaba `kubernetes/applications/`, `hpa/`, `monitoring/` ni
+   `cert-manager/`. Sólo se aplicaban `infrastructure/` y `gpu-cluster/`, así
+   que `03-apps` hacía `kubectl set image` sobre Deployments que ningún
+   workflow creaba.
+3. Los secretos de GCP Secret Manager que consumen los `ExternalSecret` no los
+   creaba nada. El Terraform crea el *permiso* para leerlos, no los secretos.
+
+Los tres están resueltos: `worker-gpu` entró en la matriz de `03-apps`, que
+además se separó en dos jobs (`build` → `deploy`) para que los manifests se
+apliquen con las imágenes ya en el registry; y se agregó
+`kubernetes/scripts/bootstrap-secrets.sh`, que `02-services` verifica antes de
+desplegar y falla rápido si falta alguno.
+
+> El bootstrap de secretos se dejó **deliberadamente fuera** de los pipelines.
+> Para que el CI los cree, el material sensible (la clave privada de la CA, las
+> contraseñas) tendría que estar disponible en el CI — exactamente lo contrario
+> del diseño de *zero static keys*. Crear secretos es un acto humano, deliberado
+> y auditable; los pipelines sólo los consumen.
+
+La lección general: **un despliegue que nunca se destruyó no está probado**. La
+diferencia entre "funciona" y "es reproducible" sólo se ve al recrear todo.
 
 ### 6.4 Estado actual de la infraestructura
 
@@ -607,8 +635,28 @@ parcial, no alta disponibilidad real de las colas. Convertirlas a *quorum
 queues* es un cambio de una línea en `_declare_topology` y sería la primera
 mejora a hacer si el sistema fuera a producción.
 
+**Del estado de Terraform.** El backend remoto de GCS está declarado pero
+comentado en `versions.tf`, así que el estado de OpenTofu vive **sólo en la
+máquina de desarrollo**. La consecuencia es concreta: `01-infra` no puede
+funcionar desde CI, porque el runner arrancaría con un estado vacío e intentaría
+crear de nuevo recursos que ya existen. Hoy eso no se nota — el pipeline es
+`workflow_dispatch` manual y los `apply` se corrieron desde la máquina local —
+pero significa que la infraestructura tiene un único punto de verdad no
+replicado: si se pierde ese archivo, recuperar el control de los recursos
+existentes exige importarlos uno por uno. Es la mejora más barata que queda
+pendiente: un bucket de GCS y descomentar ocho líneas.
+
 **De la seguridad.** El TLS interno es parcial (sección 6.2). El registry de
 imágenes es de lectura pública.
+
+**Del manejo del kubeconfig en CI.** `04-gpu-workers` escribe el kubeconfig del
+clúster externo con `echo "${{ secrets.K3S_KUBECONFIG }}" | base64 -d`. GitHub
+enmascara el valor del secreto en los logs, pero enmascara la **cadena en
+base64**, no su contenido decodificado. Hoy no hay fuga porque el resultado va a
+un archivo y ningún paso lo imprime, pero un `cat` agregado para depurar, o un
+`kubectl --v=8`, expondría un token portador en un log público. El alcance
+estaría acotado — la ServiceAccount está limitada a su namespace y no puede
+crear roles ni rolebindings — pero es una fragilidad que conviene declarar.
 
 **De la ventana única.** El NCT procesa una ventana de votación por vez. Esto
 simplifica enormemente el razonamiento sobre consistencia, pero pone un techo
@@ -619,18 +667,22 @@ serie. Es la limitación más importante del diseño para un uso real.
 
 En orden de relación valor/esfuerzo:
 
-1. **Medir el codo de la curva** con 8 y 16 workers sobre el clúster. Portar el
+1. **Mover el estado de OpenTofu a un bucket de GCS.** Es la de mejor relación
+   valor/esfuerzo de toda la lista: un bucket, descomentar el bloque `backend` y
+   `tofu init -migrate-state`. Deja de haber un único punto de verdad no
+   replicado y `01-infra` pasa a ser utilizable desde CI.
+2. **Medir el codo de la curva** con 8 y 16 workers sobre el clúster. Portar el
    runner a `kubectl scale` es trabajo menor y respondería la pregunta abierta
    más interesante que quedó.
-2. **Ventanas concurrentes.** Permitir N ventanas simultáneas sobre leyes
+3. **Ventanas concurrentes.** Permitir N ventanas simultáneas sobre leyes
    independientes multiplicaría el throughput. Requiere repensar el
    encadenamiento de bloques (hoy estrictamente lineal).
-3. **Fragmentación adaptativa.** Ajustar `FRAGMENT_SIZE` según la latencia
+4. **Fragmentación adaptativa.** Ajustar `FRAGMENT_SIZE` según la latencia
    observada hacia cada minero: fragmentos grandes para los remotos, chicos para
    los locales. Con workers federados por internet esto tendría efecto real.
-4. **Coordinator sin auto-minado** cuando el pool crece. Que reparta y nada más,
+5. **Coordinator sin auto-minado** cuando el pool crece. Que reparta y nada más,
    para que atender a los mineros no compita con minar.
-5. **mTLS interno** con un service mesh, si el sistema fuera a manejar algo
+6. **mTLS interno** con un service mesh, si el sistema fuera a manejar algo
    sensible de verdad.
 
 ### 7.3 Dónde aplicaría esta solución
