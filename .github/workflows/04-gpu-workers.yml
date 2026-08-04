@@ -53,23 +53,34 @@ jobs:
           cluster_name: voxchain
           location: ${{ env.ZONE }}
 
+      # Los workers viven fuera de esta VPC, así que necesitan las IPs de los
+      # Services LoadBalancer, no las internas. `rabbitmq` es headless (sin
+      # ingress) y `redis` es ClusterIP: ninguna de las dos es alcanzable desde
+      # el clúster externo. Los servicios expuestos son los `-external`.
+      # Si falta alguna, se corta acá: un valor vacío o un placeholder produce
+      # pods que crashean con un error de DNS a los tres minutos, mucho más
+      # lejos de la causa.
       - name: Get RabbitMQ LoadBalancer IP
         id: rabbitmq
         run: |
-          IP=$(kubectl get svc -n voxchain rabbitmq \
+          IP=$(kubectl get svc -n voxchain rabbitmq-external \
             -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
-          echo "RABBITMQ_HOST=${IP:-placeholder.voxchain.local}" >> $GITHUB_OUTPUT
+          if [[ -z "$IP" ]]; then
+            echo "::error::rabbitmq-external todavía no tiene IP de LoadBalancer."
+            exit 1
+          fi
+          echo "RABBITMQ_HOST=$IP" >> $GITHUB_OUTPUT
 
-      - name: Get Redis ClusterIP (for k3s worker status reporting)
+      - name: Get Redis LoadBalancer IP
         id: redis
         run: |
-          IP=$(kubectl get svc -n voxchain redis \
-            -o jsonpath='{.spec.clusterIP}' 2>/dev/null || echo "")
+          IP=$(kubectl get svc -n voxchain redis-external \
+            -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
           if [[ -z "$IP" ]]; then
-            IP=$(kubectl get svc -n voxchain redis \
-              -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+            echo "::error::redis-external todavía no tiene IP de LoadBalancer."
+            exit 1
           fi
-          echo "REDIS_HOST=${IP:-}" >> $GITHUB_OUTPUT
+          echo "REDIS_HOST=$IP" >> $GITHUB_OUTPUT
 
       # --- De acá en adelante, todo va al k3s ---------------------------------
 

@@ -198,6 +198,24 @@ resource "google_artifact_registry_repository" "images" {
   format        = "DOCKER"
 }
 
+# Lectura pública del registry. Es una decisión consciente y acotada: los
+# workers de minado corren en un clúster k3s ajeno, fuera de esta organización,
+# y necesitan poder hacer pull. La alternativa —imagePullSecrets— exigiría
+# generar y distribuir una llave estática de service account hacia un clúster
+# de terceros, que es peor: contradice el criterio de zero static keys de todo
+# el resto del proyecto. Las imágenes no contienen secretos; las credenciales
+# llegan por ConfigMaps/Secrets de Kubernetes en tiempo de ejecución.
+#
+# Estaba aplicado a mano desde julio y no en el código, así que al recrear la
+# infraestructura el clúster externo dejó de poder hacer pull (403 al pedir
+# token anónimo). Declararlo acá evita que vuelva a pasar.
+resource "google_artifact_registry_repository_iam_member" "images_public_read" {
+  location   = google_artifact_registry_repository.images.location
+  repository = google_artifact_registry_repository.images.name
+  role       = "roles/artifactregistry.reader"
+  member     = "allUsers"
+}
+
 # ---- Providers ----
 provider "google" {
   project = var.project_id
