@@ -4,6 +4,10 @@ on:
     branches: [main]
     paths:
       - "pilar3-despliegue/kubernetes/infrastructure/**"
+      # Los ClusterIssuer y el namespace también los aplica este workflow, así
+      # que tienen que poder dispararlo.
+      - "pilar3-despliegue/kubernetes/cert-manager/**"
+      - "pilar3-despliegue/kubernetes/namespace.yaml"
   workflow_dispatch:
 
 env:

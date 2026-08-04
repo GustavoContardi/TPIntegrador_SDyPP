@@ -11,6 +11,14 @@ on:
       # worker-gpu compila el kernel CUDA desde acá (ver Dockerfile.gpu), así que
       # un cambio en el .cu también tiene que rebuildear la imagen.
       - "pilar1-minero/gpu/**"
+      # Los manifests que aplica el job `deploy`. Sin estas rutas el workflow
+      # hace cosas que su propio disparador no contempla: cambiar un Deployment,
+      # un HPA o una regla de alerta no disparaba nada y el cambio quedaba sin
+      # aplicar hasta que alguien lo corriera a mano.
+      - "pilar3-despliegue/kubernetes/applications/**"
+      - "pilar3-despliegue/kubernetes/hpa/**"
+      - "pilar3-despliegue/kubernetes/monitoring/**"
+      - "pilar3-despliegue/kubernetes/namespace.yaml"
   workflow_dispatch:
 
 env:
