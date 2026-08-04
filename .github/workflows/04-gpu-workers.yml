@@ -11,7 +11,13 @@ env:
   NAMESPACE: g-git-push-cv
   REGION: southamerica-east1
   ZONE: southamerica-east1-a
-  PROJECT_ID: voxchain
+  PROJECT_ID: voxchain-unlu
+  # Este workflow habla con DOS clústers y por eso cada paso declara contra cuál
+  # va. `get-gke-credentials` exporta KUBECONFIG apuntando a su propio archivo,
+  # que pisa cualquier ~/.kube/config escrito antes: sin un KUBECONFIG explícito,
+  # los pasos que creen estar hablándole al k3s le hablan a GKE. Pasó: el
+  # namespace y los secretos del k3s se crearon dentro de GKE.
+  K3S_KUBECONFIG_PATH: /home/runner/.kube/k3s.yaml
 
 jobs:
   deploy:
@@ -23,10 +29,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # A un archivo propio, no a ~/.kube/config: ese lo pisa el paso de GKE.
+      # Y por variable de entorno en vez de interpolar el secreto en el script,
+      # para que su contenido no quede en la línea de comando del runner.
       - name: Configure kubectl for k3s
+        env:
+          K3S_KUBECONFIG_B64: ${{ secrets.K3S_KUBECONFIG }}
         run: |
-          mkdir -p ~/.kube
-          echo "${{ secrets.K3S_KUBECONFIG }}" | base64 -d > ~/.kube/config
+          mkdir -p "$(dirname "${{ env.K3S_KUBECONFIG_PATH }}")"
+          printenv K3S_KUBECONFIG_B64 | base64 -d > "${{ env.K3S_KUBECONFIG_PATH }}"
+          chmod 600 "${{ env.K3S_KUBECONFIG_PATH }}"
 
       - id: auth
         name: Authenticate to GCP
@@ -59,11 +71,17 @@ jobs:
           fi
           echo "REDIS_HOST=${IP:-}" >> $GITHUB_OUTPUT
 
+      # --- De acá en adelante, todo va al k3s ---------------------------------
+
       - name: Create namespace
+        env:
+          KUBECONFIG: ${{ env.K3S_KUBECONFIG_PATH }}
         run: |
           kubectl apply -f ${{ env.K8S_DIR }}/namespace.yaml
 
       - name: Configure RabbitMQ and Redis hosts
+        env:
+          KUBECONFIG: ${{ env.K3S_KUBECONFIG_PATH }}
         run: |
           kubectl create configmap worker-config \
             --namespace ${{ env.NAMESPACE }} \
@@ -73,6 +91,7 @@ jobs:
 
       - name: Deploy secrets
         env:
+          KUBECONFIG: ${{ env.K3S_KUBECONFIG_PATH }}
           RABBITMQ_USER: ${{ secrets.RABBITMQ_USER }}
           RABBITMQ_PASS: ${{ secrets.RABBITMQ_PASS }}
           RABBITMQ_CA: ${{ secrets.RABBITMQ_CA_CERT }}
@@ -91,17 +110,48 @@ jobs:
             --from-literal=keda-host="${KEDA_HOST}" \
             --dry-run=client -o yaml | kubectl apply -f -
 
-      - name: Deploy RBAC and configmaps
+      # El configmap sí es requisito y el clúster nos deja crearlo.
+      - name: Deploy configmaps
+        env:
+          KUBECONFIG: ${{ env.K3S_KUBECONFIG_PATH }}
         run: |
-          kubectl apply -f ${{ env.K8S_DIR }}/worker-rbac.yaml
-          kubectl apply -f ${{ env.K8S_DIR }}/backend-proxy-rbac.yaml
           kubectl apply -f ${{ env.K8S_DIR }}/worker-modes-configmap.yaml
 
+      # El k3s es de un tercero y nuestra ServiceAccount no puede crear
+      # ServiceAccounts, Roles ni RoleBindings ahí (verificado con
+      # `kubectl auth can-i`). No es bloqueante: ningún manifest de este
+      # directorio declara `serviceAccountName`, así que los pods corren con la
+      # SA `default` y estos objetos no los usa nadie hoy. Se intenta igual —
+      # por si el permiso existe en otro entorno— pero un Forbidden no corta el
+      # despliegue.
+      - name: Deploy RBAC (best-effort, el clúster puede no permitirlo)
+        env:
+          KUBECONFIG: ${{ env.K3S_KUBECONFIG_PATH }}
+        run: |
+          for f in worker-rbac.yaml backend-proxy-rbac.yaml; do
+            if ! SALIDA="$(kubectl apply -f "${{ env.K8S_DIR }}/$f" 2>&1)"; then
+              case "$SALIDA" in
+                *orbidden*)
+                  echo "::warning::Sin permiso para aplicar $f en el clúster externo; se omite."
+                  echo "$SALIDA"
+                  ;;
+                *)
+                  echo "$SALIDA"; exit 1 ;;
+              esac
+            else
+              echo "$SALIDA"
+            fi
+          done
+
       - name: Deploy demo worker nodes (5 nodes for demo scenario)
+        env:
+          KUBECONFIG: ${{ env.K3S_KUBECONFIG_PATH }}
         run: |
           kubectl apply -f ${{ env.K8S_DIR }}/demo-deployments.yaml
 
       - name: Verify deployments
+        env:
+          KUBECONFIG: ${{ env.K3S_KUBECONFIG_PATH }}
         run: |
           for deploy in worker-standalone worker-pool-coordinator worker-pool-miner-1 worker-pool-miner-2 worker-pool-miner-3; do
             kubectl rollout status \
