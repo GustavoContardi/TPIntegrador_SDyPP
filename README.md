@@ -9,6 +9,32 @@ Cierre de la cursada: Sistema distribuido completo de minería blockchain con CU
 | [`pilar2-distribuido/`](pilar2-distribuido/README.md) | Servicios distribuidos: API, NCT, workers, pools, RabbitMQ, Redis |
 | [`pilar3-despliegue/`](pilar3-despliegue/README.md) | Kubernetes (GKE + k3s), Terraform/OpenTofu, CI/CD, observabilidad |
 
+## Cómo ejecutar
+
+Todo se corre desde la terminal, sin abrir un IDE. El único punto de entrada es
+`run.sh`:
+
+```bash
+./run.sh demo       # levanta el sistema completo en local y sella una ley
+./run.sh test       # corre la suite de tests (132)
+./run.sh miner      # compila (si hay CUDA) y corre el minero de Pilar 1
+./run.sh scale      # experimento de escalado: N transacciones con M vs 2xM
+./run.sh bench      # techo de cómputo de esta máquina
+./run.sh graficos   # regenera los gráficos del informe
+./run.sh stop       # baja el sistema local
+```
+
+`./run.sh` sin argumentos muestra la ayuda. Cada subcomando verifica sus
+prerequisitos (Docker, CUDA, dependencias de Python) y dice qué falta si no
+están; el entorno virtual se crea solo la primera vez.
+
+**Único requisito para `demo`:** Docker corriendo (`sudo systemctl start docker`).
+Después de `./run.sh demo` el sistema queda en <http://localhost:4200> (frontend)
+y <http://localhost:8000/api/health> (estado).
+
+Para el despliegue en Kubernetes, la guía paso a paso está en el
+[README de Pilar 3](pilar3-despliegue/README.md).
+
 ## Informe final
 
 El informe con la comparativa de resultados, el análisis de escalado, los
@@ -28,7 +54,7 @@ Declaración requerida por la consigna (§6 de la checklist):
 <!-- Si se usaron otras herramientas (Copilot, ChatGPT, Cursor...), agregarlas acá. -->
 
 Todo el código generado con asistencia de IA fue revisado, entendido y validado
-por el autor: la suite de tests (117 unitarios y de integración) y las corridas
+por el autor: la suite de tests (132 unitarios y de integración) y las corridas
 de los pipelines de CI son el mecanismo de verificación. Las decisiones de
 arquitectura son propias y están justificadas en la documentación: PoW de
 gobierno, failover del NCT por lease atómico en Redis, elección del coordinator

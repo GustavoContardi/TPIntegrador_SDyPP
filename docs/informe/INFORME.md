@@ -420,8 +420,8 @@ ventana que vence sin ganador.
 
 | Suite | Resultado |
 |---|---|
-| Completa (`pytest`) | **117 passed, 2 skipped** |
-| Como la corre CI (`-k "not integration"`) | 114 passed, 2 skipped, 3 deselected |
+| Completa (`./run.sh test`) | **132 passed** |
+| Como la corre CI (`-k "not integration"`) | 129 passed, 3 deselected |
 | Sólo integración (`-m integration`) | 3 passed |
 
 Los tests de integración corren el flujo extremo a extremo (propuesta → ventana
@@ -674,7 +674,7 @@ README raíz del repositorio.
      agregarla acá y en el README raíz. -->
 
 Todo el código asistido por IA fue revisado, entendido y validado. El mecanismo
-de verificación es doble: la suite automatizada (117 tests unitarios y de
+de verificación es doble: la suite automatizada (132 tests unitarios y de
 integración, corriendo en CI sobre cada push) y las corridas reales del sistema
 desplegado.
 
@@ -691,23 +691,32 @@ criterio de cifrar el borde y segmentar el interior.
 
 ---
 
-## Anexo A — Cómo reproducir las pruebas
+## Anexo A — Cómo reproducir todo
+
+El proyecto se opera enteramente desde la terminal, con `run.sh` en la raíz como
+único punto de entrada. No hace falta abrir un IDE ni editar archivos a mano.
 
 ```bash
-# Batería de escalado (requiere Docker corriendo)
-./pilar3-despliegue/load-tests/scenarios/run_scaling.sh --miners 1,2,4 --laws 10 --n-zeros 6
-
-# Techo del hardware (sin Docker, con la máquina descargada)
-python3 pilar3-despliegue/load-tests/scenarios/bench_hardware.py
-
-# Regenerar los gráficos de este informe
-python3 pilar3-despliegue/load-tests/scenarios/graficos.py
-
-# Baterías contra un despliegue real
-./pilar3-despliegue/load-tests/scenarios/run_all_cloud.sh https://<host>
+./run.sh demo       # levanta el sistema completo en local y sella una ley
+./run.sh test       # suite de tests (132)
+./run.sh miner      # compila (si hay CUDA) y corre el minero de Pilar 1
+./run.sh scale      # experimento de escalado M vs 2xM
+./run.sh bench      # techo de cómputo de la máquina
+./run.sh graficos   # regenera los gráficos de este informe
+./run.sh stop       # baja el sistema local
 ```
 
-Resultados crudos en `pilar3-despliegue/load-tests/resultados/`.
+Cada subcomando verifica sus prerequisitos y crea el entorno virtual la primera
+vez. Los scripts subyacentes también se pueden invocar directos:
+
+```bash
+./pilar3-despliegue/load-tests/scenarios/run_scaling.sh --miners 1,2,4 --laws 10 --n-zeros 6
+python3 pilar3-despliegue/load-tests/scenarios/bench_hardware.py
+./pilar3-despliegue/load-tests/scenarios/run_all_cloud.sh https://<host>   # contra un despliegue real
+```
+
+Resultados crudos en `pilar3-despliegue/load-tests/resultados/`. El despliegue en
+Kubernetes está documentado paso a paso en el README de Pilar 3.
 
 ## Anexo B — Métricas expuestas
 

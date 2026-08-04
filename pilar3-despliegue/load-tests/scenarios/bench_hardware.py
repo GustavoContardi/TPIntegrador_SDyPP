@@ -68,7 +68,7 @@ def main() -> None:
         vals = sorted(una_corrida(n, args.nonces) for _ in range(args.repes))
         resultados[n] = vals[len(vals) // 2]
         muestras = ", ".join(f"{v/1000:.0f}k" for v in vals)
-        print(f"  {n} proceso(s): [{muestras}] → mediana {resultados[n]/1000:,.0f} H/s")
+        print(f"  {n} proceso(s): [{muestras}] → mediana {resultados[n]:,.0f} H/s")
 
     base = resultados[min(resultados)]
     print(f"\n{'procesos':>9} {'H/s':>12} {'speedup':>9}")
