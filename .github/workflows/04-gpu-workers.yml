@@ -73,11 +73,20 @@ jobs:
 
       # --- De acá en adelante, todo va al k3s ---------------------------------
 
-      - name: Create namespace
+      # En el k3s del profesor el namespace ya viene creado y nuestra
+      # ServiceAccount está confinada a él: no puede crear namespaces ni
+      # parchear el propio. Se intenta aplicarlo igual —para que el workflow
+      # sirva en un clúster propio— pero si el permiso no está, alcanza con
+      # comprobar que exista.
+      - name: Ensure namespace
         env:
           KUBECONFIG: ${{ env.K3S_KUBECONFIG_PATH }}
         run: |
-          kubectl apply -f ${{ env.K8S_DIR }}/namespace.yaml
+          if kubectl apply -f ${{ env.K8S_DIR }}/namespace.yaml 2>/dev/null; then
+            exit 0
+          fi
+          echo "::warning::Sin permiso para aplicar el namespace; se verifica que exista."
+          kubectl get namespace ${{ env.NAMESPACE }} -o name
 
       - name: Configure RabbitMQ and Redis hosts
         env:
