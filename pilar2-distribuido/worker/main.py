@@ -51,6 +51,9 @@ class WorkerManager:
         self._pool_http_port = int(os.getenv("POOL_HTTP_PORT", "9001"))
         self._bully = None
         self._report_thread = None
+        # Serializa los cambios de modo: pueden entrar a la vez por el admin
+        # HTTP y por un comando de RabbitMQ, y cada uno para y arranca hilos.
+        self._switch_lock = threading.Lock()
 
     # -- API pública para admin_server --
 
@@ -73,18 +76,19 @@ class WorkerManager:
             raise ValueError(f"modo desconocido: {target}")
         if target == "pool-worker" and not pool_url:
             raise ValueError("pool_url requerido para modo pool-worker")
-        log.info("switching mode: %s → %s", self._mode, target)
-        self._stop_current()
-        if target == "pool-worker":
-            self._start_pool_worker(pool_url)
-        elif target == "standalone":
-            self._start_standalone()
-        elif target == "pool-coordinator":
-            self._start_pool_coordinator()
-        elif target == "pool-auto":
-            self._start_pool_auto()
-        log.info("modo activo: %s", self._mode)
-        return {"ok": True, "mode": self._mode, "pool_url": self._pool_url}
+        with self._switch_lock:
+            log.info("switching mode: %s → %s", self._mode, target)
+            self._stop_current()
+            if target == "pool-worker":
+                self._start_pool_worker(pool_url)
+            elif target == "standalone":
+                self._start_standalone()
+            elif target == "pool-coordinator":
+                self._start_pool_coordinator()
+            elif target == "pool-auto":
+                self._start_pool_auto()
+            log.info("modo activo: %s", self._mode)
+            return {"ok": True, "mode": self._mode, "pool_url": self._pool_url}
 
     def _redis_report_loop(self) -> None:
         redis_client = None
@@ -162,24 +166,52 @@ class WorkerManager:
             if target in ("standalone", "pool-worker", "pool-auto", "pool-coordinator"):
                 log.info("comando remoto: switch_mode → %s", target)
                 pool_url = msg.get("pool_url", "")
-                self.switch_mode(target, pool_url)
+                self._apply_off_thread(lambda: self.switch_mode(target, pool_url))
         elif cmd == "stop":
             log.info("comando remoto: stop")
-            self.stop()
+            self._apply_off_thread(self.stop)
+
+    def _apply_off_thread(self, fn) -> None:
+        """Aplica un comando remoto FUERA del hilo de consumo.
+
+        El callback de RabbitMQ corre en el mismo hilo que ``start_consuming``,
+        que es justo el que ``switch_mode`` tiene que parar y joinear: hacerlo
+        acá adentro reventaba con ``RuntimeError: cannot join current thread``.
+        Y como el wrapper del consumidor loguea y sigue, el worker se quedaba en
+        su modo viejo mientras el backend devolvía 200: en la UI el modo se veía
+        cambiado un instante y volvía atrás cuando el worker reportaba su estado
+        real. El camino del admin HTTP no lo sufría porque ya venía de otro hilo,
+        y por eso sólo fallaba con los workers del k3s (los únicos sin fallback
+        HTTP en el backend).
+        """
+        threading.Thread(
+            target=self._run_off_thread, args=(fn,), daemon=True,
+            name=f"worker-cmd-{self.worker_id}",
+        ).start()
+
+    @staticmethod
+    def _run_off_thread(fn) -> None:
+        try:
+            fn()
+        except Exception:
+            log.exception("error aplicando comando remoto")
 
     def _stop_current(self) -> None:
         if self._worker:
             self._worker.stop()
             self._worker = None
+        # Cerrar la mensajería ANTES del join. El hilo está bloqueado en el loop
+        # de consumo y sólo sale cuando close() baja la bandera: al revés, el
+        # join agotaba su timeout entero en cada cambio de modo.
+        if self._messaging:
+            self._messaging.close()
+            self._messaging = None
         if self._thread:
             self._thread.join(timeout=10)
             self._thread = None
         if self._pool_httpd:
             self._pool_httpd.shutdown()
             self._pool_httpd = None
-        if self._messaging:
-            self._messaging.close()
-            self._messaging = None
         self._mode = "idle"
 
     def _ensure_messaging(self):
