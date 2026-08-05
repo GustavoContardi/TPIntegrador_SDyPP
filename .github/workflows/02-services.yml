@@ -95,6 +95,28 @@ jobs:
           kubectl rollout status -n voxchain statefulset/rabbitmq --timeout=180s
           kubectl rollout status -n voxchain statefulset/redis --timeout=180s
 
+      # La API crea y borra Deployments de mineros en el clúster k3s externo
+      # cuando un usuario registra o da de baja un worker desde la web
+      # ("Register Worker"). Para eso monta este kubeconfig; el manifest lo
+      # declara `optional: true`, así que sin el secreto la API arranca igual
+      # pero cae al contexto in-cluster —GKE— y el spawn apunta al clúster
+      # equivocado. Se creaba a mano y se perdió en el teardown.
+      - name: Deploy k3s kubeconfig for dynamic worker spawning
+        env:
+          K3S_KUBECONFIG_B64: ${{ secrets.K3S_KUBECONFIG }}
+        run: |
+          if [ -z "$K3S_KUBECONFIG_B64" ]; then
+            echo "::error::Falta el secret K3S_KUBECONFIG del repositorio."
+            exit 1
+          fi
+          printenv K3S_KUBECONFIG_B64 | base64 -d > /tmp/k3s-kubeconfig
+          kubectl create secret generic k3s-kubeconfig \
+            --namespace voxchain \
+            --from-file=kubeconfig=/tmp/k3s-kubeconfig \
+            --dry-run=client -o yaml | kubectl apply -f -
+          rm -f /tmp/k3s-kubeconfig
+          kubectl get secret k3s-kubeconfig -n voxchain -o name
+
       # Identidad separada para los workers del clúster externo. El StatefulSet
       # sólo crea el usuario administrador de RABBITMQ_DEFAULT_USER; éste estaba
       # declarado en el secret del k3s (gpu-cluster/rabbitmq-credentials-secret)
