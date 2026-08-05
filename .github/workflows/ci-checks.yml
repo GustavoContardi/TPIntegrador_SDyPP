@@ -31,5 +31,8 @@ jobs:
           cache: pip
       - run: pip install -r nct-coordinator/requirements.txt
       - run: pip install -r worker/requirements.txt
+      # La API también, si no `tests/` no puede importar sus routers y los
+      # tests que la cubren se saltean en silencio al fallar la colección.
+      - run: pip install -r voxchain_api/requirements.txt
       - run: pip install pytest "fakeredis[lua]"
       - run: pytest -v --tb=short -x -k "not integration"

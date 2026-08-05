@@ -1,5 +1,7 @@
+import hashlib
 import json
 import os
+import re
 import httpx
 import logging
 from typing import Optional
@@ -80,13 +82,41 @@ except ImportError:
     logger.warning("kubernetes python package not installed. Dynamic Pod spawning is disabled.")
 
 
+_NO_RFC1123 = re.compile(r"[^a-z0-9-]+")
+
+
+def _k8s_slug(worker_id: str) -> str:
+    """Nombre de objeto de Kubernetes derivado del ``worker_id``.
+
+    Los nombres de recursos son subdominios RFC 1123: sólo ``[a-z0-9-]`` y
+    empiezan y terminan en alfanumérico. El ``worker_id`` lo elige el usuario y
+    puede traer mayúsculas o cualquier otra cosa, así que usarlo crudo hacía
+    fallar el alta con un 422 del API server ("GustavoContardi" es el caso que
+    lo destapó) y el error salía a la cara del usuario en el formulario.
+
+    El ``worker_id`` original NO se toca: sigue siendo el de las claves de Redis,
+    el env ``WORKER_ID`` y la UI. Esto es sólo el nombre de los objetos.
+
+    Cuando la normalización cambia el id se le agrega un sufijo con su hash,
+    porque si no ``GustavoContardi`` y ``gustavo.contardi`` colapsarían en el
+    mismo Secret y el segundo registro fallaría con un AlreadyExists.
+    """
+    slug = _NO_RFC1123.sub("-", worker_id.lower()).strip("-")[:40].strip("-")
+    if slug != worker_id:
+        digest = hashlib.sha1(worker_id.encode()).hexdigest()[:8]
+        slug = f"{slug}-{digest}".lstrip("-")
+    return slug
+
+
 def _spawn_k8s_worker(worker_id: str, private_key_pem: str):
     if not K8S_ENABLED:
         logger.info("Kubernetes is not enabled, skipping dynamic spawner.")
         return
 
+    slug = _k8s_slug(worker_id)
+
     # 1. Create Secret for the worker private key
-    secret_name = f"secret-{worker_id}"
+    secret_name = f"secret-{slug}"
     secret_body = client.V1Secret(
         api_version="v1",
         kind="Secret",
@@ -95,7 +125,7 @@ def _spawn_k8s_worker(worker_id: str, private_key_pem: str):
     )
     
     # 2. Create Deployment for the worker pod
-    deployment_name = f"worker-dep-{worker_id}"
+    deployment_name = f"worker-dep-{slug}"
     
     # El env replica el de worker-deployment.yaml del gpu-cluster: AMQPS 5671
     # con CA propia (el LB externo no expone el puerto plano) y Redis de GKE
@@ -163,7 +193,7 @@ def _spawn_k8s_worker(worker_id: str, private_key_pem: str):
     )
 
     template = client.V1PodTemplateSpec(
-        metadata=client.V1ObjectMeta(labels={"app": f"worker-gpu-{worker_id}"}),
+        metadata=client.V1ObjectMeta(labels={"app": f"worker-gpu-{slug}"}),
         spec=client.V1PodSpec(
             termination_grace_period_seconds=10,
             security_context=client.V1PodSecurityContext(
@@ -191,7 +221,7 @@ def _spawn_k8s_worker(worker_id: str, private_key_pem: str):
     
     spec = client.V1DeploymentSpec(
         replicas=1,
-        selector=client.V1LabelSelector(match_labels={"app": f"worker-gpu-{worker_id}"}),
+        selector=client.V1LabelSelector(match_labels={"app": f"worker-gpu-{slug}"}),
         template=template
     )
     
@@ -224,9 +254,10 @@ def _delete_k8s_worker(worker_id: str):
     if not K8S_ENABLED:
         return
         
-    secret_name = f"secret-{worker_id}"
-    deployment_name = f"worker-dep-{worker_id}"
-    
+    slug = _k8s_slug(worker_id)
+    secret_name = f"secret-{slug}"
+    deployment_name = f"worker-dep-{slug}"
+
     core_api = client.CoreV1Api()
     apps_api = client.AppsV1Api()
     
