@@ -33,21 +33,25 @@ async def get_health(redis: RedisReader = Depends(get_redis_reader)):
     except Exception:
         nct_status = "error"
 
-    # Check Workers (basic check - try to reach at least one worker)
-    workers_status = "ok"
+    # Estado de los workers, vía Redis.
+    #
+    # Antes se intentaba alcanzar por HTTP al pool coordinator
+    # (`http://worker-pool-coordinator:9090/status`), pero ese nombre sólo
+    # resuelve dentro del clúster k3s y esta API corre en GKE: el chequeo no
+    # podía funcionar en el despliegue federado y siempre caía en "unknown",
+    # incluso con los mineros trabajando.
+    #
+    # Redis es lo único que comparten los dos clústers, y cada worker ya escribe
+    # ahí `worker:status:<id>` con TTL de 15 s. Contar esas claves dice cuántos
+    # workers están vivos ahora mismo, sin depender de la topología de red.
+    workers_status = "unknown"
     try:
-        async with httpx.AsyncClient() as client:
-            # Try to reach the pool coordinator admin endpoint
-            response = await client.get("http://worker-pool-coordinator:9090/status", timeout=2.0)
-            workers_status = "ok" if response.status_code == 200 else "error"
+        vivos = sum(1 for _ in redis.store.r.scan_iter(match="worker:status:*", count=100))
+        # "none" y no "error": que no haya mineros conectados es un estado
+        # legítimo del sistema, no una falla de este servicio.
+        workers_status = "ok" if vivos else "none"
     except Exception:
-        # If pool coordinator is not reachable, try localhost for development
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get("http://localhost:9090/status", timeout=2.0)
-                workers_status = "ok" if response.status_code == 200 else "error"
-        except Exception:
-            workers_status = "unknown"
+        workers_status = "unknown"
 
     return HealthResponse(
         api="ok",

@@ -94,14 +94,27 @@ class WorkerManager:
         except Exception:
             log.warning("No se pudo inicializar cliente de Redis para reporte de estado")
 
+        # El fallo se avisa la primera vez y cuando se recupera, no en cada
+        # vuelta: en debug era invisible —una contraseña de Redis vencida dejó
+        # de reportar estado durante todo un despliegue sin una sola línea de
+        # log— y en warning cada 5 s sería ruido inservible.
+        fallando = False
         while not self._stop_event.is_set():
             if redis_client:
                 try:
                     status = self.get_status()
                     import json
                     redis_client.set(f"worker:status:{self.worker_id}", json.dumps(status), ex=15)
-                except Exception:
-                    log.debug("No se pudo escribir estado en Redis", exc_info=True)
+                    if fallando:
+                        log.info("reporte de estado a Redis restablecido")
+                        fallando = False
+                except Exception as exc:
+                    if not fallando:
+                        log.warning("no se puede reportar estado a Redis (%s): %s",
+                                    type(exc).__name__, exc)
+                        fallando = True
+                    else:
+                        log.debug("sigue fallando el reporte a Redis", exc_info=True)
             self._stop_event.wait(5.0)
 
     def start(self, mode: str, pool_url: str = "") -> None:

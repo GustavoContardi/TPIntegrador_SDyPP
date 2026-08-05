@@ -131,6 +131,31 @@ jobs:
             --dry-run=client -o yaml | kubectl apply -f -
 
       # El configmap sí es requisito y el clúster nos deja crearlo.
+      # Los workers reportan su estado a Redis, que es lo único que comparten
+      # los dos clústers. El pipeline creaba los secretos de RabbitMQ pero no
+      # éste: quedaba el de julio, con la contraseña anterior, y las escrituras
+      # fallaban con AuthenticationError. El fallo era invisible porque el
+      # worker lo registra en nivel debug, y se manifestaba lejos de su causa,
+      # como `workers: unknown` en el endpoint de estado.
+      #
+      # Se copia desde GKE en vez de agregar otro secret al repositorio: ahí lo
+      # sincroniza External Secrets desde Secret Manager, así que es la fuente
+      # de verdad y no puede quedar desincronizado.
+      - name: Deploy Redis credentials to k3s
+        run: |
+          PASS="$(kubectl get secret redis-credentials -n voxchain \
+            -o jsonpath='{.data.password}' | base64 -d)"
+          if [ -z "$PASS" ]; then
+            echo "::error::No se pudo leer redis-credentials del clúster de GKE."
+            exit 1
+          fi
+          kubectl --kubeconfig "${{ env.K3S_KUBECONFIG_PATH }}" \
+            create secret generic redis-credentials \
+            --namespace ${{ env.NAMESPACE }} \
+            --from-literal=password="$PASS" \
+            --dry-run=client -o yaml \
+            | kubectl --kubeconfig "${{ env.K3S_KUBECONFIG_PATH }}" apply -f -
+
       - name: Deploy configmaps
         env:
           KUBECONFIG: ${{ env.K3S_KUBECONFIG_PATH }}
