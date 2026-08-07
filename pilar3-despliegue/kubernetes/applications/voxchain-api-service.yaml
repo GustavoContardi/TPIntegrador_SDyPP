@@ -3,6 +3,11 @@ kind: Service
 metadata:
   name: voxchain-api
   namespace: voxchain
+  # La label es la que matchea el ServiceMonitor de monitoring/api-servicemonitor.yaml:
+  # un ServiceMonitor selecciona por las labels del Service, NO por su spec.selector.
+  # Sin esto la API expone /metrics pero Prometheus nunca la scrapea.
+  labels:
+    app: voxchain-api
 spec:
   selector:
     app: voxchain-api

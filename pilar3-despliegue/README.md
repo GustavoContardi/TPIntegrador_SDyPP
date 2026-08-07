@@ -29,6 +29,9 @@ Esto genera:
 - `certs/ca.crt` → para workers GPU y KEDA
 - `certs/rabbitmq-cert.pem` + `certs/rabbitmq-key.pem` → para RabbitMQ
 
+Detalle completo (SANs, qué se versiona y qué no, cómo validan los workers
+contra la IP del LoadBalancer, limitaciones): **[`certs/README.md`](certs/README.md)**.
+
 ### Paso 2: Subir secrets a GCP Secret Manager
 
 ```bash
