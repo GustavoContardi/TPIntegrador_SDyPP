@@ -8,11 +8,29 @@ Levanta un servidor ``http.server`` en un hilo daemon que responde en:
 from __future__ import annotations
 
 import json
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable
 
 from prometheus_client import exposition
+
+class _QuietHTTPServer(ThreadingHTTPServer):
+    """``ThreadingHTTPServer`` que no vuelca traceback si el cliente ya cerró.
+
+    ``BaseHTTPRequestHandler`` habla HTTP/1.0, así que cada respuesta cierra la
+    conexión: el kubelet lee el status de la probe y cierra sin leer el cuerpo.
+    Cuando el server escribe el body el socket ya no está y salta
+    ``BrokenPipeError``, que el handler por defecto imprime entero a stderr —
+    un traceback por cada probe, cada pocos segundos, en Cloud Logging.
+    La probe funciona igual; el error es del cliente que se fue, no nuestro.
+    """
+
+    def handle_error(self, request, client_address):  # noqa: D102
+        exc_type = sys.exc_info()[0]
+        if exc_type is not None and issubclass(exc_type, ConnectionError):
+            return
+        super().handle_error(request, client_address)
 
 def json_response(handler, data, status=200):
     """Escribe una respuesta JSON en un BaseHTTPRequestHandler.
@@ -69,7 +87,7 @@ def start_health_server(
         def log_message(self, *args):  # silenciar logs de acceso
             pass
 
-    server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
+    server = _QuietHTTPServer(("0.0.0.0", port), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server

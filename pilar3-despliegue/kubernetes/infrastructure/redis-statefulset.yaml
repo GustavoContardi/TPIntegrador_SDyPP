@@ -70,7 +70,7 @@ spec:
                   --requirepass "$REDIS_PASSWORD" \
                   --masterauth "$REDIS_PASSWORD" \
                   --protected-mode yes \
-                  --replicaof redis-0.redis.voxchain.svc.cluster.local 6379
+                  --replicaof redis-0.redis-headless.voxchain.svc.cluster.local 6379
               fi
           ports:
             - containerPort: 6379
