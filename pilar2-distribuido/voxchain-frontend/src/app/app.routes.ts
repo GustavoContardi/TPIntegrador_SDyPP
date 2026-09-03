@@ -1,9 +1,14 @@
 import { Routes } from '@angular/router';
 import { accountSelectedGuard } from './core/guards/account-selected.guard';
-import { rootRedirectGuard } from './core/guards/root-redirect.guard';
 
 export const routes: Routes = [
-  { path: '', canActivate: [rootRedirectGuard], children: [] },
+  // La portada es pública: explica el proyecto antes de pedir nada. Antes la
+  // raíz era un guard que rebotaba a /dashboard o /identity, así que no había
+  // ningún lugar donde contar de qué se trata.
+  {
+    path: '',
+    loadComponent: () => import('./features/home/home.component').then(m => m.HomeComponent)
+  },
   { 
     path: 'select-account', 
     loadComponent: () => import('./features/account-selection/account-selection.component').then(m => m.AccountSelectionComponent) 
@@ -42,11 +47,17 @@ export const routes: Routes = [
     loadComponent: () => import('./features/queue/queue.component').then(m => m.QueueComponent),
     canActivate: [accountSelectedGuard]
   },
-  { 
-    path: 'workers', 
-    loadComponent: () => import('./features/workers/workers.component').then(m => m.WorkersComponent),
-    canActivate: [accountSelectedGuard]
+  // Pública a propósito: es uno de los dos destinos de la portada, y mostrar el
+  // estado de la red no requiere identidad. Todo lo que escribe (fundar equipo,
+  // unirse, cambiar de modo) lo autoriza el backend por dueño, así que la
+  // pantalla queda de sólo lectura para quien no se registró.
+  {
+    path: 'workers',
+    loadComponent: () => import('./features/workers/workers.component').then(m => m.WorkersComponent)
   },
-  { path: '**', canActivate: [rootRedirectGuard], children: [] }
+  // Los equipos viven dentro de la página de mineros. La ruta se conserva para
+  // que no se rompan los enlaces que ya existían.
+  { path: 'teams', redirectTo: 'workers', pathMatch: 'full' },
+  { path: '**', redirectTo: '' }
 ];
 

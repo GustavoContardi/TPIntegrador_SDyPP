@@ -4,6 +4,7 @@ import { Observable } from 'rxjs';
 import { Block } from '../models/block.model';
 import { Law, LawProposalRequest } from '../models/law.model';
 import { Window } from '../models/window.model';
+import { Team, WorkerRegistration, WorkerStatus } from '../models/worker.model';
 import { IdentityService } from './identity.service';
 
 @Injectable({
@@ -73,9 +74,13 @@ export class ApiService {
     return this.http.get(`${this.apiUrl}/health`);
   }
 
+  private ownerHeaders(): HttpHeaders {
+    return new HttpHeaders().set('X-Owner-Id', this.getOwnerId());
+  }
+
   // Workers endpoints
-  getWorkersStatus(): Observable<any[]> {
-    return this.http.get<any[]>(`${this.apiUrl}/workers/status`);
+  getWorkersStatus(): Observable<WorkerStatus[]> {
+    return this.http.get<WorkerStatus[]>(`${this.apiUrl}/workers/status`);
   }
 
   getWorkerStatus(workerId: string): Observable<any> {
@@ -83,8 +88,8 @@ export class ApiService {
   }
 
   switchWorkerMode(workerId: string, request: any): Observable<any> {
-    const headers = new HttpHeaders().set('X-Owner-Id', this.getOwnerId());
-    return this.http.post(`${this.apiUrl}/workers/${workerId}/switch-mode`, request, { headers });
+    return this.http.post(`${this.apiUrl}/workers/${workerId}/switch-mode`, request,
+      { headers: this.ownerHeaders() });
   }
 
   getPoolHealth(poolId: string): Observable<any> {
@@ -92,8 +97,8 @@ export class ApiService {
   }
 
   setPoolPolicy(poolId: string, policy: any): Observable<any> {
-    const headers = new HttpHeaders().set('X-Owner-Id', this.getOwnerId());
-    return this.http.post(`${this.apiUrl}/workers/pool/${poolId}/policy`, policy, { headers });
+    return this.http.post(`${this.apiUrl}/workers/pool/${poolId}/policy`, policy,
+      { headers: this.ownerHeaders() });
   }
 
   registerWorker(workerId: string, pubkey: string, timestamp: string, signature: string, privateKey?: string): Observable<any> {
@@ -106,5 +111,38 @@ export class ApiService {
       .set('X-Signature', signature)
       .set('X-Timestamp', timestamp);
     return this.http.delete(`${this.apiUrl}/workers/${workerId}`, { headers });
+  }
+
+  // Teams endpoints
+  //
+  // Entrar al modo cooperativo se hace por acá y sólo por acá: el backend
+  // rechaza un switch manual a pool-worker/pool-coordinator, justamente para
+  // que el modo del minero y su pertenencia a un equipo no puedan divergir.
+  listTeams(): Observable<Team[]> {
+    return this.http.get<Team[]>(`${this.apiUrl}/teams`);
+  }
+
+  getTeam(teamId: string): Observable<Team> {
+    return this.http.get<Team>(`${this.apiUrl}/teams/${teamId}`);
+  }
+
+  createTeam(name: string, workerId: string, newWorker?: WorkerRegistration): Observable<Team> {
+    const body: any = { name, worker_id: workerId };
+    if (newWorker) body.new_worker = newWorker;
+    return this.http.post<Team>(`${this.apiUrl}/teams`, body, { headers: this.ownerHeaders() });
+  }
+
+  joinTeam(teamId: string, workerId: string): Observable<Team> {
+    return this.http.post<Team>(`${this.apiUrl}/teams/${teamId}/join`,
+      { worker_id: workerId }, { headers: this.ownerHeaders() });
+  }
+
+  leaveTeam(teamId: string, workerId: string): Observable<any> {
+    return this.http.post(`${this.apiUrl}/teams/${teamId}/leave`,
+      { worker_id: workerId }, { headers: this.ownerHeaders() });
+  }
+
+  dissolveTeam(teamId: string): Observable<any> {
+    return this.http.delete(`${this.apiUrl}/teams/${teamId}`, { headers: this.ownerHeaders() });
   }
 }

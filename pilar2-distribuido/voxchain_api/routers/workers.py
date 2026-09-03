@@ -17,6 +17,8 @@ from voxchain_api.models import (
 )
 from voxchain_api.services.redis_reader import RedisReader
 from voxchain_api.services.rabbitmq_publisher import RabbitMQPublisher
+from voxchain_api.services.teams_store import TeamsStore
+from voxchain_api.services.worker_control import dispatch_switch_mode
 from common.identity import verify
 from datetime import datetime, timezone
 
@@ -143,6 +145,17 @@ def _spawn_k8s_worker(worker_id: str, private_key_pem: str):
             client.V1EnvVar(name="WORKER_ID", value=worker_id),
             client.V1EnvVar(name="WORKER_MODE", value="standalone"),
             client.V1EnvVar(name="WORKER_PRIVKEY_PEM", value="/app/keys/private-key.pem"),
+            # Dirección con la que los mineros de su equipo lo alcanzan si el
+            # usuario lo promueve a coordinador. Tiene que ser la IP del pod: es
+            # un Deployment, así que no hay DNS estable al que apuntar, y el
+            # worker_id no resuelve a nada dentro del clúster.
+            client.V1EnvVar(
+                name="MY_POD_IP",
+                value_from=client.V1EnvVarSource(
+                    field_ref=client.V1ObjectFieldSelector(field_path="status.podIP")
+                )
+            ),
+            client.V1EnvVar(name="WORKER_ADDRESS", value="http://$(MY_POD_IP):9001"),
             client.V1EnvVar(
                 name="RABBITMQ_USER",
                 value_from=client.V1EnvVarSource(
@@ -179,6 +192,12 @@ def _spawn_k8s_worker(worker_id: str, private_key_pem: str):
             client.V1EnvVar(name="REDIS_URL", value="redis://:$(REDIS_PASSWORD)@$(REDIS_HOST):6379/0"),
             client.V1EnvVar(name="WORKER_CAPACITY", value="1"),
             client.V1EnvVar(name="LOG_DIR", value="/var/log/voxchain"),
+        ],
+        ports=[
+            client.V1ContainerPort(container_port=8080, name="health"),
+            # Puerto del coordinator embebido: el pod lo abre en cuanto pasa a
+            # coordinar un equipo.
+            client.V1ContainerPort(container_port=9001, name="pool"),
         ],
         resources=resources,
         security_context=client.V1SecurityContext(
@@ -314,8 +333,15 @@ def get_owner_id(owner_id: str = Header(None, alias="X-Owner-Id")) -> str:
     return owner_id
 
 
-def verify_worker_ownership(worker_id: str, owner_id: str) -> bool:
-    """Verify that the owner has permission to modify the worker."""
+def verify_worker_ownership(worker_id: str, owner_id: str, redis_client=None) -> bool:
+    """Verify that the owner has permission to modify the worker.
+
+    ``redis_client`` es opcional para no romper a los llamadores viejos, pero
+    conviene pasarlo: sin él la función se abre su propia conexión, que además
+    de ser una conexión de más queda fuera del alcance de los tests (cualquier
+    fallo al conectar se traga y termina respondiendo 403 por el motivo
+    equivocado).
+    """
     # 1. Check hardcoded/demo mappings
     owned_workers = OWNER_WORKERS_MAPPING.get(owner_id, [])
     if worker_id in owned_workers:
@@ -323,8 +349,9 @@ def verify_worker_ownership(worker_id: str, owner_id: str) -> bool:
 
     # 2. Check dynamic Redis mappings
     try:
-        redis = RedisReader()
-        registered_owner = redis.store.r.get(f"worker:owner:{worker_id}")
+        if redis_client is None:
+            redis_client = RedisReader().store.r
+        registered_owner = redis_client.get(f"worker:owner:{worker_id}")
         if registered_owner:
             registered_owner_str = registered_owner.decode("utf-8") if isinstance(registered_owner, bytes) else registered_owner
             if registered_owner_str == owner_id:
@@ -341,6 +368,33 @@ def get_redis_reader() -> RedisReader:
 
 def get_rabbitmq_publisher() -> RabbitMQPublisher:
     return RabbitMQPublisher()
+
+
+def _annotate_team(statuses: list[WorkerStatus], redis_client) -> list[WorkerStatus]:
+    """Anota cada minero con el equipo al que pertenece, si pertenece a alguno.
+
+    La UI necesita distinguir de un vistazo quién mina solo (competitivo) y
+    quién está en un equipo (cooperativo), y el modo del worker por sí solo no
+    alcanza: ``pool-worker`` dice *cómo* mina, no *con quién*.
+    """
+    teams = TeamsStore(redis_client)
+    cache: dict[str, dict] = {}
+    for status in statuses:
+        team_id = teams.team_of_worker(status.worker_id)
+        if not team_id:
+            continue
+        team = cache.get(team_id)
+        if team is None:
+            team = teams.get_team(team_id) or {}
+            cache[team_id] = team
+        if not team:
+            continue
+        status.team_id = team_id
+        status.team_name = team.get("name")
+        status.team_role = ("coordinator"
+                            if team.get("coordinator_worker_id") == status.worker_id
+                            else "member")
+    return statuses
 
 
 @router.get("/status", response_model=list[WorkerStatus])
@@ -427,7 +481,7 @@ async def get_all_workers_status(redis: RedisReader = Depends(get_redis_reader))
                 )
             )
 
-    return statuses
+    return _annotate_team(statuses, redis_client)
 
 
 @router.get("/{worker_id}/status", response_model=WorkerStatus)
@@ -444,7 +498,7 @@ async def get_worker_status(worker_id: str, redis: RedisReader = Depends(get_red
                 pk = redis_client.get(f"worker:pubkey:{worker_id}")
                 if pk:
                     data["pubkey"] = pk.decode("utf-8") if isinstance(pk, bytes) else pk
-            return WorkerStatus(**data)
+            return _annotate_team([WorkerStatus(**data)], redis_client)[0]
     except Exception:
         pass
 
@@ -485,65 +539,59 @@ async def get_worker_status(worker_id: str, redis: RedisReader = Depends(get_red
 
 @router.post("/{worker_id}/switch-mode", response_model=dict)
 async def switch_worker_mode(
-    worker_id: str, 
-    request: WorkerSwitchRequest, 
+    worker_id: str,
+    request: WorkerSwitchRequest,
     owner_id: str = Depends(get_owner_id),
     redis: RedisReader = Depends(get_redis_reader),
     publisher: RabbitMQPublisher = Depends(get_rabbitmq_publisher)
 ):
-    """Switch a worker to a different mode (standalone, pool-coordinator, pool-worker)."""
-    verify_worker_ownership(worker_id, owner_id)
+    """Devuelve un minero a modo competitivo (``standalone``).
 
-    # 1. Publish command to RabbitMQ to notify the worker of the change
+    Entrar al modo cooperativo **no** se hace por acá: se hace creando un equipo
+    o uniéndose a uno (``/api/teams``). Antes este endpoint aceptaba
+    ``pool-coordinator`` y ``pool-worker`` con una ``pool_url`` escrita a mano, y
+    eso permitía dos cosas malas: apuntar a un coordinador inexistente, y sacar
+    a un minero de un equipo sin que el equipo se enterara — la lista de
+    miembros quedaba mintiendo. El modo y la membresía se mueven juntos.
+    """
+    verify_worker_ownership(worker_id, owner_id, redis.store.r)
+
+    if request.target != "standalone":
+        raise HTTPException(
+            status_code=400,
+            detail=("Para minar en cooperativo, creá un equipo o unite a uno "
+                    "desde /api/teams. Este endpoint sólo devuelve un minero a "
+                    "modo competitivo."),
+        )
+
+    redis_client = redis.store.r
+    teams = TeamsStore(redis_client)
+
+    # Salir del modo cooperativo implica salir del equipo. El coordinador es el
+    # único caso que no se resuelve solo: si se fuera, sus miembros quedarían
+    # pidiendo fragmentos a un HTTP que ya no reparte, así que exigimos la
+    # disolución explícita en lugar de romper el equipo por un lado.
+    membership = teams.detach_worker(worker_id)
+    if membership and membership[1] == "coordinator":
+        raise HTTPException(
+            status_code=409,
+            detail=(f"'{worker_id}' coordina un equipo. Disolvé el equipo para "
+                    "devolverlo a modo competitivo."),
+        )
+
     try:
-        cmd = {
-            "type": "switch_mode",
-            "mode": request.target,
-            "pool_url": request.pool_url or ""
-        }
-        publisher.messaging.publish_worker_command(worker_id, cmd)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to publish switch-mode command to RabbitMQ: {e}")
+        await dispatch_switch_mode(worker_id, "standalone", "", redis_client,
+                                   publisher)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to publish switch-mode command to RabbitMQ: {e}",
+        )
     finally:
         publisher.close()
 
-    # 2. Update expected status in Redis for immediate UI response
-    redis_client = redis.store.r
-    try:
-        status_data = redis_client.get(f"worker:status:{worker_id}")
-        status = json.loads(status_data) if status_data else {}
-        status["mode"] = request.target
-        status["worker_id"] = worker_id
-        status["running"] = True
-        if request.target == "pool-worker":
-            status["pool_url"] = request.pool_url
-        elif request.target == "pool-coordinator":
-            status["pool_url"] = f"http://{worker_id}:9001"
-        else:
-            status["pool_url"] = ""
-        redis_client.set(f"worker:status:{worker_id}", json.dumps(status), ex=15)
-    except Exception:
-        pass
-
-    # 3. Fallback/Dual invocation via HTTP for local dev
-    local_url_mapping = {
-        "worker-1": "http://worker-1:9090",
-        "worker-2": "http://worker-2:9090",
-        "pool-coordinator-1": "http://worker-pool-coordinator:9090"
-    }
-    base_url = local_url_mapping.get(worker_id)
-    if base_url:
-        try:
-            async with httpx.AsyncClient() as client:
-                await client.post(
-                    f"{base_url}/switch-mode",
-                    json=request.model_dump(),
-                    timeout=2.0,
-                )
-        except Exception:
-            pass
-
-    return {"ok": True, "mode": request.target}
+    return {"ok": True, "mode": "standalone",
+            "left_team": membership[0] if membership else None}
 
 
 @router.get("/pool/{pool_id}/health", response_model=PoolHealth)
@@ -581,7 +629,7 @@ async def set_pool_policy(
     redis: RedisReader = Depends(get_redis_reader)
 ):
     """Set voting policy for a specific pool coordinator."""
-    verify_worker_ownership(pool_id, owner_id)
+    verify_worker_ownership(pool_id, owner_id, redis.store.r)
 
     # 1. Write the policy to Redis so the remote coordinator can read it periodically
     redis_client = redis.store.r
@@ -620,12 +668,14 @@ def _verify_timestamp_freshness(timestamp_str: str) -> None:
         raise HTTPException(status_code=400, detail="Timestamp expired or too far in the future")
 
 
-@router.post("/register", response_model=dict)
-async def register_worker(
-    request: RegisterWorkerRequest,
-    redis: RedisReader = Depends(get_redis_reader)
-):
-    """Register a new worker ID, mapping it to the citizen owner pubkey."""
+def persist_worker_registration(request: RegisterWorkerRequest, redis_client) -> dict:
+    """Alta de un minero: verifica la firma del dueño y lo despliega.
+
+    Está separada del endpoint porque el alta de equipos la reusa: crear un
+    equipo con un minero nuevo es exactamente este mismo procedimiento seguido
+    de una promoción a coordinador, y duplicarlo habría dejado dos caminos de
+    alta con reglas de verificación que se iban a separar con el tiempo.
+    """
     worker_id = request.worker_id.strip()
     pubkey = request.pubkey.strip()
     signature = request.signature.strip()
@@ -640,7 +690,6 @@ async def register_worker(
     if worker_id in ALL_REGISTERED_WORKER_IDS:
         raise HTTPException(status_code=409, detail="Worker ID is reserved for a demo/default worker")
 
-    redis_client = redis.store.r
     try:
         existing_owner = redis_client.get(f"worker:owner:{worker_id}")
         if existing_owner:
@@ -673,6 +722,15 @@ async def register_worker(
         _spawn_k8s_worker(worker_id, request.private_key)
 
     return {"ok": True, "worker_id": worker_id, "pubkey": pubkey}
+
+
+@router.post("/register", response_model=dict)
+async def register_worker(
+    request: RegisterWorkerRequest,
+    redis: RedisReader = Depends(get_redis_reader)
+):
+    """Register a new worker ID, mapping it to the citizen owner pubkey."""
+    return persist_worker_registration(request, redis.store.r)
 
 
 @router.delete("/{worker_id}", response_model=dict)

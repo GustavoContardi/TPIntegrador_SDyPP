@@ -1,4 +1,4 @@
-import { Component, inject, OnInit, signal } from '@angular/core';
+import { Component, OnDestroy, OnInit, inject, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { MatCardModule } from '@angular/material/card';
@@ -9,16 +9,16 @@ import { MatInputModule } from '@angular/material/input';
 import { MatTableModule } from '@angular/material/table';
 import { MatIconModule } from '@angular/material/icon';
 import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
+import { RouterModule } from '@angular/router';
 import { ApiService } from '../../core/services/api.service';
 import { IdentityService } from '../../core/services/identity.service';
-
-interface WorkerStatus {
-  worker_id: string;
-  mode: string;
-  pool_url: string;
-  running: boolean;
-  pubkey?: string;
-}
+import {
+  Team,
+  WorkerStatus,
+  isDynamicWorker,
+  isOwnedBy,
+} from '../../core/models/worker.model';
+import { TeamsComponent } from '../teams/teams.component';
 
 interface PoolPolicy {
   decision: string;
@@ -47,20 +47,28 @@ interface PoolHealth {
     MatTableModule,
     MatIconModule,
     MatSnackBarModule,
+    RouterModule,
+    TeamsComponent,
   ],
   template: `
     <div class="workers-container">
       <div class="header-container">
-        <h1>Gestión de mineros</h1>
-        <button 
-          mat-raised-button 
-          color="accent" 
-          (click)="showRegisterForm.set(true)" 
+        <div>
+          <h1>Minería</h1>
+          <p class="page-subtitle">
+            Tus mineros y los equipos de la red, en un solo lugar: con quién minás
+            y con qué minás son la misma decisión vista de dos lados.
+          </p>
+        </div>
+        <button
+          mat-raised-button
+          color="accent"
+          (click)="showRegisterForm.set(true)"
           *ngIf="identityService.identity() && !identityService.identity()?.isDemo && !showRegisterForm()">
           <svg class="btn-svg" viewBox="0 0 24 24" fill="currentColor">
             <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
           </svg>
-          Register Worker
+          Registrar minero
         </button>
       </div>
 
@@ -86,11 +94,18 @@ interface PoolHealth {
         <mat-card-actions class="form-actions">
           <button mat-button (click)="cancelRegister()">Cancelar</button>
           <button mat-raised-button color="accent" (click)="confirmRegister()" [disabled]="!newWorkerId().trim() || registering()">
-            {{ registering() ? 'Registering...' : 'Register Worker' }}
+            {{ registering() ? 'Registrando…' : 'Registrar minero' }}
           </button>
         </mat-card-actions>
       </mat-card>
       
+      <!-- Equipos (modo cooperativo) -->
+      <app-teams
+        [teams]="teams()"
+        [workers]="workers()"
+        (changed)="loadAll()">
+      </app-teams>
+
       <!-- Worker Status Card -->
       <mat-card class="workers-card">
         <mat-card-header>
@@ -130,9 +145,18 @@ interface PoolHealth {
                 </td>
               </ng-container>
 
-              <ng-container matColumnDef="pool_url">
-                <th mat-header-cell *matHeaderCellDef>URL del pool</th>
-                <td mat-cell *matCellDef="let worker">{{ worker.pool_url || '-' }}</td>
+              <ng-container matColumnDef="team">
+                <th mat-header-cell *matHeaderCellDef>Equipo</th>
+                <td mat-cell *matCellDef="let worker">
+                  <a *ngIf="worker.team_id" routerLink="/teams" class="team-link"
+                     [title]="'Coordinador en ' + worker.pool_url">
+                    {{ worker.team_name }}
+                    <span class="role-badge" [class.coord]="worker.team_role === 'coordinator'">
+                      {{ worker.team_role === 'coordinator' ? 'coordina' : 'mina' }}
+                    </span>
+                  </a>
+                  <span *ngIf="!worker.team_id" class="empty-text">por su cuenta</span>
+                </td>
               </ng-container>
 
               <ng-container matColumnDef="policy">
@@ -158,13 +182,21 @@ interface PoolHealth {
                 <th mat-header-cell *matHeaderCellDef>Acciones</th>
                 <td mat-cell *matCellDef="let worker">
                   <div class="actions-cell">
-                    <button 
-                      mat-button 
-                      (click)="openSwitchDialog(worker)" 
-                      [disabled]="!worker.running || !isWorkerOwned(worker)"
-                      title="Switch this worker to another mode">
-                      Switch Mode
+                    <button
+                      mat-button
+                      (click)="backToSolo(worker)"
+                      *ngIf="isWorkerOwned(worker) && worker.mode !== 'standalone'"
+                      [disabled]="!worker.running || switching()"
+                      title="Sacarlo del equipo y devolverlo a modo competitivo">
+                      Volver a competitivo
                     </button>
+                    <a
+                      mat-button
+                      routerLink="/teams"
+                      *ngIf="isWorkerOwned(worker) && worker.mode === 'standalone'"
+                      title="El modo cooperativo se administra desde Equipos">
+                      Sumar a un equipo
+                    </a>
                     <button 
                       mat-button 
                       (click)="openPolicyDialog(worker)" 
@@ -189,41 +221,6 @@ interface PoolHealth {
             </table>
           </div>
         </mat-card-content>
-      </mat-card>
-
-      <!-- Switch Worker Mode Form -->
-      <mat-card class="switch-card" *ngIf="selectedWorker()">
-        <mat-card-header>
-          <mat-card-title>Cambiar el modo de un minero</mat-card-title>
-        </mat-card-header>
-        <mat-card-content>
-          <p><strong>Minero:</strong> {{ selectedWorker()?.worker_id }}</p>
-          <p><strong>Modo actual:</strong> {{ selectedWorker()?.mode }}</p>
-
-          <div class="form-field">
-            <mat-form-field appearance="outline" class="full-width">
-              <mat-label>Modo destino</mat-label>
-              <mat-select [(value)]="targetMode">
-                <mat-option value="standalone">Competitivo</mat-option>
-                <mat-option value="pool-coordinator">Coordinador del pool</mat-option>
-                <mat-option value="pool-worker">Minero del pool</mat-option>
-              </mat-select>
-            </mat-form-field>
-          </div>
-
-          <div class="form-field" *ngIf="targetMode() === 'pool-worker'">
-            <mat-form-field appearance="outline" class="full-width">
-              <mat-label>URL del coordinador del pool</mat-label>
-              <input matInput [(ngModel)]="poolUrl" placeholder="http://pool-coordinator:9001">
-            </mat-form-field>
-          </div>
-        </mat-card-content>
-        <mat-card-actions class="form-actions">
-          <button mat-button (click)="cancelSwitch()">Cancelar</button>
-          <button mat-raised-button color="primary" (click)="confirmSwitch()" [disabled]="!canSwitch()">
-            Switch Mode
-          </button>
-        </mat-card-actions>
       </mat-card>
 
       <!-- Configure Policy Form -->
@@ -277,10 +274,22 @@ interface PoolHealth {
       <div class="info-section">
         <h3>Modos de minero</h3>
         <ul>
-          <li><strong>Competitivo:</strong> el minero trabaja por su cuenta, suscrito directamente a los desafíos del NCT.</li>
-          <li><strong>Coordinador del pool:</strong> fragmenta el espacio de nonces, reparte el trabajo y administra a los mineros del pool.</li>
-          <li><strong>Minero del pool:</strong> se conecta a un coordinador y mina los fragmentos que le asignan.</li>
+          <li><strong>Competitivo</strong> (<code>standalone</code>): el minero trabaja por su cuenta,
+            suscrito directamente a los desafíos del NCT. Barre el espacio de nonces completo y
+            compite contra toda la red. Sumar mineros acá no acelera nada: todos hacen el mismo
+            trabajo y encuentran el mismo nonce.</li>
+          <li><strong>Coordinador del equipo</strong> (<code>pool-coordinator</code>): fragmenta el
+            espacio de nonces, reparte los fragmentos entre los mineros del equipo y además mina.</li>
+          <li><strong>Minero del equipo</strong> (<code>pool-worker</code>): le pide fragmentos al
+            coordinador y mina sólo el rango que le toca. Acá sí, cada minero que se suma divide el
+            trabajo.</li>
         </ul>
+        <p class="info-note">
+          El modo cooperativo se administra desde <a routerLink="/teams">Equipos</a>: creás uno
+          (tu minero pasa a coordinarlo) o te unís al de otro. La dirección del coordinador la
+          resuelve el sistema con la que el propio minero publica, así que no hay que escribir
+          ninguna URL — y el modo del minero nunca queda desalineado de su equipo.
+        </p>
       </div>
     </div>
   `,
@@ -293,8 +302,15 @@ interface PoolHealth {
     .header-container {
       display: flex;
       justify-content: space-between;
-      align-items: center;
-      margin-bottom: 30px;
+      align-items: flex-start;
+      gap: 24px;
+      margin-bottom: 32px;
+    }
+    .page-subtitle {
+      color: #888;
+      margin: 8px 0 0;
+      max-width: 74ch;
+      line-height: 1.5;
     }
     .btn-svg {
       width: 14px;
@@ -308,7 +324,7 @@ interface PoolHealth {
       margin: 0;
       font-weight: 500;
     }
-    .register-card, .workers-card, .switch-card, .policy-card {
+    .register-card, .workers-card, .policy-card {
       background-color: #1e1e1e;
       color: #e0e0e0;
       border: 1px solid #333;
@@ -465,6 +481,45 @@ interface PoolHealth {
       margin: 12px 0;
       line-height: 1.6;
     }
+    .info-section code {
+      background-color: rgba(0, 0, 0, 0.3);
+      padding: 2px 6px;
+      border-radius: 4px;
+      color: #fff;
+      font-size: 0.9em;
+    }
+    .info-note {
+      color: #b0b0b0;
+      line-height: 1.6;
+      margin: 16px 0 0;
+      padding-top: 16px;
+      border-top: 1px solid #2a2a2a;
+    }
+    .info-note a, .team-link {
+      color: #90caf9;
+      text-decoration: none;
+    }
+    .info-note a:hover, .team-link:hover {
+      text-decoration: underline;
+    }
+    .team-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .role-badge {
+      font-size: 0.7rem;
+      padding: 2px 7px;
+      border-radius: 4px;
+      background-color: rgba(76, 175, 80, 0.15);
+      color: #81c784;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .role-badge.coord {
+      background-color: rgba(255, 152, 0, 0.15);
+      color: #ffb74d;
+    }
     ::ng-deep .mat-mdc-form-field {
       --mdc-outlined-text-field-outline-color: #444;
       --mdc-outlined-text-field-label-text-color: #888;
@@ -477,16 +532,16 @@ interface PoolHealth {
     }
   `]
 })
-export class WorkersComponent implements OnInit {
+export class WorkersComponent implements OnInit, OnDestroy {
   private apiService = inject(ApiService);
   identityService = inject(IdentityService);
   private snackBar = inject(MatSnackBar);
 
   workers = signal<WorkerStatus[]>([]);
-  displayedColumns: string[] = ['worker_id', 'pubkey', 'mode', 'pool_url', 'policy', 'running', 'actions'];
-  selectedWorker = signal<WorkerStatus | null>(null);
-  targetMode = signal<string>('standalone');
-  poolUrl = signal<string>('');
+  teams = signal<Team[]>([]);
+  private timer?: ReturnType<typeof setInterval>;
+  displayedColumns: string[] = ['worker_id', 'pubkey', 'mode', 'team', 'policy', 'running', 'actions'];
+  switching = signal(false);
   selectedPoolCoordinator = signal<WorkerStatus | null>(null);
   poolHealth = signal<PoolHealth | null>(null);
   policyDecision = signal<string>('accept');
@@ -499,7 +554,24 @@ export class WorkersComponent implements OnInit {
   registering = signal(false);
 
   ngOnInit() {
+    this.loadAll();
+    // El estado de los mineros vive con TTL de 15 s en Redis y un cambio de modo
+    // tarda unos segundos en aplicarse: sin refrescar, la pantalla muestra un
+    // coordinador "sin reportar" que en realidad ya arrancó.
+    this.timer = setInterval(() => this.loadAll(), 5000);
+  }
+
+  ngOnDestroy() {
+    if (this.timer) clearInterval(this.timer);
+  }
+
+  /** Una sola carga para las dos secciones de la página. */
+  loadAll() {
     this.loadWorkers();
+    this.apiService.listTeams().subscribe({
+      next: (teams) => this.teams.set(teams),
+      error: (err) => console.error('Failed to load teams:', err),
+    });
   }
 
   loadWorkers() {
@@ -564,44 +636,36 @@ export class WorkersComponent implements OnInit {
     return label;
   }
 
-  openSwitchDialog(worker: WorkerStatus) {
-    this.selectedWorker.set(worker);
-    this.targetMode.set(worker.mode);
-    this.poolUrl.set(worker.pool_url || '');
-  }
-
-  cancelSwitch() {
-    this.selectedWorker.set(null);
-    this.targetMode.set('standalone');
-    this.poolUrl.set('');
-  }
-
-  canSwitch(): boolean {
-    const mode = this.targetMode();
-    if (mode === 'pool-worker' && !this.poolUrl()) {
-      return false;
+  /**
+   * Devuelve un minero a modo competitivo.
+   *
+   * El camino inverso (entrar a cooperativo) no está acá a propósito: vive en
+   * Equipos, para que el modo del minero y su pertenencia a un equipo no puedan
+   * moverse por separado. Salir de un equipo por este botón **sí** desarma la
+   * membresía; el backend lo hace en la misma operación.
+   */
+  backToSolo(worker: WorkerStatus) {
+    if (worker.team_role === 'coordinator') {
+      this.snackBar.open(
+        `${worker.worker_id} coordina "${worker.team_name}". Disolvé el equipo desde Equipos.`,
+        'Cerrar', { duration: 5000 });
+      return;
     }
-    return true;
-  }
-
-  confirmSwitch() {
-    const worker = this.selectedWorker();
-    if (!worker) return;
-
-    const request = {
-      target: this.targetMode(),
-      pool_url: this.poolUrl()
-    };
-
-    this.apiService.switchWorkerMode(worker.worker_id, request).subscribe({
-      next: () => {
-        this.loadWorkers();
-        this.cancelSwitch();
-        this.snackBar.open(`Orden de cambio de modo enviada a ${worker.worker_id}`, 'Cerrar', { duration: 3000 });
+    this.switching.set(true);
+    this.apiService.switchWorkerMode(worker.worker_id, { target: 'standalone' }).subscribe({
+      next: (res: any) => {
+        this.switching.set(false);
+        this.loadAll();
+        this.snackBar.open(
+          res?.left_team
+            ? `${worker.worker_id} salió del equipo y vuelve a minar por su cuenta.`
+            : `${worker.worker_id} vuelve a modo competitivo.`,
+          'Cerrar', { duration: 4000 });
       },
       error: (err) => {
-        console.error('Failed to switch worker mode:', err);
-        this.snackBar.open('No se pudo cambiar el modo: ' + (err.error?.detail || err.message), 'Cerrar', { duration: 4000 });
+        this.switching.set(false);
+        this.snackBar.open('No se pudo cambiar el modo: ' + (err.error?.detail || err.message),
+          'Cerrar', { duration: 5000 });
       }
     });
   }
@@ -669,37 +733,24 @@ export class WorkersComponent implements OnInit {
     });
   }
 
-  // Ownership verification helper in frontend
+  // La verificación autoritativa la hace el backend (X-Owner-Id contra Redis);
+  // acá sólo se decide qué botones mostrar. Ambos helpers son compartidos con
+  // la pantalla de Equipos para que las dos coincidan siempre.
   isWorkerOwned(worker: WorkerStatus): boolean {
-    const id = this.identityService.identity();
-    if (!id) return false;
-
-    // 1. Demo workers owned by specific demo accounts
-    const demoMappings: Record<string, string[]> = {
-      "valentin": ["worker-standalone"],
-      "gustavo": ["worker-pool-coordinator"],
-      "matt": ["worker-pool-miner-1"],
-      "profesor1": ["worker-pool-miner-2"],
-      "profesor2": ["worker-pool-miner-3"]
-    };
-
-    if (id.isDemo) {
-      const owned = demoMappings[id.username || ''] || [];
-      return owned.includes(worker.worker_id);
-    }
-
-    // 2. Dynamic workers where the worker's reported pubkey matches the citizen pubkey
-    return worker.pubkey === id.pubkey;
+    return isOwnedBy(worker, this.identityService.identity());
   }
 
   isDynamicWorker(worker: WorkerStatus): boolean {
-    const hardcoded = ["worker-1", "worker-2", "pool-coordinator-1", "worker-standalone", "worker-pool-coordinator", "worker-pool-miner-1", "worker-pool-miner-2", "worker-pool-miner-3"];
-    return !hardcoded.includes(worker.worker_id);
+    return isDynamicWorker(worker);
   }
 
   cancelRegister() {
     this.showRegisterForm.set(false);
     this.newWorkerId.set('');
+    // Se resetea también acá porque el camino de éxito cierra el formulario por
+    // este método: sin esto, `registering` quedaba en true para siempre y la
+    // segunda alta encontraba el botón deshabilitado diciendo "Registrando…".
+    this.registering.set(false);
   }
 
   async confirmRegister() {
@@ -732,7 +783,7 @@ export class WorkersComponent implements OnInit {
         next: () => {
           this.snackBar.open(`Minero "${workerId}" registrado y desplegado en el clúster.`, 'Cerrar', { duration: 3000 });
           this.cancelRegister();
-          this.loadWorkers();
+          this.loadAll();
         },
         error: (err) => {
           console.error(err);
@@ -766,7 +817,7 @@ export class WorkersComponent implements OnInit {
       this.apiService.unregisterWorker(worker.worker_id, timestamp, signature).subscribe({
         next: () => {
           this.snackBar.open(`Minero "${worker.worker_id}" dado de baja.`, 'Cerrar', { duration: 3000 });
-          this.loadWorkers();
+          this.loadAll();
         },
         error: (err) => {
           console.error(err);

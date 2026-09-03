@@ -1,4 +1,4 @@
-# AGENT.md — VoxChain: Democracia vía Blockchain
+# AGENT.md — VoxChain Reborn: Democracia vía Blockchain
 
 > Documento de contexto para asistentes de IA (Claude, Copilot, ChatGPT/Codex, Cursor, etc.) que colaboren en el desarrollo de este proyecto. Resume el dominio, las reglas de negocio, las decisiones de diseño ya cerradas, y cómo todo eso mapea a la arquitectura técnica exigida por el TP Integrador de Blockchain Distribuida y CUDA (UNLu, Sistemas Distribuidos y Programación Paralela, 2026).
 >
@@ -8,7 +8,7 @@
 
 ## 1. Resumen del proyecto
 
-**VoxChain** es una blockchain distribuida cuyo propósito no es transferir dinero, sino **gobernar por consenso de esfuerzo computacional**. Cualquier individuo capaz de generar un par de claves pública/privada es un participante con derecho a proponer, votar (promulgar) y derogar leyes. El consenso no se logra por votación nominal (una persona, un voto) sino por **Proof of Work**: la voluntad colectiva se mide en hashes calculados, no en cabezas contadas.
+**VoxChain Reborn** es una blockchain distribuida cuyo propósito no es transferir dinero, sino **gobernar por consenso de esfuerzo computacional**. Cualquier individuo capaz de generar un par de claves pública/privada es un participante con derecho a proponer, votar (promulgar) y derogar leyes. El consenso no se logra por votación nominal (una persona, un voto) sino por **Proof of Work**: la voluntad colectiva se mide en hashes calculados, no en cabezas contadas.
 
 La motivación de diseño es deliberadamente política, no solo técnica: el sistema reproduce, a propósito, la dinámica de concentración de poder de las blockchains reales (pools grandes ganan más seguido), y eso se documenta como una observación de diseño, no como un bug.
 

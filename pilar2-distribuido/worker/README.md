@@ -3,15 +3,26 @@
 El worker ejecuta el Proof of Work de gobierno **invocando el minero de Pilar 1**
 (no se reimplementa el hashing).
 
+> Referencia detallada de los modos competitivo y cooperativo (protocolo HTTP del
+> pool, elección de coordinator, threads, y diferencias entre lo documentado y lo
+> implementado): [`docs/workers.md`](../../docs/workers.md).
+
 ## Modos de operación
 
-El worker soporta **tres modos** intercambiables en caliente vía hot-switch:
+El worker soporta **cuatro modos** intercambiables en caliente vía hot-switch:
 
 | Modo | `WORKER_MODE` | Cómo recibe trabajo | Rango de nonces | A quién reporta |
 |------|---------------|---------------------|-----------------|-----------------|
 | Standalone | `standalone` (default) | Topic `desafio_activo` del NCT | Completo `[0, NONCE_SPACE)` | NCT (`respuesta_nonce`) |
 | Pool-coordinator | `pool-coordinator` | Topic `desafio_activo` del NCT (fragmenta internamente) | Fragmenta y reparte + auto-mina | NCT (`respuesta_nonce`) |
 | Pool-worker | `pool-worker` | HTTP al Pool Coordinator | Fragmento del coordinator | Pool Coordinator |
+| Pool-auto | `pool-auto` | Elección bully por mini-PoW; el ganador coordina y el resto mina | Según el rol que le toque | NCT o coordinator |
+
+> **Desde la UI los modos de pool no se eligen sueltos: se eligen creando o
+> uniéndose a un equipo.** `POST /api/workers/{id}/switch-mode` sólo acepta
+> `standalone`; entrar al modo cooperativo va por `/api/teams`, que además
+> resuelve la dirección del coordinador sola. El detalle está en
+> [`docs/workers.md`](../../docs/workers.md) §5.bis.
 
 ### Standalone mode
 Se suscribe directo al exchange `desafio_activo` del NCT. Mina el **espacio
@@ -46,7 +57,10 @@ si la ley es aceptada. El minero no elige qué minar. No usa RabbitMQ.
 ## Hot-switch (cambio de modo en caliente)
 
 El worker expone un servidor HTTP de administración en el puerto `9090`
-(variable `ADMIN_PORT`).
+(variable `ADMIN_PORT`). Este puerto es una **herramienta de operación**, no la
+vía de uso normal: acepta cualquier modo, sin pasar por la capa de equipos ni
+por la verificación de dueño. En un despliegue no está expuesto fuera del
+clúster; los usuarios administran sus mineros por la API.
 
 ```bash
 # De pool-worker a standalone
@@ -108,6 +122,8 @@ Health: `GET :8080/health` → `{"worker_id":"...", "mode":"standalone", "status
 | `WORKER_MODE` | `standalone` | Modo inicial: `standalone`, `pool-coordinator`, o `pool-worker`. |
 | `POOL_COORDINATOR_URL` | `http://pool-coordinator:9001` | URL del Pool Coordinator (modo pool-worker). |
 | `POOL_HTTP_PORT` | `9001` | Puerto HTTP del pool coordinator embebido (modo pool-coordinator). |
+| `WORKER_ADDRESS` | `http://<MY_POD_IP o hostname>:<POOL_HTTP_PORT>` | Dirección con la que otros mineros lo alcanzan si coordina un equipo. Se publica en el estado y el backend se la entrega a quien se una. Conviene fijarla explícitamente: el hostname del contenedor no tiene por qué coincidir con el `WORKER_ID`. |
+| `MY_POD_IP` | (vacío) | IP del pod, inyectada por `fieldRef` en Kubernetes. Respaldo de `WORKER_ADDRESS`. |
 | `NONCE_SPACE` | `50000000` | Tamaño total del espacio de nonces a fragmentar (pool-coordinator/standalone). |
 | `FRAGMENT_SIZE` | `1000000` | Tamaño de cada fragmento (modo pool-coordinator). |
 | `STANDALONE_NONCE_SPACE` | `50000000` | Tamaño del espacio de nonces (modo standalone). |
@@ -131,6 +147,15 @@ Health: `GET :8080/health` → `{"worker_id":"...", "mode":"standalone", "status
   coordinator dentro del worker. La fragmentación del espacio de nonces es interna.
 - **Pool-worker delega voto**: el minero dentro de un pool no elige qué leyes minar,
   esa decisión la centraliza el pool coordinator según la política del dueño.
+- **El worker anuncia su dirección, no la adivina el backend**: `WORKER_ADDRESS`
+  (o `MY_POD_IP`, o el hostname) se publica en `worker:status:<id>`. Es lo que
+  permite que un usuario se una al equipo de otro sin averiguar ninguna URL, y
+  lo único que funciona en Kubernetes, donde los pods de un Deployment no tienen
+  DNS estable.
+- **Un hilo para consumir, otro para minar** (modo pool-worker): el bucle de
+  pedir y minar fragmentos bloquea, así que no puede compartir hilo con el
+  consumo de RabbitMQ. Si lo comparte, el worker deja de escuchar
+  `worker.command` y ya no hay forma de sacarlo del equipo.
 - **Standalone mina todo el espacio**: sin pool, el worker se suscribe al desafío
   del NCT y barre `[0, STANDALONE_NONCE_SPACE)` compitiendo directamente contra
   el resto de la red.

@@ -11,7 +11,9 @@ import { IdentityService } from './core/services/identity.service';
   imports: [CommonModule, MatToolbarModule, MatButtonModule, RouterModule],
   template: `
     <mat-toolbar color="primary">
-      <span>VoxChain</span>
+      <a routerLink="/" class="brand" title="Inicio">
+        <span class="brand-vox">VOXCHAIN</span><span class="brand-reborn">REBORN</span>
+      </a>
       <span class="spacer"></span>
       <a mat-button routerLink="/dashboard">Panel</a>
       <a mat-button routerLink="/chain">Cadena</a>
@@ -48,6 +50,16 @@ import { IdentityService } from './core/services/identity.service';
     a.mat-button {
       margin-left: 10px;
     }
+    .brand {
+      display: inline-flex;
+      align-items: baseline;
+      gap: 0.3em;
+      font-size: 1.05rem;
+      letter-spacing: 0.02em;
+      cursor: pointer;
+    }
+    .brand-vox { font-weight: 700; }
+    .brand-reborn { font-weight: 300; opacity: 0.75; }
     .identity-badge {
       font-size: 0.75rem;
       color: #90caf9;

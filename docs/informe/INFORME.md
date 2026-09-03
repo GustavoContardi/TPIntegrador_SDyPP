@@ -1,4 +1,4 @@
-# Informe final — VoxChain
+# Informe final — VoxChain Reborn
 
 **Trabajo Final Integrador — Sistemas Distribuidos y Programación Paralela**
 Universidad Nacional de Luján
@@ -13,7 +13,7 @@ Universidad Nacional de Luján
 
 ## Resumen ejecutivo
 
-VoxChain es una blockchain de **gobierno por consenso de esfuerzo
+VoxChain Reborn es una blockchain de **gobierno por consenso de esfuerzo
 computacional**: no transfiere dinero, sino que promulga y deroga *leyes*. Una
 propuesta se sella en la cadena cuando alguien de la red encuentra un nonce que
 satisface una prueba de trabajo sobre el contenido de esa ley.

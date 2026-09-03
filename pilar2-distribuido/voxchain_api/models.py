@@ -72,6 +72,13 @@ class WorkerStatus(BaseModel):
     pool_url: str = ""
     running: bool
     pubkey: Optional[str] = None
+    # Dirección HTTP con la que el worker es alcanzable si actúa de coordinador.
+    # La reporta el propio worker; el backend la usa para armar los equipos.
+    address: Optional[str] = None
+    # Equipo al que pertenece, resuelto por el backend desde `worker:team:*`.
+    team_id: Optional[str] = None
+    team_name: Optional[str] = None
+    team_role: Optional[str] = None  # 'coordinator' | 'member' | None
 
 
 class RegisterWorkerRequest(BaseModel):
@@ -98,6 +105,43 @@ class PoolHealth(BaseModel):
     rabbitmq: str
     miners: int
     voting_policy: dict
+
+
+class TeamMember(BaseModel):
+    worker_id: str
+    role: str  # 'coordinator' | 'member'
+    mode: str
+    running: bool
+    pubkey: Optional[str] = None
+
+
+class Team(BaseModel):
+    team_id: str
+    name: str
+    owner: str
+    coordinator_worker_id: str
+    coordinator_url: str
+    created_at: str
+    members: list[TeamMember] = []
+    member_count: int = 0
+    # Mineros que el coordinator tiene efectivamente registrados por HTTP. Es un
+    # número distinto de member_count: éste cuenta la intención (quién se anotó
+    # al equipo) y aquél la realidad (quién está mandando keep-alive).
+    miners_connected: Optional[int] = None
+    coordinator_online: bool = False
+
+
+class CreateTeamRequest(BaseModel):
+    name: str
+    worker_id: str
+    # Alta del minero en el mismo paso, para el usuario que todavía no tiene
+    # ninguno. Mismos campos que RegisterWorkerRequest. El nombre del campo
+    # evita `register`, que pisa un atributo de BaseModel.
+    new_worker: Optional[RegisterWorkerRequest] = None
+
+
+class TeamMembershipRequest(BaseModel):
+    worker_id: str
 
 
 class SSEEvent(BaseModel):

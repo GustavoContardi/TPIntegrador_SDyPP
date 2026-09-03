@@ -86,11 +86,19 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
+      # Reporta su estado a Redis, y lo necesita si el usuario lo promueve a
+      # coordinador de un equipo (lease de liderazgo y política de voto).
+      redis:
+        condition: service_healthy
     environment:
       <<: *app-env
       WORKER_MODE: "standalone"
       WORKER_CAPACITY: "1"
       WORKER_ID: "worker-1"
+      # Dirección con la que otros mineros lo alcanzan si coordina un equipo.
+      # Se explicita porque el hostname del contenedor no tiene por qué coincidir
+      # con el WORKER_ID, y adivinarla mal deja al equipo sin poder formarse.
+      WORKER_ADDRESS: "http://worker-1:9001"
     ports:
       - "9091:9090"
 
@@ -101,11 +109,19 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
+      # Reporta su estado a Redis, y lo necesita si el usuario lo promueve a
+      # coordinador de un equipo (lease de liderazgo y política de voto).
+      redis:
+        condition: service_healthy
     environment:
       <<: *app-env
       WORKER_MODE: "standalone"
       WORKER_CAPACITY: "1"
       WORKER_ID: "worker-2"
+      # Dirección con la que otros mineros lo alcanzan si coordina un equipo.
+      # Se explicita porque el hostname del contenedor no tiene por qué coincidir
+      # con el WORKER_ID, y adivinarla mal deja al equipo sin poder formarse.
+      WORKER_ADDRESS: "http://worker-2:9001"
     ports:
       - "9092:9090"
 
@@ -123,6 +139,9 @@ services:
       WORKER_MODE: "pool-coordinator"
       WORKER_ID: "pool-coordinator-1"
       POOL_HTTP_PORT: "9001"
+      # El WORKER_ID (pool-coordinator-1) NO es el nombre del servicio, así que
+      # sin esto la dirección publicada no resolvería para nadie.
+      WORKER_ADDRESS: "http://worker-pool-coordinator:9001"
     ports:
       - "9090:9090"   # Admin server para hot-switch
       - "9001:9001"   # HTTP para pool-workers

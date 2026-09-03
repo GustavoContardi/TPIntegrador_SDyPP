@@ -44,6 +44,7 @@ class BusDeUnHilo(Messaging):
         self._consumiendo = False
         self.hilo_io = None
         self.errores = []
+        self._pool_election_handler = None
 
     def connect(self):
         pass
@@ -55,6 +56,15 @@ class BusDeUnHilo(Messaging):
         self._handler = handler
 
     def on_challenge(self, handler):
+        pass
+
+    def on_pool_election(self, pool_id, handler):
+        self._pool_election_handler = handler
+
+    def publish_pool_election(self, pool_id, msg):
+        pass
+
+    def unsubscribe_pool_election(self):
         pass
 
     def publish_worker_command(self, worker_id, command):
@@ -152,3 +162,96 @@ def test_switch_mode_directo_sigue_andando(manager):
     m, _ = manager
     m.switch_mode("standalone")
     assert m.get_status()["mode"] == "standalone"
+
+
+def test_pool_worker_arranca_dos_hilos(manager):
+    """El bucle de minado y el de consumo tienen que ser hilos distintos.
+
+    El bucle del pool-worker bloquea mientras mina un fragmento; si comparte
+    hilo con el consumo de RabbitMQ, el worker deja de escuchar mientras trabaja.
+    """
+    m, _ = manager
+    m.switch_mode("pool-worker", "http://coordinador-inexistente:9001")
+
+    assert m._thread is not None and m._thread.is_alive()
+    assert m._worker_thread is not None and m._worker_thread.is_alive()
+    assert m._thread is not m._worker_thread
+
+
+def test_pool_worker_sigue_escuchando_comandos(manager):
+    """Regresión: un minero dentro de un equipo tiene que poder salir de él.
+
+    En modo pool-worker el hilo del worker corría el bucle de minado y nadie
+    corría ``start_consuming``, así que el consumidor de ``worker.command``
+    quedaba registrado pero nunca activo. La consecuencia práctica: el backend
+    publicaba la orden de volver a competitivo, nadie la consumía, y el minero
+    seguía pidiéndole fragmentos a su coordinador para siempre — sin más salida
+    que reiniciar el contenedor.
+    """
+    m, buses = manager
+    m.switch_mode("pool-worker", "http://coordinador-inexistente:9001")
+
+    # Cambiar de modo recrea la mensajería, así que el bus vigente es el último.
+    bus = buses[-1]
+    assert _esperar(lambda: bus.hilo_io is not None), (
+        "nadie arrancó el loop de consumo en modo pool-worker"
+    )
+
+    bus.publish_worker_command("gustavo10", {"type": "switch_mode",
+                                             "mode": "standalone"})
+    assert _esperar(lambda: m.get_status()["mode"] == "standalone"), (
+        f"sigue en {m.get_status()['mode']}; errores: {bus.errores}"
+    )
+
+
+def test_salir_de_pool_auto_detiene_el_bully(manager):
+    """Al cambiar de modo el bully tiene que soltar lo que arrancó por dentro.
+
+    El bully levanta un coordinator o un pool-worker según gane o pierda la
+    elección; si no se lo detiene, esos hilos sobreviven al cambio de modo y el
+    worker termina minando en dos modos a la vez.
+    """
+    m, _ = manager
+    m.switch_mode("pool-auto")
+    bully = m._bully
+    assert bully is not None
+
+    m.switch_mode("standalone")
+    assert bully._running is False
+    assert m._bully is None
+    assert m.get_status()["bully_state"] is None
+
+
+class TestDireccionAnunciada:
+    """La dirección que el worker publica es lo que arma un equipo.
+
+    El backend se la entrega a quien se une al equipo, así que si sale mal el
+    minero apunta a un host que no existe y el pool nunca reparte nada.
+    """
+
+    def test_worker_address_explicita_gana(self, monkeypatch):
+        monkeypatch.setenv("WORKER_ADDRESS", "http://mi-servicio:9001/")
+        m = WorkerManager("w", has_gpu=False)
+        assert m.address == "http://mi-servicio:9001"
+
+    def test_sin_worker_address_usa_la_ip_del_pod(self, monkeypatch):
+        monkeypatch.delenv("WORKER_ADDRESS", raising=False)
+        monkeypatch.setenv("MY_POD_IP", "10.42.0.7")
+        m = WorkerManager("w", has_gpu=False)
+        assert m.address == "http://10.42.0.7:9001"
+
+    def test_ultimo_recurso_el_hostname(self, monkeypatch):
+        monkeypatch.delenv("WORKER_ADDRESS", raising=False)
+        monkeypatch.delenv("MY_POD_IP", raising=False)
+        monkeypatch.setattr(worker_main.socket, "gethostname", lambda: "contenedor-x")
+        m = WorkerManager("w", has_gpu=False)
+        assert m.address == "http://contenedor-x:9001"
+
+    def test_el_coordinator_publica_su_direccion_como_pool_url(self, monkeypatch):
+        """Antes se armaba con el worker_id, que casi nunca resuelve."""
+        monkeypatch.setenv("WORKER_ADDRESS", "http://10.42.0.7:9001")
+        m = WorkerManager("pool-coordinator-1", has_gpu=False)
+        m._mode = "pool-coordinator"
+        estado = m.get_status()
+        assert estado["pool_url"] == "http://10.42.0.7:9001"
+        assert estado["address"] == "http://10.42.0.7:9001"

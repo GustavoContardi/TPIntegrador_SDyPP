@@ -1,5 +1,16 @@
-# TPIntegrador_SDyPP
-Cierre de la cursada: Sistema distribuido completo de minería blockchain con CUDA.
+# VoxChain Reborn
+
+**Trabajo Final Integrador — Sistemas Distribuidos y Programación Paralela (UNLu).**
+Blockchain distribuida de **gobierno por consenso de esfuerzo computacional**: no
+transfiere dinero, promulga y deroga *leyes*. La voluntad colectiva se mide en
+hashes calculados, no en cabezas contadas.
+
+> **Sobre el nombre:** el producto se llama **VoxChain Reborn**. Los
+> identificadores técnicos —el namespace `voxchain`, las métricas
+> `voxchain_*`, las imágenes, el paquete `voxchain_api`, las claves de Redis—
+> siguen diciendo `voxchain` a propósito: renombrarlos invalidaría los
+> dashboards de Grafana, el estado de OpenTofu y los manifests desplegados sin
+> aportar nada. El nombre del producto vive en la UI y en la documentación.
 
 ## Estructura
 

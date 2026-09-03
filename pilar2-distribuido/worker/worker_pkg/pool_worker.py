@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -29,14 +30,21 @@ class PoolWorker:
         self._registered = False
         self._last_hb = 0.0
         self._running = False
+        # Las esperas del bucle (reintento de registro, pool sin trabajo) se
+        # hacen sobre este evento en vez de time.sleep para que `stop()` las
+        # corte en el acto. Con sleep, sacar a un minero de su equipo tardaba
+        # hasta 5 s en aplicarse aunque la orden ya hubiera llegado.
+        self._wake = threading.Event()
 
     def stop(self) -> None:
         self._running = False
+        self._wake.set()
 
     def join(self, coordinator_url: str) -> None:
         self.url = coordinator_url.rstrip("/")
         self._registered = False
         self._running = True
+        self._wake.clear()
 
     def _post(self, path: str, data: dict) -> dict | None:
         try:
@@ -111,13 +119,14 @@ class PoolWorker:
 
         log.info("pool-worker iniciando (coordinator=%s)", self.url)
         self._running = True
+        self._wake.clear()
 
         while self._running:
             while self._running and not self._registered:
                 if self.register():
                     break
                 log.warning("reintentando registro en 5s...")
-                time.sleep(5)
+                self._wake.wait(5)
 
             while self._running and self._registered:
                 now = self.now()
@@ -133,7 +142,7 @@ class PoolWorker:
 
                 task = self.request_work()
                 if not task:
-                    time.sleep(2)
+                    self._wake.wait(2)
                     continue
 
                 wid = task["voting_window_id"]

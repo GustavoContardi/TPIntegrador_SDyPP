@@ -47,8 +47,26 @@ class WorkerManager:
         self._mode = "idle"
         self._pool_url = ""
         self._pool_httpd = None
+        # `_thread` corre siempre el loop de consumo de RabbitMQ; `_worker_thread`
+        # es el bucle propio del modo cuando lo tiene (pool-worker pide trabajo
+        # por HTTP en su propio ciclo). Antes eran el mismo, y el modo
+        # pool-worker se quedaba sin consumidor: sus comandos remotos
+        # (`switch_mode`) no llegaban nunca.
+        self._worker_thread = None
         self._stop_event = threading.Event()
         self._pool_http_port = int(os.getenv("POOL_HTTP_PORT", "9001"))
+        # Dirección con la que otros workers pueden alcanzar el servidor HTTP de
+        # este nodo cuando actúa de pool-coordinator. Se publica en el estado
+        # para que el backend la reparta a quien se una a su equipo: nadie tiene
+        # que escribir la URL a mano.
+        #
+        # Se explicita por env (`WORKER_ADDRESS`) en todos los despliegues que
+        # controlamos, porque adivinarla es frágil: en Compose el hostname del
+        # contenedor no tiene por qué coincidir con el WORKER_ID (el servicio
+        # `worker-pool-coordinator` corre con WORKER_ID `pool-coordinator-1`), y
+        # en Kubernetes los pods de un Deployment no tienen DNS estable — ahí la
+        # dirección buena es la IP del pod, que llega por `MY_POD_IP`.
+        self.address = self._resolve_address()
         self._bully = None
         self._report_thread = None
         # Serializa los cambios de modo: pueden entrar a la vez por el admin
@@ -57,17 +75,31 @@ class WorkerManager:
 
     # -- API pública para admin_server --
 
+    def _resolve_address(self) -> str:
+        explicit = os.getenv("WORKER_ADDRESS", "").strip()
+        if explicit:
+            return explicit.rstrip("/")
+        host = os.getenv("MY_POD_IP", "").strip() or socket.gethostname()
+        return f"http://{host}:{self._pool_http_port}"
+
     def get_status(self) -> dict:
         pool_url = self._pool_url
         if self._mode == "pool-coordinator":
-            pool_url = f"http://{self.worker_id}:{self._pool_http_port}"
+            # Siendo coordinator, la "URL del pool" es la propia: es lo que el
+            # backend guarda como dirección del equipo y entrega a los que se
+            # unan. Antes se armaba con el worker_id como hostname, que sólo
+            # resolvía por casualidad cuando el id coincidía con el nombre del
+            # servicio de Compose.
+            pool_url = self.address
         bully_state = self._bully.state if self._bully else None
         return {
             "mode": self._mode,
             "worker_id": self.worker_id,
             "pool_url": pool_url,
+            "address": self.address,
             "bully_state": bully_state,
-            "running": self._thread is not None and self._thread.is_alive(),
+            "running": any(t is not None and t.is_alive()
+                           for t in (self._thread, self._worker_thread)),
             "pubkey": self.signer.pubkey if (self.signer and self.signer.enabled) else None,
         }
 
@@ -200,6 +232,7 @@ class WorkerManager:
         if self._worker:
             self._worker.stop()
             self._worker = None
+        self._bully = None
         # Cerrar la mensajería ANTES del join. El hilo está bloqueado en el loop
         # de consumo y sólo sale cuando close() baja la bandera: al revés, el
         # join agotaba su timeout entero en cada cambio de modo.
@@ -209,6 +242,12 @@ class WorkerManager:
         if self._thread:
             self._thread.join(timeout=10)
             self._thread = None
+        if self._worker_thread:
+            # Puede estar adentro de una tanda de minado, que no se interrumpe.
+            # No lo esperamos indefinidamente: `stop()` ya bajó su bandera, así
+            # que termina solo al cerrar el fragmento en curso.
+            self._worker_thread.join(timeout=10)
+            self._worker_thread = None
         if self._pool_httpd:
             self._pool_httpd.shutdown()
             self._pool_httpd = None
@@ -241,7 +280,17 @@ class WorkerManager:
             mine=run_miner,
         )
         self._worker = pw
-        self._thread = threading.Thread(target=pw.run, daemon=True)
+        # Dos hilos, no uno: el bucle de pedir/minar fragmentos bloquea (una
+        # tanda de minado puede tardar segundos), así que el consumo de
+        # RabbitMQ va aparte. Si comparten hilo, el worker deja de escuchar
+        # `worker.command` y ya no hay forma de sacarlo del equipo — la orden se
+        # publica, nadie la consume, y el minero queda pidiéndole fragmentos a
+        # su coordinador para siempre.
+        self._worker_thread = threading.Thread(target=pw.run, daemon=True,
+                                               name=f"pool-worker-{self.worker_id}")
+        self._worker_thread.start()
+        self._thread = threading.Thread(target=self._run_messaging_loop,
+                                        daemon=True)
         self._thread.start()
 
     def _start_standalone(self) -> None:
@@ -265,7 +314,18 @@ class WorkerManager:
         self._mode = "pool-coordinator"
         m = self._ensure_messaging()
         self._subscribe_worker_commands(m)
-        redis = create_redis(config.REDIS_URL)
+        # Redis le da al coordinator el lease de liderazgo y la política de voto.
+        # Si no hay Redis alcanzable seguimos igual con `redis=None`: el
+        # PoolCoordinator se declara líder de su propio pool y reparte trabajo
+        # lo mismo. Antes una URL vacía o un Redis caído tiraba una excepción
+        # acá adentro y el switch_mode dejaba al worker en "idle", sin ningún
+        # modo activo y sin un mensaje que lo explicara.
+        try:
+            redis = create_redis(config.REDIS_URL) if config.REDIS_URL else None
+        except Exception as exc:  # noqa: BLE001
+            log.warning("pool-coordinator sin Redis (%s): sigo como líder local",
+                        exc)
+            redis = None
         pc = PoolCoordinator(
             m,
             pool_id=self.worker_id,
@@ -300,8 +360,7 @@ class WorkerManager:
         m = self._ensure_messaging()
         self._subscribe_worker_commands(m)
         pool_id = os.getenv("POOL_ID", "default")
-        address = os.getenv("WORKER_ADDRESS",
-                            f"http://{socket.gethostname()}:{self._pool_http_port}")
+        address = self.address
 
         bully = PoolBully(
             self.worker_id,
@@ -314,6 +373,10 @@ class WorkerManager:
         )
         bully.wire()
         self._bully = bully
+        # También como `_worker` para que `_stop_current` lo detenga: sin esto,
+        # salir de pool-auto dejaba vivos el coordinator o el pool-worker que el
+        # bully había arrancado por dentro.
+        self._worker = bully
 
         self._thread = threading.Thread(
             target=self._run_messaging_loop, args=(bully.tick,), daemon=True

@@ -1,6 +1,6 @@
-# Pilar 2 — Infraestructura de servicios distribuidos (VoxChain)
+# Pilar 2 — Infraestructura de servicios distribuidos (VoxChain Reborn)
 
-VoxChain no es una blockchain de dinero: es **gobierno por consenso de esfuerzo
+VoxChain Reborn no es una blockchain de dinero: es **gobierno por consenso de esfuerzo
 computacional**. Cualquiera con un par de claves propone, promulga o deroga
 **leyes**; el consenso se mide en hashes (Proof of Work), no en votos nominales.
 El NCT sólo coordina ventanas de votación, no arbitra contenido.
@@ -108,6 +108,7 @@ en la topología por compatibilidad, pero el reparto de trabajo real va por HTTP
 | [`worker/`](worker/) modo `pool-coordinator` | Fragmenta el espacio de nonces, reparte tareas por HTTP, trackea capacidad por keep-alives y además auto-mina |
 | [`worker/`](worker/) modo `pool-worker` | Pide rangos al coordinator y los mina invocando el minero de Pilar 1 (GPU/CPU) |
 | [`worker/`](worker/) modo `standalone` | Mina el espacio completo por su cuenta y publica el nonce directo al NCT (modo competitivo) |
+| [`voxchain_api/routers/teams.py`](voxchain_api/routers/teams.py) | **Equipos**: capa de nombres sobre el modo cooperativo. Crear un equipo promueve un minero propio a `pool-coordinator`; unirse pone un minero en `pool-worker` apuntando a él |
 | [`voxchain_api/`](voxchain_api/) | API REST (FastAPI): propuestas, cadena, cuentas demo, estado de workers |
 | [`voxchain-frontend/`](voxchain-frontend/) | SPA en Angular; firma las propuestas en el navegador |
 | `common/` | Paquete compartido: `blockchain`, `storage` (Redis), `messaging` (RabbitMQ), health, logging, métricas, config |
@@ -222,6 +223,15 @@ pytest -m integration  # sólo el flujo extremo a extremo
   ventana en curso se pierde por diseño (se prefiere descartarla antes que
   arriesgar un sellado doble). Cubierto por `tests/test_bully.py` y
   `tests/test_failover_y_cierre.py`.
+- **El modo cooperativo se administra por equipos, no por URL**: para poner un
+  minero en `pool-worker` hay que decirle la URL del coordinador, y esa URL un
+  usuario no la puede averiguar (en Kubernetes los pods de un Deployment no
+  tienen DNS estable; la buena es la IP del pod). Se invirtió quién la sabe: el
+  **worker anuncia su dirección** (`WORKER_ADDRESS`/`MY_POD_IP`) en el estado que
+  publica en Redis, y el backend se la entrega a quien se une al equipo. En
+  consecuencia `POST /api/workers/{id}/switch-mode` **sólo acepta `standalone`**:
+  si se pudiera cambiar el modo por un lado y la membresía por otro, la lista de
+  miembros del equipo mentiría. Ver [`docs/workers.md`](../docs/workers.md).
 - **Elección del coordinator del pool**: ahí sí hay mini-PoW
   (`POOL_ELECTION_N_ZEROS`, 2 ceros por defecto), porque los candidatos son
   mineros y el criterio de esfuerzo es coherente con el resto del sistema.
