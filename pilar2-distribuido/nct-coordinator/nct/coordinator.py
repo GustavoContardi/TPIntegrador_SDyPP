@@ -25,6 +25,7 @@ from common.blockchain import (
     seal_block,
     verify_nonce,
 )
+from common.blockchain.categories import normalize_category, validate_category
 from common.blockchain.challenge import VALID_ACTIONS
 from common.identity import nonce_message, proposal_message, verify
 from common.messaging import QUEUE_PROPUESTAS, QUEUE_RESPUESTA_NONCE
@@ -87,7 +88,8 @@ class NCTCoordinator:
         **sólo siendo líder** (BUG 1 / AGENT.md 4): un follower que también las
         consumiera competiría con el líder por el reparto round-robin de RabbitMQ
         y se "tragaría" la mitad de los mensajes sin actuar. Mientras es follower
-        sólo escucha ``nct.heartbeat`` y ``nct_election`` (vía el monitor)."""
+        sólo escucha ``nct.heartbeat`` (vía el monitor); la elección del sucesor
+        no viaja por mensajería sino por el lease de Redis (AGENT.md 4.1)."""
         if self.is_leader:
             self._subscribe_work_queues()
 
@@ -122,9 +124,18 @@ class NCTCoordinator:
         if action not in VALID_ACTIONS:
             log.warning("propuesta con action inválida: %s", action)
             return
+        # Categoría declarada por el autor (AGENT.md 3.10). Se valida ANTES de la
+        # firma para no encolar nada con un área inventada: es el dato que decide
+        # qué equipos van a aportar cómputo a esta ventana.
+        try:
+            declared_category = validate_category(law.get("category"))
+        except ValueError as exc:
+            log.warning("propuesta rechazada: %s", exc)
+            return
 
         # Firma del autor (A-01 / AGENT.md 3.1): nadie propone en nombre de otro.
-        if not self._signature_ok(law, author, action, text_hash, law_id, created_at):
+        if not self._signature_ok(law, author, action, text_hash, law_id,
+                                  created_at, declared_category):
             return
 
         # Cooldown del autor (3.4): no puede proponer mientras esté en cooldown.
@@ -141,12 +152,13 @@ class NCTCoordinator:
             self._enqueue_derogacion(law_id, author, action)
         else:
             self._enqueue_promulgacion(law_id, author, text_hash, created_at,
+                                       declared_category,
                                        text_compressed, text_original_len)
 
         self.maybe_open_window()
 
     def _signature_ok(self, law: dict, author: str, action: str, text_hash: str,
-                      law_id: str, created_at: str) -> bool:
+                      law_id: str, created_at: str, category: str) -> bool:
         """Valida la firma ECDSA de la propuesta contra ``author`` (A-01).
 
         - ``require_signatures=False``: si no hay firma, se acepta y se loguea
@@ -162,7 +174,8 @@ class NCTCoordinator:
                 return False
             log.info("propuesta sin firma aceptada (migración, autor %s)", author[:12])
             return True
-        msg = proposal_message(author, action, text_hash, law_id, created_at)
+        msg = proposal_message(author, action, text_hash, law_id, created_at,
+                               category)
         if not verify(author, msg, signature):
             log.warning("propuesta rechazada: firma inválida (autor %s)", author[:12])
             return False
@@ -200,13 +213,15 @@ class NCTCoordinator:
         return abs(self.now() - ts) <= self.proposal_max_age
 
     def _enqueue_promulgacion(self, law_id, author, text_hash, created_at,
-                              text_compressed="", text_original_len=0) -> None:
+                              category, text_compressed="",
+                              text_original_len=0) -> None:
         # Reproposición idéntica (3.5): mismo hash de texto que algo descartado.
         reason = classify_proposal(self.store.is_text_hash_discarded(text_hash))
         self.store.save_law(law_id=law_id, author_pubkey=author,
                             text_hash=text_hash, created_at=created_at,
                             status=LawStatus.PENDING_QUEUE,
                             action=ACTION_PROMULGACION,
+                            category=category,
                             text_compressed=text_compressed,
                             text_original_len=text_original_len)
         self.store.enqueue_law(law_id)
@@ -214,8 +229,8 @@ class NCTCoordinator:
                                cooldown_new=self.cooldown_new,
                                cooldown_reproposed=self.cooldown_reproposed)
         self.store.set_cooldown(author, until, reason)
-        log.info("ley %s encolada (promulgacion, %s, cooldown→ventana %d)",
-                 law_id, reason, until)
+        log.info("ley %s encolada (promulgacion, %s, categoría %s, cooldown→ventana %d)",
+                 law_id, reason, category, until)
 
     def _enqueue_derogacion(self, law_id, author, action) -> None:
         target = self.store.get_law(law_id)
@@ -224,6 +239,11 @@ class NCTCoordinator:
                         law_id)
             return
         # La derogación reutiliza la ley promulgada cambiando su action; se reencola.
+        # La categoría NO se toca: es la de la ley original, aunque el que propone
+        # la derogación haya declarado otra. Derogar convoca a los mismos equipos
+        # que en su momento promulgaron, que es lo que hace simétrico el juego —
+        # si el que deroga pudiera reetiquetar, elegiría el área donde su facción
+        # es fuerte y la ajena no mina.
         self.store.set_law_action(law_id, ACTION_DEROGACION)
         self.store.enqueue_law(law_id)
         until = cooldown_until(self.store.current_window_number(),
@@ -246,6 +266,7 @@ class NCTCoordinator:
 
     def open_window(self, law: dict) -> None:
         action = law.get("action", ACTION_PROMULGACION)
+        category = normalize_category(law.get("category"))
         law_id = law["law_id"]
         window_num = self.store.next_window_number()
         voting_window_id = f"W{window_num}-{law_id}"
@@ -258,7 +279,7 @@ class NCTCoordinator:
         self.store.save_window(voting_window_id=voting_window_id, law_id=law_id,
                                action=action, n_zeros_required=n_zeros_required,
                                opened_at=_iso(opened), deadline=_iso(deadline),
-                               partial_hash_base=base)
+                               partial_hash_base=base, category=category)
         self.store.set_law_status(law_id, LawStatus.IN_WINDOW)
         self.store.remove_from_queue(law_id)
         self.store.set_active_window(voting_window_id)
@@ -268,6 +289,7 @@ class NCTCoordinator:
             "action": action, "n_zeros_required": n_zeros_required,
             "partial_hash_base": base, "deadline_epoch": deadline,
             "author_pubkey": law.get("author_pubkey"),
+            "category": category,
         }
         self._last_author = law.get("author_pubkey")
         self.store.set_last_author(self._last_author)
@@ -278,12 +300,17 @@ class NCTCoordinator:
             "voting_window_id": voting_window_id, "law_id": law_id,
             "n_zeros_required": n_zeros_required, "deadline": _iso(deadline),
             "partial_hash_base": base, "action": action,
+            # Área de gobierno de la ley (AGENT.md 3.10): NO entra en el
+            # partial_hash_base (el desafío no cambia), viaja para que cada
+            # coordinador de equipo decida si esta ventana le interesa.
+            "category": category,
             # Epoch de publicación: los workers miden con esto la latencia
             # RabbitMQ → worker (métrica voxchain_worker_challenge_latency_seconds).
             "published_at": opened,
         })
-        log.info("ventana %s abierta (%s, %d ceros, deadline %s)",
-                 voting_window_id, action, n_zeros_required, _iso(deadline))
+        log.info("ventana %s abierta (%s de %s, %d ceros, deadline %s)",
+                 voting_window_id, action, category, n_zeros_required,
+                 _iso(deadline))
 
     # -- flujo 3: respuesta_nonce (red → NCT) ------------------------------
     def handle_nonce_response(self, sol: dict) -> None:

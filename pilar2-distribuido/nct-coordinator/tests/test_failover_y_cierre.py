@@ -207,7 +207,7 @@ def test_cierre_atomico_es_autoritativo_en_redis_ante_failover(bus, store):
 ])
 def test_todo_follower_monitorea_independientemente_del_id(bus, store,
                                                             follower_id, leader_id):
-    """Cualquier NCT en estado follower consume nct.heartbeat y nct_election.
+    """Cualquier NCT en estado follower consume nct.heartbeat (no hay cola de elección).
 
     El conjunto de colas del follower es idéntico independientemente de si su
     id es 'nct-primary' o 'nct-standby-1': la identidad es cosmética."""
@@ -307,7 +307,7 @@ def test_lease_ttl_expira_sin_renovacion(store):
 def test_primary_step_down_activa_su_monitor(bus, store):
     """Cuando el primario pierde el liderazgo, su monitor se activa (notify_stepdown).
 
-    Tras step_down, el primario debe consumir nct.heartbeat y nct_election
+    Tras step_down, el primario debe consumir nct.heartbeat
     igual que cualquier follower: sus monitores se deben haber activado.
     """
     clock = Clock()

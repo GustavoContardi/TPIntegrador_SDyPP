@@ -628,13 +628,25 @@ async def set_pool_policy(
     owner_id: str = Depends(get_owner_id),
     redis: RedisReader = Depends(get_redis_reader)
 ):
-    """Set voting policy for a specific pool coordinator."""
+    """Set voting policy for a specific pool coordinator.
+
+    El rechazo puntual (por ``action`` o ``law_id``) y la **agenda temática** del
+    equipo (``categories``, AGENT.md 3.10) son dos filtros distintos que viven en
+    la misma clave de Redis. Si la petición no trae ``categories``, se conserva la
+    que ya estaba: la agenda la escribe el flujo de equipos y no tiene por qué
+    perderse porque alguien tocó la política de acciones desde la otra pantalla.
+    """
     verify_worker_ownership(pool_id, owner_id, redis.store.r)
 
     # 1. Write the policy to Redis so the remote coordinator can read it periodically
     redis_client = redis.store.r
+    payload = policy.model_dump()
     try:
-        redis_client.set(f"pool:policy:{pool_id}", json.dumps(policy.model_dump()))
+        if payload.get("categories") is None:
+            payload["categories"] = _stored_categories(redis_client, pool_id)
+        redis_client.set(f"pool:policy:{pool_id}", json.dumps(payload))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save policy to Redis: {e}")
 
@@ -645,7 +657,7 @@ async def set_pool_policy(
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 f"{pool_url}/pool/policy",
-                json=policy.model_dump(),
+                json=payload,
                 timeout=2.0,
             )
             if response.status_code == 200:
@@ -653,7 +665,23 @@ async def set_pool_policy(
     except Exception:
         pass
 
-    return {"ok": True, "policy": policy.model_dump()}
+    return {"ok": True, "policy": payload}
+
+
+def _stored_categories(redis_client, pool_id: str) -> list[str]:
+    """Agenda temática ya escrita para este pool, o vacía si no hay ninguna."""
+    try:
+        raw = redis_client.get(f"pool:policy:{pool_id}")
+        if not raw:
+            return []
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        previous = json.loads(raw)
+        if isinstance(previous, dict):
+            return list(previous.get("categories") or [])
+    except Exception:  # noqa: BLE001
+        logger.debug("política previa de %s ilegible", pool_id, exc_info=True)
+    return []
 
 
 def _verify_timestamp_freshness(timestamp_str: str) -> None:

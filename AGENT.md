@@ -14,10 +14,12 @@ La motivación de diseño es deliberadamente política, no solo técnica: el sis
 
 ### 1.1 Relación con el algoritmo Bully
 
-El proyecto nace de una idea original: mejorar el algoritmo Bully (elección de coordinador por mayor ID) para sistemas muy amplios y con miembros lejanos, reemplazando el criterio arbitrario de ID por una **prueba de esfuerzo real**. Esa idea se aplica en dos lugares del sistema:
+El proyecto nace de una idea original: mejorar el algoritmo Bully (elección de coordinador por mayor ID) para sistemas muy amplios y con miembros lejanos, reemplazando el criterio arbitrario de ID por una **prueba de esfuerzo real**. Hoy esa idea se aplica en dos lugares del sistema:
 
-- **Gobierno:** ganar el derecho de promulgar/derogar una ley es, en esencia, "ganarle al resto" mediante esfuerzo, igual que el nodo Bully le gana al resto por ID.
-- **Sucesión del coordinador (NCT):** si el NCT cae, la elección del sucesor se resuelve con un mini-desafío de PoW entre los nodos candidatos, no por ID. Ver sección 6.
+- **Gobierno:** ganar el derecho de promulgar/derogar una ley es, en esencia, "ganarle al resto" mediante esfuerzo, igual que el nodo Bully le gana al resto por ID. Es la aplicación principal y la razón de ser del sistema.
+- **Coordinación de pools:** cuando un pool necesita decidir cuál de sus nodos coordina, el criterio también es esfuerzo — un mini-desafío de PoW, no el ID. Ver sección 4.2.
+
+**Dónde se aplicó y se dejó de aplicar:** la sucesión del NCT (sección 4.1) usó este mismo mecanismo y se lo quitó a propósito. Los NCT corren como réplicas homogéneas del mismo Deployment en GCP: entre ellas no hay ninguna ventaja de cómputo que la prueba de esfuerzo pudiera revelar, así que el PoW sólo agregaba latencia al failover y una elección que en la práctica ganaba cualquiera. Donde el Bully-por-esfuerzo sí dice algo es entre nodos **heterogéneos y voluntarios** —los mineros de un pool—, y ahí es donde quedó. Que la idea sobreviva en los pools y no en el NCT es un resultado del proyecto, no un descarte: muestra que el criterio de esfuerzo discrimina sólo cuando los candidatos son realmente desiguales.
 
 ---
 
@@ -31,10 +33,13 @@ El proyecto nace de una idea original: mejorar el algoritmo Bully (elección de 
 | **Nodo pool-de-pools** | Agregador de pools. El diseño es recursivo en teoría; la implementación fija 2 niveles (minero → pool → NCT). |
 | **NCT (Nodo Coordinador de Tareas)** | Gestiona exclusivamente las ventanas de votación. No arbitra contenido, no decide si una ley es "buena". |
 | **Ley** | Una propuesta de texto, identificada por hash, que puede promulgarse o derogarse. |
+| **Categoría / área de gobierno** | Tema al que pertenece una ley (`economia`, `salud`, `educacion`, `seguridad`, `ambiente`, `infraestructura`, `derechos`, `general`). La declara el autor al proponer y no cambia nunca. |
+| **Agenda (de un equipo)** | Conjunto de categorías sobre las que un equipo/pool decide votar. Vacía = vota todas. |
 | **Ventana de votación** | Período de tiempo durante el cual la red completa apunta su poder de cómputo a resolver el desafío de una única ley. |
 | **Desafío de esfuerzo** | Encontrar un nonce tal que el hash resultante tenga **n ceros** iniciales (promulgar) o **n+1 ceros** (derogar). |
 | **Cooldown** | Período de ventanas durante el cual un autor no puede proponer una nueva ley, tras proponer una. |
 | **Ley pendiente** | Ley cuya ventana cerró sin que nadie encontrara el nonce. Se descarta; se interpreta como pedido tácito de revisión. |
+| **Equipo** | Pool con nombre y dueño, con su propia agenda temática. Es la representación concreta de la "facción política" de 5/P5. |
 
 ---
 
@@ -97,13 +102,47 @@ Estas reglas son normativas. Cualquier implementación debe respetarlas exactame
 - La jerarquía es recursiva por diseño (pool-de-pools), pero la **implementación fija una profundidad de 2 niveles**: minero → pool → NCT. Se documenta en el informe que la arquitectura permite mayor profundidad, aunque no se prueba.
 - Dado que solo hay una ventana activa a la vez (3.3), un pool **no fragmenta su capacidad entre leyes distintas**: toda la red, en todo momento, apunta su poder de cómputo a la ventana en curso.
 
+### 3.10 Categorías de ley y agenda de los equipos
+
+- Toda ley pertenece a **exactamente una categoría**, elegida por su autor al proponer. Las categorías son un conjunto **cerrado**: `economia`, `salud`, `educacion`, `seguridad`, `ambiente`, `infraestructura`, `derechos`, `general`. Una categoría desconocida hace que la propuesta se **rechace** (400 en el API, descarte en el NCT); no se normaliza en silencio.
+- `general` es el valor por defecto, no un descarte: es donde caen la ley que no encaja en ningún área y todas las leyes anteriores a esta función.
+- La categoría es **inmutable**. En particular, una **derogación hereda la categoría de la ley original** y lo que declare quien propone derogar se ignora. Si el que deroga pudiera reetiquetar, elegiría el área donde su facción mina y la ajena no, y la asimetría n+1 dejaría de ser el único costo extra de derogar.
+- La categoría entra en el **mensaje firmado** de la propuesta (ver 5/P2 y `common/identity/signing.py`): nadie puede reetiquetar una ley ajena en tránsito para desviar qué equipos la minan. **No** entra en el `partial_hash_base`: el desafío se sigue serializando como `law_id + text_hash + voting_window_id + action`, porque el `law_id` ya identifica la ley y meter la categoría ahí obligaría a tocar el puente con el minero de Pilar 1 sin ganar integridad.
+- Cada **equipo declara su agenda**: las categorías a cuyas ventanas aporta cómputo. Agenda vacía = vota todas (el pool clásico, y el default). Con agenda declarada, cuando entra una ley de otra área **su coordinador no fragmenta el espacio de nonces**, y por lo tanto ni él ni ninguno de sus mineros suma un solo hash a esa ley.
+- La agenda sólo la cambia **quien fundó el equipo**. Es lo que el equipo es frente al resto de la red; si cualquier miembro pudiera reescribirla, se entraría a un equipo únicamente para desviarle el cómputo.
+- Un minero individual (`standalone`) puede declarar su propia agenda por entorno (`STANDALONE_CATEGORIES`). Sin ella mina toda ventana que pase.
+- **Consecuencia buscada:** una ley cuya área no vota nadie con capacidad suficiente **expira y se descarta** como cualquier ley pendiente (3.2). No es un error del sistema: es el resultado político de que las facciones elijan en qué gastan su esfuerzo.
+
 ---
 
-## 4. Tolerancia a fallos del NCT (Bully mejorado)
+## 4. Elección de coordinadores y tolerancia a fallos
 
-- Si el NCT actual cae, se ejecuta una variante del algoritmo Bully: en lugar de elegir sucesor por mayor ID, **los nodos candidatos resuelven un mini-desafío de PoW**, y quien lo resuelve primero asume como nuevo NCT.
-- **Candidatos:** cualquier nodo de la red puede postularse (no hay restricción a pools ni a nodos con antigüedad mínima).
+El sistema elige coordinadores en dos planos distintos, con criterios distintos y **a propósito**: el NCT por lease de Redis, los pools por prueba de esfuerzo. La diferencia no es histórica ni accidental — depende de si los candidatos son homogéneos o no.
+
+### 4.1 Sucesión del NCT (lease de Redis, sin PoW)
+
+- El NCT activo publica un **heartbeat periódico** en el exchange `nct.heartbeat`. Los standbys, que no consumen las colas de trabajo, lo escuchan.
+- Si un standby pasa `heartbeat_timeout` sin recibirlo, intenta adquirir el lease `nct:leader` en Redis (`elect_acquire_leadership`). Gana quien llega primero; el `dead_threshold` distingue un lease abandonado por un líder muerto de uno recién tomado por otro candidato.
+- **Candidatos:** sólo los NCT desplegados como standby, no cualquier nodo de la red. Son réplicas del mismo Deployment.
+- **No hay PoW ni cola de elección.** No existe una cola `nct_election`: el arbitraje es el lease de Redis y nada más. El PoW se quitó porque entre réplicas homogéneas del mismo Deployment no hay ventaja de cómputo que medir (ver 1.1); lo único que aportaba era retrasar el failover.
 - **Estado de la ventana en curso:** se pierde. No se persiste en Redis para este propósito. El nuevo NCT **siempre arranca con una ventana nueva**, incluso si había una en progreso al momento de la caída. Esto es una simplificación deliberada — el costo de cómputo ya invertido por los nodos en la ventana perdida se documenta como una limitación conocida, no se intenta mitigar.
+
+### 4.2 Coordinación de pools (Bully por esfuerzo)
+
+Acá sí sobrevive la idea original: los candidatos son mineros voluntarios y desiguales, así que el esfuerzo distingue. Hay **dos mecanismos**, para dos topologías que el sistema soporta a la vez:
+
+| | Equipo con dueño | Pool de infraestructura |
+|---|---|---|
+| Modo del worker | `pool-coordinator` / `pool-worker` | `pool-auto` |
+| Quién es coordinador | lo **designa una persona** al fundar el equipo (3.9, 3.10) | lo decide un **mini-PoW entre pares** |
+| Para qué sirve la elección | alta disponibilidad del coordinador designado | elegir uno donde no hay a quién designar |
+| Transporte del arbitraje | Redis | RabbitMQ (`pool.election`) |
+| Requiere Redis | sí | **no** |
+
+- El **equipo con dueño** es la cara de usuario del pool: una identidad funda el equipo, elige cuál de sus mineros coordina y con qué agenda temática vota (3.10). La elección por Redis no elige *quién* manda —eso ya lo decidió una persona— sino que garantiza que haya exactamente **un** coordinador vivo si el pod se reinicia.
+- El **pool de infraestructura** es un conjunto de nodos anónimos e intercambiables que escala solo (en el despliegue real, un Deployment con autoescalado). No hay nadie a quien designar ni momento en que designarlo, así que los nodos se auto-organizan: todos resuelven el mismo mini-desafío, el primero publica su solución y el resto la verifica y se le une como minero. Es el Bully del enunciado con esfuerzo en lugar de mayor ID.
+- **Árbitro compartido:** cuando hay Redis alcanzable, ambos mecanismos se disputan el mismo lease `pool:leader:<pool_id>`. Eligen distinto, pero no pueden terminar con dos coordinadores activos sobre el mismo pool: el que no consigue el lease se retira. Sin Redis, el pool de infraestructura arbitra solo por mensajes — no depender de Redis es justamente su ventaja para nodos federados.
+- **Limitación conocida:** el seed del mecanismo por RabbitMQ es `<pool_id>:<epoch>`, o sea **predecible**. Un candidato puede precalcular nonces de épocas futuras y ganar siempre, con lo que esa prueba de esfuerzo no prueba esfuerzo *reciente*. El mecanismo por Redis no lo sufre porque siembra con el último hash de la cadena, que no se puede anticipar. Mitigarlo en la variante sin Redis requiere una fuente de aleatoriedad compartida que no dependa de él.
 
 ---
 
@@ -117,16 +156,20 @@ Sin cambios respecto al enunciado base del TP: el minero GPU/CPU calcula hashes 
 
 **P1 (Validación):** el minero CUDA resuelve el desafío de gobierno (promulgar o derogar) en lugar de una transacción genérica. La dificultad (n o n+1) la define el NCT al abrir la ventana, no un ajuste dinámico por carga de red.
 
-**P2 (RabbitMQ):** tres flujos de mensajes:
+**P2 (RabbitMQ):** tres flujos de consenso, más los de coordinación y control:
 
 1. `propuesta → NCT`: cualquier nodo publica una ley nueva a la cola de propuestas.
-2. `NCT → red (tópico)`: al abrir una ventana, el NCT publica el desafío activo (`law_id`, `n_zeros`, `deadline`, `partial_hash_base`). Todos los nodos/pools suscritos lo reciben simultáneamente.
+2. `NCT → red (tópico)`: al abrir una ventana, el NCT publica el desafío activo (`law_id`, `n_zeros`, `deadline`, `partial_hash_base`, `action`, `category`). Todos los nodos/pools suscritos lo reciben simultáneamente. `category` viaja para que cada coordinador de equipo decida si la ventana entra en su agenda (3.10); **no** forma parte del `partial_hash_base`, así que el desafío que resuelve el minero de Pilar 1 no cambia.
 3. `red → NCT (cola de respuesta)`: el primer nodo/pool que encuentra el nonce válido publica la solución. El NCT verifica y descarta soluciones tardías para la misma ventana.
 
-Más dos flujos para el Bully distribuido (AGENT.md 4):
+Más dos flujos para la elección de coordinadores (AGENT.md 4):
 
-6. `NCT activo → backups (tópico, nct.heartbeat)`: heartbeat periódico del NCT primario. Los standbys suscritos detectan su ausencia.
-7. `backups → backups (cola, nct_election)`: claims de la elección distribuida. Los candidatos publican su nonce solución y el primero válido en Redis gana.
+4. `NCT activo → standbys (tópico, nct.heartbeat)`: heartbeat periódico del NCT primario. Los standbys suscritos detectan su ausencia y disparan el failover. **La elección del sucesor NO viaja por mensajería** — se resuelve con el lease de Redis (4.1), así que no existe ninguna cola `nct_election`.
+5. `pares del pool → pares del pool (tópico, pool.election)`: claims y heartbeats de la elección de coordinador en el pool de infraestructura (4.2). El candidato que resuelve el mini-PoW publica su nonce; el resto lo verifica y se le une como minero.
+
+Y uno de control, que no participa del consenso:
+
+6. `backend → worker (tópico, worker.command)`: órdenes al minero, hoy `switch_mode` y `stop`. Es el canal por el que el alta o baja de un equipo se hace efectiva en el worker, esté donde esté (incluido un clúster externo). No transporta ni leyes ni nonces.
 
 **P3 (Redis — estado de la cadena):** ver esquema en sección 7.
 
@@ -137,7 +180,7 @@ Más dos flujos para el Bully distribuido (AGENT.md 4):
 - **No** ajusta dificultad dinámicamente por carga de red (la dificultad es fija: n para promulgar, n+1 para derogar).
 - **No** arbitra contenido de las leyes.
 
-**P5 (Pool):** rol redefinido — ya no es solo infraestructura de escalado, es una **facción política**. Subdivide el espacio de nonces de la ventana activa entre los mineros que agrega. Recibe keep-alives para conocer capacidad disponible. Dado que solo hay una ventana activa a la vez, el pool no necesita lógica de distribución entre múltiples desafíos simultáneos — toda su capacidad apunta siempre al desafío vigente.
+**P5 (Pool):** rol redefinido — ya no es solo infraestructura de escalado, es una **facción política**, y su agenda temática (3.10) es lo que la hace tal: elige en qué áreas de ley gasta su esfuerzo y en cuáles se abstiene. Subdivide el espacio de nonces de la ventana activa entre los mineros que agrega **si y sólo si** la categoría de esa ventana está en su agenda. Recibe keep-alives para conocer capacidad disponible. Dado que solo hay una ventana activa a la vez, el pool no necesita lógica de distribución entre múltiples desafíos simultáneos — toda su capacidad apunta siempre al desafío vigente.
 
 ### Pilar 3 — Despliegue y pruebas
 
@@ -153,7 +196,8 @@ Preguntas de investigación para el informe (cualitativas, no requieren estudio 
 - Tiempo de promulgación con distinta cantidad de nodos participantes.
 - Diferencia de tiempo entre promulgar (n) y derogar (n+1) para la misma población de nodos.
 - Comportamiento del sistema cuando un pool grande compite contra muchos mineros individuales pequeños (observación cualitativa sobre concentración de poder, no medición estadística rigurosa).
-- Tiempo de recuperación tras una caída del NCT (Bully mejorado) y costo de la ventana perdida.
+- Tiempo de recuperación tras una caída del NCT (failover por lease, 4.1) y costo de la ventana perdida.
+- Tiempo que tarda un pool de infraestructura en reorganizarse tras perder su coordinador (Bully por esfuerzo, 4.2), y cómo cambia con la dificultad del mini-desafío.
 
 ---
 
@@ -179,6 +223,7 @@ Responde directamente al requisito de seguridad del TP ("Zero static keys", cred
 | `text_hash` | string | Hash SHA-256 del texto de la ley. |
 | `text_ref` | string (opcional) | Referencia a MinIO si se almacena el texto completo. |
 | `status` | enum | `pending_queue`, `in_window`, `promulgated`, `discarded`, `repealed`. |
+| `category` | enum | Área de gobierno (3.10). Inmutable; una derogación conserva la de la ley original. |
 | `created_at` | timestamp | Momento de la propuesta. |
 
 ### 7.2 Ventana de votación
@@ -188,6 +233,7 @@ Responde directamente al requisito de seguridad del TP ("Zero static keys", cred
 | `voting_window_id` | string | Identificador único de la ventana. |
 | `law_id` | string | Ley en disputa. |
 | `action` | enum | `promulgacion` \| `derogacion`. |
+| `category` | enum | Área de gobierno de la ley en disputa; copiada de la ley al abrir la ventana. |
 | `n_zeros_required` | int | n (promulgar) o n+1 (derogar). |
 | `opened_at` | timestamp | Apertura. |
 | `deadline` | timestamp | Cierre. |
@@ -259,8 +305,8 @@ Responde directamente al requisito de seguridad del TP ("Zero static keys", cred
                   │    (round-robin autor)   │
                   │  - abre/cierra ventana   │
                   │  - verifica nonce        │
-                  │  - Bully-por-esfuerzo si │
-                  │    el NCT activo cae     │
+                  │  - failover por lease    │
+                  │    Redis si el activo cae│
                   └───────────┬──────────────┘
                               │ bloque verificado
                               ▼
@@ -293,13 +339,16 @@ Responde directamente al requisito de seguridad del TP ("Zero static keys", cred
 - **Sybil:** el sistema no verifica identidad real. Un individuo puede generar múltiples claves y proponer/votar como si fuera varios. Mitigación futura (DNI) fuera de alcance.
 - **Pérdida de estado en falla del NCT:** la ventana en curso se pierde íntegramente al caer el NCT; el cómputo invertido por la red hasta ese momento no se aprovecha.
 - **Split-brain del NCT:** si una partición de red separa al NCT primario de los standbys sin que el primario falle realmente, ambos pueden operar como líderes simultáneamente. El primario verifica en cada tick que su liderazgo en Redis sigue vigente (`renew_leadership`), y si descubre que otro NCT adquirió el liderazgo, ejecuta `step_down()`. Esta detección no es instantánea; hay una ventana de solapamiento.
+- **Leyes sin electorado:** con agendas temáticas (3.10), una ley de un área que ningún equipo vota no reúne cómputo y expira. Está buscado —es la abstención hecha mecanismo— pero significa que la promulgación ya no depende sólo del esfuerzo total de la red sino de **cómo está repartido por área**. Un área desierta es, en la práctica, un veto silencioso.
 - **Concentración de poder:** el diseño favorece estructuralmente a pools grandes sobre mineros individuales, igual que las blockchains reales de PoW. No se mitiga — se documenta como observación de diseño y se discute cualitativamente en el informe, sin pretender un estudio estadístico riguroso de la distribución de poder computacional en la población (fuera de alcance del TP).
 
 ---
 
 ## 10. Convenciones para agentes de IA que trabajen en este repo
 
-- Usar esta terminología exacta en código y commits: `law` (no "proposal" ni "bill" salvo en comentarios aclaratorios), `voting_window`, `n_zeros_required`, `NCT`, `pool`, `cooldown`.
+- Usar esta terminología exacta en código y commits: `law` (no "proposal" ni "bill" salvo en comentarios aclaratorios), `voting_window`, `n_zeros_required`, `NCT`, `pool`, `cooldown`, `category` (el área de una ley) y `categories` / "agenda" (la selección de un equipo).
+- Las categorías son un conjunto cerrado definido en `common/blockchain/categories.py`. Agregar una implica tocar ese módulo y nada más: el API sirve la lista en `GET /api/laws/categories` y el frontend la consume desde ahí. No duplicar la lista en otro lado.
+- La categoría va **en el mensaje firmado** de la propuesta y **fuera** del `partial_hash_base`. Cambiar cualquiera de las dos cosas rompe compatibilidad con los clientes existentes (frontend, `scripts/propose_law.py`, generador de estrés); si hace falta, cambiarlos en el mismo commit.
 - La dificultad es fija: `n` para promulgar, `n+1` para derogar. Está demostrado (ver sección 11) que cualquier intento de ajuste dinámico autónomo es gameable o requiere una complejidad excesiva. El ajuste se realiza externamente (operador humano o Pilar 3) con conocimiento de la población de mineros.
 - No implementar verificación de identidad real (DNI, OAuth, etc.) sin discusión explícita — está documentado como fuera de alcance.
 - Cualquier nuevo tipo de mensaje en RabbitMQ debe respetar los flujos descritos en la sección 5 (Pilar 2 / P2). Si se necesita un nuevo flujo, documentarlo acá antes de implementarlo.
@@ -353,7 +402,7 @@ Esto es consistente con la filosofía del sistema: VoxChain no pretende ser just
 
 ### 11.4 Split-brain del NCT
 
-El Bully distribuido (sección 4) mitiga la caída del NCT pero introduce un riesgo de split-brain si el primario no cae realmente sino que sufre una partición de red.
+El failover del NCT (sección 4.1) mitiga su caída pero introduce un riesgo de split-brain si el primario no cae realmente sino que sufre una partición de red.
 
 **Mecanismo de detección:** en cada `tick()`, el NCT primario verifica que su liderazgo en Redis sigue vigente mediante `renew_leadership()`. Si la operación falla (porque otro NCT adquirió el lock), ejecuta `step_down()`:
 

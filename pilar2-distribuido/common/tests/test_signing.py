@@ -35,6 +35,34 @@ def test_mensaje_alterado_falla():
     assert verify(pub, tampered, sig) is False
 
 
+def test_recategorizar_la_ley_invalida_la_firma():
+    """La categoría está bajo la firma del autor (AGENT.md 3.10).
+
+    Es lo que impide que un intermediario reetiquete una ley ajena: cambiarle el
+    área cambia qué equipos aportan cómputo, así que sacarla de "economia" y
+    ponerla en un área sin equipos la condena a expirar sin que nadie lo note.
+    """
+    priv, pub = _keypair()
+    msg = proposal_message(pub, "promulgacion", "h1", "L1", "t0", "economia")
+    sig = sign(priv, msg)
+    assert verify(pub, msg, sig) is True
+
+    recategorizada = proposal_message(pub, "promulgacion", "h1", "L1", "t0", "salud")
+    assert verify(pub, recategorizada, sig) is False
+
+
+def test_la_categoria_por_defecto_es_explicita_en_el_mensaje():
+    """Omitirla y decir "general" tienen que dar el mismo mensaje.
+
+    El cliente que no ofrece elegir área firma sin categoría; el servidor la
+    resuelve como "general" antes de verificar. Si los dos mensajes no fueran
+    idénticos, toda propuesta sin área declarada fallaría la verificación.
+    """
+    _, pub = _keypair()
+    assert (proposal_message(pub, "promulgacion", "h1", "L1", "t0")
+            == proposal_message(pub, "promulgacion", "h1", "L1", "t0", "general"))
+
+
 def test_otra_pubkey_falla():
     priv, _ = _keypair()
     _, other_pub = _keypair()

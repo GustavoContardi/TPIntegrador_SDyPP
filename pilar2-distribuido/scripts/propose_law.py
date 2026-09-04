@@ -7,6 +7,7 @@ author_pubkey, que se deriva de la propia clave.
 
 Uso (firmado, recomendado):
     python scripts/propose_law.py --text "Texto de la ley" --privkey id_ec.pem
+    python scripts/propose_law.py --text "..." --category economia --privkey id_ec.pem
     python scripts/propose_law.py --law-id ley-x --action derogacion --privkey id_ec.pem
 
 Uso legacy (sin firma; sólo si REQUIRE_SIGNATURES está desactivado):
@@ -26,7 +27,12 @@ import uuid
 from datetime import datetime, timezone
 
 from common import config
-from common.blockchain import ACTION_PROMULGACION, compress_text
+from common.blockchain import (
+    ACTION_PROMULGACION,
+    VALID_CATEGORIES,
+    compress_text,
+    validate_category,
+)
 from common.identity import proposal_message, public_key_b64, sign
 from common.messaging import build_rabbitmq
 
@@ -51,7 +57,13 @@ def main() -> None:
                     help="id de la ley (obligatorio para derogación)")
     ap.add_argument("--action", default=ACTION_PROMULGACION,
                     choices=["promulgacion", "derogacion"])
+    ap.add_argument("--category", default="general", choices=list(VALID_CATEGORIES),
+                    help="área de gobierno de la ley; decide qué equipos la minan")
     args = ap.parse_args()
+
+    # Se valida acá y no en el NCT para que el error se vea al tipear el comando
+    # y no dentro de un log del coordinador diez segundos después.
+    category = validate_category(args.category)
 
     if not args.privkey and not args.author:
         ap.error("hace falta --privkey (firmado) o --author (legacy sin firma)")
@@ -80,10 +92,12 @@ def main() -> None:
         "text_original_len": text_original_len,
         "created_at": created_at,
         "action": args.action,
+        "category": category,
     }
 
     if private_key is not None:
-        msg = proposal_message(author, args.action, text_hash, law_id, created_at)
+        msg = proposal_message(author, args.action, text_hash, law_id, created_at,
+                               category)
         law["signature"] = sign(private_key, msg)
 
     messaging = build_rabbitmq(config.RABBITMQ_URL)

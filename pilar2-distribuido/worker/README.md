@@ -16,7 +16,7 @@ El worker soporta **cuatro modos** intercambiables en caliente vía hot-switch:
 | Standalone | `standalone` (default) | Topic `desafio_activo` del NCT | Completo `[0, NONCE_SPACE)` | NCT (`respuesta_nonce`) |
 | Pool-coordinator | `pool-coordinator` | Topic `desafio_activo` del NCT (fragmenta internamente) | Fragmenta y reparte + auto-mina | NCT (`respuesta_nonce`) |
 | Pool-worker | `pool-worker` | HTTP al Pool Coordinator | Fragmento del coordinator | Pool Coordinator |
-| Pool-auto | `pool-auto` | Elección bully por mini-PoW; el ganador coordina y el resto mina | Según el rol que le toque | NCT o coordinator |
+| Pool-auto | `pool-auto` | Elección bully por mini-PoW (RabbitMQ); el ganador coordina y el resto mina | Según el rol que le toque | NCT o coordinator |
 
 > **Desde la UI los modos de pool no se eligen sueltos: se eligen creando o
 > uniéndose a un equipo.** `POST /api/workers/{id}/switch-mode` sólo acepta
@@ -27,13 +27,26 @@ El worker soporta **cuatro modos** intercambiables en caliente vía hot-switch:
 ### Standalone mode
 Se suscribe directo al exchange `desafio_activo` del NCT. Mina el **espacio
 completo de nonces** y publica el resultado directamente al NCT. Filtra leyes
-según `STANDALONE_REJECTED_ACTIONS` — el usuario decide qué leyes votar.
+según `STANDALONE_REJECTED_ACTIONS` (por acción) y `STANDALONE_CATEGORIES` (por
+área de gobierno) — el usuario decide qué leyes votar.
 
 ### Pool-coordinator mode
 El worker actúa como líder de un pool: se suscribe al `desafio_activo`, aplica
-la `voting_policy`, **fragmenta el espacio de nonces**, distribuye fragmentos a
-workers conectados vía HTTP, y también **auto-mina** sus propios fragmentos.
-Usa Redis para liderazgo (HA del pool coordinator).
+la `voting_policy` (agenda temática + veto por acción/ley), **fragmenta el
+espacio de nonces**, distribuye fragmentos a workers conectados vía HTTP, y
+también **auto-mina** sus propios fragmentos. Usa Redis para liderazgo (HA del
+pool coordinator) y para releer su política, que el backend deja en
+`pool:policy:<pool_id>` cuando el dueño del equipo cambia la agenda.
+
+### Pool-auto mode
+N workers intercambiables del mismo `POOL_ID` compiten por un mini-PoW vía
+RabbitMQ; el ganador arranca un Pool Coordinator y el resto se le une por HTTP.
+**No necesita Redis** —ésa es su ventaja para nodos federados— pero si lo hay, su
+coordinador toma el lease `pool:leader:<POOL_ID>`, el mismo que usa el modo
+`pool-coordinator`. Así las dos elecciones, que eligen por transportes distintos,
+comparten un único árbitro final: un pool mixto no puede quedar con dos
+coordinadores activos, porque el que no consigue el lease se retira a candidato.
+Ver `docs/workers.md` §5 y §7/B.
 
 ### Pool-worker mode
 Se conecta vía HTTP a un Pool Coordinator. Delega la **decisión de voto** al
@@ -43,14 +56,19 @@ si la ley es aceptada. El minero no elige qué minar. No usa RabbitMQ.
 ## Votación y autonomía
 
 - Los mineros dentro de un **pool** delegan el sentido de voto al dueño del pool.
-  Si el dueño rechaza una ley vía `POST /pool/policy`, el pool coordinator no
-  distribuye trabajo para esa ley y los mineros nunca la procesan. El rechazo
-  puede ser por `action` (`promulgacion`/`derogacion`), por un `law_id`
-  puntual, o ambos a la vez (`_check_voting_policy`,
-  `pool_coordinator/coordinator.py:216-226`). Desde la UI (Workers →
-  Configure Policy) se puede fijar cualquiera de las dos combinaciones.
+  Si el dueño rechaza una ley, el pool coordinator no distribuye trabajo para
+  esa ley y los mineros nunca la procesan — no hace falta avisarle a cada
+  minero, porque sólo pueden trabajar sobre los fragmentos que el coordinador
+  reparte. Hay dos filtros independientes en `_check_voting_policy`:
+  - **Agenda temática** (`categories`, AGENT.md 3.10): las áreas de ley a cuyas
+    ventanas el equipo aporta cómputo. Vacía = todas. La elige el fundador del
+    equipo desde la UI (Mineros → Equipos → Cambiar) y el backend la baja a
+    `pool:policy:<pool_id>`, que el coordinador relee en cada tick.
+  - **Veto puntual** (`decision: reject` por `action` y/o `law_id`), que se fija
+    desde Workers → Configure Policy o con `POST /pool/policy`.
 - Los mineros en modo **standalone** deciden por sí mismos qué leyes minar
-  mediante la variable `STANDALONE_REJECTED_ACTIONS`.
+  mediante `STANDALONE_REJECTED_ACTIONS` (por acción) y `STANDALONE_CATEGORIES`
+  (por área; vacía = mina todo).
 - En cualquier momento un minero puede cambiar de modo mediante hot-switch
   sin reiniciar el contenedor.
 

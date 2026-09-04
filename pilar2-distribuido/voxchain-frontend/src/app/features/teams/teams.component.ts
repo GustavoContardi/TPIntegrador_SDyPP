@@ -8,6 +8,11 @@ import { MatInputModule } from '@angular/material/input';
 import { MatSelectModule } from '@angular/material/select';
 import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { ApiService } from '../../core/services/api.service';
+import {
+  LAW_CATEGORIES,
+  LawCategory,
+  categoryLabel,
+} from '../../core/models/law.model';
 import { IdentityService } from '../../core/services/identity.service';
 import {
   Team,
@@ -28,6 +33,11 @@ import {
  * Es un componente presentacional en cuanto a los datos —los recibe por input y
  * avisa con `changed` cuando hay que recargarlos— pero sí ejecuta las acciones
  * (crear, unirse, salir, disolver), porque son suyas y no del contenedor.
+ *
+ * Acá también se elige la **agenda** del equipo: las áreas de ley que vota. No es
+ * una preferencia de visualización — con agenda declarada, el coordinador ignora
+ * las ventanas de otras áreas y el equipo entero deja de aportar cómputo a esas
+ * leyes (AGENT.md 3.10).
  */
 @Component({
   selector: 'app-teams',
@@ -54,6 +64,8 @@ import {
             Un equipo reparte el espacio de nonces entre todos sus mineros: cada uno
             barre un tramo distinto y el trabajo se divide de verdad. Minar por cuenta
             propia es competir contra toda la red haciendo el mismo cálculo que todos.
+            Además elige <strong>qué áreas de ley vota</strong>: sólo aporta cómputo a
+            las ventanas de esas áreas.
           </p>
         </div>
         <button mat-raised-button color="accent"
@@ -103,6 +115,23 @@ import {
             <input matInput [(ngModel)]="newWorkerId" placeholder="Ej: minero-gustavo-1">
             <mat-hint>Se registra a tu nombre y se despliega en el clúster</mat-hint>
           </mat-form-field>
+
+          <div class="agenda-picker">
+            <p class="agenda-title">¿Qué áreas de ley vota el equipo?</p>
+            <p class="agenda-help">
+              Sin elegir ninguna vota todas. Si elegís algunas, cuando entre una ley
+              de otra área tu equipo no va a aportar un solo hash.
+            </p>
+            <div class="chips">
+              <button type="button" class="chip"
+                      *ngFor="let c of categories()"
+                      [class.on]="newCategories().includes(c.value)"
+                      (click)="toggleNew(c.value)">
+                {{ c.label }}
+              </button>
+            </div>
+            <p class="agenda-summary">{{ agendaSummary(newCategories()) }}</p>
+          </div>
         </mat-card-content>
         <mat-card-actions class="actions">
           <button mat-button (click)="creating.set(false)">Cancelar</button>
@@ -123,6 +152,16 @@ import {
           </mat-card-subtitle>
         </mat-card-header>
         <mat-card-content>
+          <p class="hint agenda-warning">
+            <ng-container *ngIf="team.categories?.length; else minaTodo">
+              Ojo: este equipo sólo vota
+              <strong>{{ labels(team.categories) }}</strong>. Tu minero va a quedarse
+              quieto en las ventanas de otras áreas.
+            </ng-container>
+            <ng-template #minaTodo>
+              Este equipo vota todas las áreas: tu minero va a trabajar en cada ventana.
+            </ng-template>
+          </p>
           <mat-form-field appearance="outline" class="full-width"
                           *ngIf="freeWorkers().length > 0">
             <mat-label>Minero a sumar</mat-label>
@@ -176,6 +215,40 @@ import {
                 <span class="stat-value">{{ team.miners_connected }}</span>
                 <span class="stat-label">con keep-alive</span>
               </div>
+            </div>
+          </div>
+
+          <div class="agenda-row">
+            <span class="agenda-label">Vota</span>
+            <span class="chips-static" *ngIf="team.categories?.length; else votaTodo">
+              <span class="category-chip" *ngFor="let c of team.categories">{{ label(c) }}</span>
+            </span>
+            <ng-template #votaTodo>
+              <span class="category-chip all">todas las áreas</span>
+            </ng-template>
+            <button mat-button class="edit-agenda"
+                    *ngIf="isMyTeam(team) && editing() !== team.team_id"
+                    (click)="openAgenda(team)">
+              Cambiar
+            </button>
+          </div>
+
+          <div class="agenda-picker inline" *ngIf="editing() === team.team_id">
+            <div class="chips">
+              <button type="button" class="chip"
+                      *ngFor="let c of categories()"
+                      [class.on]="editCategories().includes(c.value)"
+                      (click)="toggleEdit(c.value)">
+                {{ c.label }}
+              </button>
+            </div>
+            <p class="agenda-summary">{{ agendaSummary(editCategories()) }}</p>
+            <div class="agenda-actions">
+              <button mat-button (click)="editing.set(null)">Cancelar</button>
+              <button mat-raised-button color="accent"
+                      (click)="saveAgenda(team)" [disabled]="busy()">
+                {{ busy() ? 'Guardando…' : 'Guardar agenda' }}
+              </button>
             </div>
           </div>
 
@@ -244,9 +317,10 @@ import {
     .stat-value { display: block; font-size: 1.4rem; color: #90caf9; font-weight: 600; line-height: 1; }
     .stat-label { display: block; font-size: 0.7rem; color: #777; margin-top: 4px; }
 
-    .roster { list-style: none; padding: 0; margin: 18px 0 0; border-top: 1px solid #2a2a2a; }
+    .roster { list-style: none; padding: 0; margin: 18px 0 0; }
     .roster li { display: flex; align-items: center; gap: 8px; padding: 10px 0; border-bottom: 1px solid #222; font-size: 0.85rem; flex-wrap: wrap; }
-    .role { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; color: #81c784; background: rgba(76,175,80,0.12); padding: 2px 7px; border-radius: 4px; }
+    .role, .agenda-label { text-transform: uppercase; letter-spacing: 0.04em; }
+    .role { font-size: 0.7rem; color: #81c784; background: rgba(76,175,80,0.12); padding: 2px 7px; border-radius: 4px; }
     .role.coord { color: #ffb74d; background: rgba(255,152,0,0.12); }
 
     code { font-family: 'Courier New', monospace; color: #90caf9; background: #0c0c0c; padding: 3px 7px; border-radius: 4px; border: 1px solid #222; }
@@ -257,6 +331,25 @@ import {
     .dot.online { background: #81c784; }
     .state { color: #888; font-size: 0.8rem; }
     .team-actions { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+
+    /* Una sola línea divisoria para todo lo que separa bloques dentro de la tarjeta. */
+    .roster, .agenda-picker.inline, .agenda-row { border-top: 1px solid #2a2a2a; }
+    .agenda-picker { margin-top: 16px; }
+    .agenda-picker.inline { padding-top: 14px; }
+    .agenda-title { color: #e0e0e0; margin: 0 0 4px; font-size: 0.95rem; }
+    .agenda-help { color: #888; margin: 0 0 10px; font-size: 0.85rem; line-height: 1.5; }
+    .chips, .chips-static { display: flex; flex-wrap: wrap; gap: 8px; }
+    .chip { background: transparent; color: #b0b0b0; border: 1px solid #444; border-radius: 14px;
+            padding: 4px 12px; font-size: 0.8rem; cursor: pointer; font-family: inherit; }
+    .chip:hover { border-color: #888; color: #e0e0e0; }
+    .chip.on { background: rgba(144,202,249,0.15); color: #90caf9; border-color: rgba(144,202,249,0.5); }
+    .agenda-summary { color: #777; font-size: 0.8rem; margin: 10px 0 0; }
+    .agenda-warning { margin: 0 0 12px; }
+    .agenda-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+    .agenda-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+                  margin-top: 14px; padding-top: 12px; }
+    .agenda-label { font-size: 0.75rem; color: #777; }
+    .edit-agenda { font-size: 0.75rem !important; min-width: auto !important; padding: 0 8px !important; }
 
     ::ng-deep .mat-mdc-form-field { --mdc-outlined-text-field-outline-color: #444; --mdc-outlined-text-field-label-text-color: #888; }
     ::ng-deep .mat-mdc-select-value, ::ng-deep .mat-mdc-input-element { color: #e0e0e0; }
@@ -279,6 +372,79 @@ export class TeamsComponent {
   newTeamName = signal('');
   coordinatorWorkerId = signal('');
   newWorkerId = signal('');
+  /** Agenda que se está eligiendo al fundar. Vacía = vota todas. */
+  newCategories = signal<string[]>([]);
+
+  /** Equipo cuya agenda se está editando ahora, si hay alguno. */
+  editing = signal<string | null>(null);
+  editCategories = signal<string[]>([]);
+
+  /** Áreas conocidas; la lista local se usa hasta que responde el backend. */
+  categories = signal<LawCategory[]>(LAW_CATEGORIES);
+
+  constructor() {
+    this.api.getLawCategories().subscribe({
+      next: (cats) => { if (cats?.length) this.categories.set(cats); },
+      error: () => {},  // nos quedamos con las etiquetas locales
+    });
+  }
+
+  label(category: string): string {
+    return categoryLabel(category, this.categories());
+  }
+
+  labels(categories: string[]): string {
+    return categories.map((c) => this.label(c)).join(', ');
+  }
+
+  /** Frase que dice, en criollo, qué implica la agenda elegida. */
+  agendaSummary(selected: string[]): string {
+    if (!selected.length) {
+      return 'Sin áreas elegidas: el equipo mina toda ventana que se abra.';
+    }
+    const nombres = selected.map((c) => this.label(c)).join(', ');
+    return `El equipo sólo va a minar leyes de: ${nombres}. Las demás las deja pasar.`;
+  }
+
+  private toggle(current: string[], value: string): string[] {
+    return current.includes(value)
+      ? current.filter((c) => c !== value)
+      : [...current, value];
+  }
+
+  toggleNew(value: string) {
+    this.newCategories.set(this.toggle(this.newCategories(), value));
+  }
+
+  toggleEdit(value: string) {
+    this.editCategories.set(this.toggle(this.editCategories(), value));
+  }
+
+  openAgenda(team: Team) {
+    this.editing.set(team.team_id);
+    this.editCategories.set([...(team.categories ?? [])]);
+  }
+
+  saveAgenda(team: Team) {
+    this.busy.set(true);
+    this.api.setTeamCategories(team.team_id, this.editCategories()).subscribe({
+      next: (updated) => {
+        this.snack.open(
+          updated.categories.length
+            ? `"${team.name}" ahora vota ${updated.categories.map((c) => this.label(c)).join(', ')}.`
+            : `"${team.name}" vuelve a votar todas las áreas.`,
+          'Cerrar', { duration: 4000 });
+        this.editing.set(null);
+        this.busy.set(false);
+        this.changed.emit();
+      },
+      error: (err) => {
+        this.snack.open('No se pudo cambiar la agenda: ' + this.detail(err),
+          'Cerrar', { duration: 5000 });
+        this.busy.set(false);
+      },
+    });
+  }
 
   joining = signal<Team | null>(null);
   joinWorkerId = signal('');
@@ -329,6 +495,7 @@ export class TeamsComponent {
     this.creating.set(true);
     this.newTeamName.set('');
     this.newWorkerId.set('');
+    this.newCategories.set([]);
     const free = this.freeWorkers();
     this.coordinatorWorkerId.set(free.length ? free[0].worker_id : '__new__');
   }
@@ -355,7 +522,7 @@ export class TeamsComponent {
         workerId = this.coordinatorWorkerId();
       }
 
-      this.api.createTeam(name, workerId, registration).subscribe({
+      this.api.createTeam(name, workerId, this.newCategories(), registration).subscribe({
         next: (team) => {
           this.snack.open(
             `Equipo "${team.name}" fundado. ${workerId} pasa a coordinarlo.`,

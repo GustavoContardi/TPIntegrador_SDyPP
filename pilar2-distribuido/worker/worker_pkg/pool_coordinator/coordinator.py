@@ -3,6 +3,13 @@
 Un pool es una organización que agrega mineros voluntarios. Desde la perspectiva
 del NCT es indistinguible de un worker standalone. Internamente subdivide
 el espacio de nonces entre sus miners registrados (HTTP) y su propio auto-miner.
+
+Además es donde se hace efectiva la **agenda temática del equipo** (AGENT.md
+3.10): si la ventana en curso es de un área que el equipo no vota, el
+coordinador no fragmenta nada, y entonces ni él ni ninguno de sus mineros suma
+un solo hash a esa ley. Ése es todo el mecanismo — no hace falta avisarle a cada
+minero, porque los mineros sólo pueden trabajar en los fragmentos que el
+coordinador reparte.
 """
 
 from __future__ import annotations
@@ -15,7 +22,13 @@ from collections import deque
 from datetime import datetime, timezone
 from threading import Lock
 
+from common.blockchain.categories import (
+    covers_category,
+    normalize_category,
+    parse_categories,
+)
 from common.blockchain.challenge import prefix_for_zeros
+from worker_pkg.pool_coordinator.election import lease_key_for
 from common.metrics import (
     observe_challenge_latency,
     pool_is_leader,
@@ -30,6 +43,10 @@ from common.metrics import (
 log = logging.getLogger("voxchain.pool")
 
 KEEPALIVE_TTL = 15.0
+
+# Sin agenda declarada el pool vota todas las ventanas: es el pool clásico, y
+# tiene que seguir siendo el comportamiento por defecto (AGENT.md 3.10).
+_DEFAULT_POLICY = {"decision": "accept", "categories": []}
 
 
 def fragment_range(start: int, end: int, fragment_size: int) -> list[tuple[int, int]]:
@@ -49,8 +66,9 @@ class PoolCoordinator:
     def __init__(self, messaging, *, pool_id: str, redis=None, mine,
                  capacity: int = 1, clock=time.time,
                  keepalive_interval: float = 5.0,
-                 lease_ttl: int = 10, lease_key: str = "pool:leader",
+                 lease_ttl: int = 10, lease_key: str | None = None,
                  election_n_zeros: int | None = None,
+                 elect_leader: bool = True, on_lost_leadership=None,
                  signer=None):
         self.m = messaging
         self.pool_id = pool_id
@@ -61,15 +79,33 @@ class PoolCoordinator:
         self.now = clock
         self.keepalive_interval = keepalive_interval
         self.lease_ttl = lease_ttl
-        self.lease_key = lease_key
+        # Un lease **por pool**: el lease dice "yo soy el coordinador vivo de
+        # ESTE pool", no "yo soy el único pool de la red". Con la clave global
+        # que había antes, el primer equipo que arrancaba se quedaba con ella y
+        # los coordinadores de los demás equipos nunca lograban tomar la suya —
+        # se quedaban sin emitir keepalive y sin aparecer en las métricas.
+        self.lease_key = lease_key or lease_key_for(pool_id)
         self._miners: dict[str, dict] = {}
         self._pending_fragments: deque[dict] = deque()
         self._lock = Lock()
         self._solved: set[str] = set()
-        self._voting_policy = {"decision": "accept"}
+        # La agenda real la baja el backend a `pool:policy:<pool_id>` cuando el
+        # dueño del equipo la elige, y se relee en cada tick.
+        self._voting_policy = dict(_DEFAULT_POLICY)
         self._last_keepalive = 0.0
         self._last_lease_renew = 0.0
-        self.is_leader = (redis is None)  # bully decide, no Redis
+        # ¿Quién decide si este coordinador manda?
+        #
+        # - `elect_leader=True` (modo `pool-coordinator`): lo decide la elección
+        #   por Redis de `election.py`. Arrancamos como follower y competimos.
+        # - `elect_leader=False` (modo `pool-auto`): **ya lo decidió el bully por
+        #   RabbitMQ**. Arrancamos mandando y no corremos ninguna elección propia,
+        #   pero igual sostenemos el lease en Redis: es lo que hace que los dos
+        #   mecanismos se vean entre sí en vez de coordinar el mismo pool a la vez.
+        # - Sin Redis alcanzable, mandamos y no hay nada que sostener.
+        self.elect_leader = elect_leader
+        self._on_lost_leadership = on_lost_leadership
+        self.is_leader = (redis is None) or not elect_leader
         self._miner_counter = 0
         self._running = False
         self._auto_miner_thread: threading.Thread | None = None
@@ -121,7 +157,20 @@ class PoolCoordinator:
         self.is_leader = False
         pool_is_leader.set(0)
         pool_miners_registered.set(0)
-        log.warning("pool coordinator %s perdió liderazgo", self.pool_id)
+        log.warning("pool coordinator %s perdió el lease %s: lo tiene %s",
+                    self.pool_id, self.lease_key, current)
+        # Avisar a quien nos arrancó. Con la elección por Redis alcanza con dejar
+        # de emitir keepalive (el tick se encarga), pero con arbitraje externo
+        # (bully) el dueño tiene que enterarse: si no, sigue creyéndose
+        # coordinador, sirviendo HTTP y fragmentando en paralelo al que sí tiene
+        # el lease. Ése era justamente el caso de "dos coordinadores del mismo
+        # pool sin que ninguno lo detecte".
+        if self._on_lost_leadership is not None:
+            try:
+                self._on_lost_leadership()
+            except Exception:  # noqa: BLE001
+                log.exception("pool %s: error avisando la pérdida de liderazgo",
+                              self.pool_id)
         return False
 
     def register_miner(self, capacity: int = 1, has_gpu: bool = False) -> str:
@@ -172,6 +221,7 @@ class PoolCoordinator:
                 "voting_window_id": fragment["voting_window_id"],
                 "law_id": fragment.get("law_id"),
                 "action": fragment.get("action"),
+                "category": fragment.get("category"),
                 "partial_hash_base": fragment["partial_hash_base"],
                 "n_zeros_required": fragment.get("n_zeros_required"),
                 "range_min": fragment["range_min"],
@@ -230,18 +280,33 @@ class PoolCoordinator:
         decision = policy.get("decision", "accept")
         if decision not in ("accept", "reject"):
             raise ValueError(f"decision inválida: {decision}")
+        policy = dict(policy)
+        # Las categorías desconocidas se descartan en vez de tirar: la política
+        # puede venir de un backend más nuevo que este worker, y quedarse sin
+        # minar por un slug que no reconocemos sería peor que ignorarlo.
+        policy["categories"] = parse_categories(policy.get("categories"))
         self._voting_policy = policy
         log.info("pool %s política de voto: %s", self.pool_id, policy)
 
+    def voting_categories(self) -> list[str]:
+        """Agenda vigente del pool; vacía significa "vota todas"."""
+        return parse_categories(self._voting_policy.get("categories"))
+
     def _check_voting_policy(self, challenge: dict) -> bool:
         policy = self._voting_policy
-        if policy["decision"] == "accept":
+        # Primero la agenda temática: es la decisión política del equipo y no
+        # depende de `decision`, que sigue siendo el veto puntual de siempre
+        # (rechazar todas las derogaciones, o una ley concreta).
+        if not covers_category(policy.get("categories"),
+                               challenge.get("category")):
+            return False
+        if policy.get("decision", "accept") == "accept":
             return True
         if policy.get("action") and challenge.get("action") == policy["action"]:
             return False
         if policy.get("law_id") and challenge.get("law_id") == policy["law_id"]:
             return False
-        if "action" not in policy and "law_id" not in policy:
+        if not policy.get("action") and not policy.get("law_id"):
             return False
         return True
 
@@ -261,8 +326,10 @@ class PoolCoordinator:
             except (ValueError, TypeError):
                 pass
         if not self._check_voting_policy(challenge):
-            log.info("pool %s rechaza ventana %s por política de voto",
-                     self.pool_id, wid)
+            log.info("pool %s no aporta cómputo a la ventana %s (categoría %s, "
+                     "agenda %s)", self.pool_id, wid,
+                     normalize_category(challenge.get("category")),
+                     self.voting_categories() or "todas")
             return
         observe_challenge_latency(challenge, self.now())
         worker_tasks_received_total.inc()
@@ -285,6 +352,7 @@ class PoolCoordinator:
                     "voting_window_id": wid,
                     "law_id": challenge.get("law_id"),
                     "action": challenge.get("action"),
+                    "category": normalize_category(challenge.get("category")),
                     "partial_hash_base": challenge["partial_hash_base"],
                     "n_zeros_required": challenge.get("n_zeros_required"),
                     "range_min": rmin,
@@ -344,8 +412,33 @@ class PoolCoordinator:
         self._auto_miner_thread = threading.Thread(target=self._auto_mine_loop, daemon=True)
         self._auto_miner_thread.start()
 
+    def release_leadership(self) -> None:
+        """Suelta el lease al dejar de coordinar, en vez de esperar el TTL.
+
+        Sin esto, un coordinador que se apaga ordenadamente deja su pool sin
+        nadie durante lo que queda del TTL (hasta 10 s) aunque haya un sucesor
+        listo. Sólo borra la clave **si es nuestra**: entre el GET y el DELETE
+        hay una ventana mínima en la que el lease podría haber cambiado de dueño,
+        acotada por el propio TTL y muy preferible a no soltarlo nunca.
+        """
+        if self.redis is None or not self.is_leader:
+            return
+        try:
+            current = self.redis.get(self.lease_key)
+            if isinstance(current, bytes):
+                current = current.decode("utf-8")
+            if current == self.pool_id:
+                self.redis.delete(self.lease_key)
+                log.info("pool %s soltó el lease %s", self.pool_id, self.lease_key)
+        except Exception:  # noqa: BLE001
+            log.debug("no se pudo soltar el lease %s", self.lease_key, exc_info=True)
+        finally:
+            self.is_leader = False
+            pool_is_leader.set(0)
+
     def stop(self) -> None:
         self._running = False
+        self.release_leadership()
         if self._auto_miner_thread:
             self._auto_miner_thread.join(timeout=5)
             self._auto_miner_thread = None
@@ -383,26 +476,56 @@ class PoolCoordinator:
         self._election_thread = t
         t.start()
 
+    def _sync_voting_policy(self) -> None:
+        """Relee la política de voto que el backend dejó en Redis.
+
+        Se normaliza **antes** de comparar con la vigente: si comparáramos el
+        JSON crudo, un orden distinto de categorías o un ``decision`` implícito
+        harían parecer que cambió en cada tick y ensuciarían el log cada 3 s.
+        """
+        try:
+            import json
+
+            raw = self.redis.get(f"pool:policy:{self.pool_id}")
+            if not raw:
+                # Sin clave = sin agenda. Volvemos al default en vez de conservar
+                # la última que vimos: borrar la clave es la forma obvia de decir
+                # "este pool ya no tiene agenda", y quedarnos con la vieja dejaba
+                # al coordinador filtrando por algo que ya nadie pidió.
+                if self._voting_policy != _DEFAULT_POLICY:
+                    log.info("pool %s: sin política en Redis, vuelvo a votar todo",
+                             self.pool_id)
+                    self._voting_policy = dict(_DEFAULT_POLICY)
+                return
+            if isinstance(raw, bytes):
+                raw = raw.decode("utf-8")
+            policy = json.loads(raw)
+            if not isinstance(policy, dict):
+                return
+            policy = dict(policy)
+            policy.setdefault("decision", "accept")
+            policy["categories"] = parse_categories(policy.get("categories"))
+            if policy != self._voting_policy:
+                self.set_voting_policy(policy)
+        except Exception:  # noqa: BLE001
+            log.debug("no se pudo leer pool:policy:%s", self.pool_id, exc_info=True)
+
     def tick(self) -> None:
         now = self.now()
         self._purge_stale_miners()
 
         # Recoger resultado de elección completada (solo si Redis disponible)
         if self.redis is not None:
-            # Sincronizar política de voto desde Redis
-            if self.is_leader:
-                try:
-                    policy_data = self.redis.get(f"pool:policy:{self.pool_id}")
-                    if policy_data:
-                        import json
-                        policy = json.loads(policy_data)
-                        if policy != self._voting_policy:
-                            self._voting_policy = policy
-                            log.info("pool %s cargó política de voto actualizada desde Redis: %s", self.pool_id, policy)
-                except Exception:
-                    pass
+            # Sincronizar política de voto desde Redis. NO se condiciona al
+            # liderazgo: `pool:policy:<pool_id>` es de este pool, y quien decide
+            # si se fragmenta una ventana es `handle_challenge`, que tampoco mira
+            # el lease. Gatearlo por is_leader dejaba a un coordinador sin lease
+            # minando con la agenda por defecto (todas las categorías) en vez de
+            # con la que su equipo eligió.
+            self._sync_voting_policy()
 
-            if (not self.is_leader
+            if (self.elect_leader
+                    and not self.is_leader
                     and self._election_thread is not None
                     and not self._election_thread.is_alive()):
                 if self._election_result:
@@ -417,7 +540,7 @@ class PoolCoordinator:
                 if self.is_leader:
                     if not self.renew_leadership():
                         return
-                else:
+                elif self.elect_leader:
                     self._maybe_start_election()
 
         if not self.is_leader:

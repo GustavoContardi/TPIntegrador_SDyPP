@@ -11,6 +11,13 @@ mueven siempre juntos**. Toda alta o baja de un equipo despacha el `switch_mode`
 correspondiente en la misma operación, y el camino inverso (volver a competitivo
 desde la página de mineros) desarma la membresía. Si se pudiera cambiar el modo
 por un lado y la membresía por otro, la lista de miembros mentiría.
+
+Lo mismo vale para la **agenda temática** (AGENT.md 3.10): las categorías de ley
+que el equipo vota se guardan en el equipo, pero quien decide si se mina una
+ventana es el coordinador, que corre en otra máquina. Toda escritura de agenda
+baja en el acto a ``pool:policy:<coordinador>`` en la misma operación — una
+agenda guardada que no llegó al coordinador es un equipo que dice votar economía
+y sigue minando todo.
 """
 
 from __future__ import annotations
@@ -19,9 +26,11 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from common.blockchain import parse_categories, validate_category
 from voxchain_api.models import (
     CreateTeamRequest,
     Team,
+    TeamCategoriesRequest,
     TeamMember,
     TeamMembershipRequest,
 )
@@ -35,8 +44,10 @@ from voxchain_api.routers.workers import (
 from voxchain_api.services.redis_reader import RedisReader
 from voxchain_api.services.teams_store import TeamError, TeamsStore
 from voxchain_api.services.worker_control import (
+    clear_voting_policy,
     coordinator_address,
     dispatch_switch_mode,
+    push_voting_policy,
     read_worker_status,
 )
 
@@ -51,6 +62,22 @@ def get_teams_store(redis: RedisReader = Depends(get_redis_reader)) -> TeamsStor
 
 def _as_http(exc: TeamError) -> HTTPException:
     return HTTPException(status_code=exc.status_code, detail=str(exc))
+
+
+def _valid_agenda(categories) -> list[str]:
+    """Valida la agenda pedida y la devuelve normalizada.
+
+    ``parse_categories`` es tolerante (descarta lo que no conoce) porque lee
+    estado viejo; acá, en cambio, el usuario está eligiendo, y tragarse en
+    silencio una categoría inexistente le dejaría un equipo que no vota lo que
+    creyó elegir. Por eso se valida una por una antes de normalizar.
+    """
+    try:
+        for category in categories or []:
+            validate_category(category)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return parse_categories(categories)
 
 
 def _roster(store: TeamsStore, redis_client, team: dict) -> list[TeamMember]:
@@ -107,6 +134,7 @@ def _hydrate(store: TeamsStore, redis_client, team: dict) -> Team:
         team_id=team["team_id"],
         name=team.get("name", team["team_id"]),
         owner=team.get("owner", ""),
+        categories=parse_categories(team.get("categories")),
         coordinator_worker_id=coordinator_id,
         coordinator_url=coordinator_url,
         created_at=team.get("created_at", ""),
@@ -156,6 +184,7 @@ async def create_team(
     if not worker_id:
         raise HTTPException(status_code=400, detail="Falta el ID del minero")
 
+    agenda = _valid_agenda(request.categories)
     redis_client = redis.store.r
     try:
         if request.new_worker:
@@ -176,17 +205,23 @@ async def create_team(
         try:
             team = store.create_team(name=name, owner=owner_id,
                                      coordinator_worker_id=worker_id,
-                                     coordinator_url=url)
+                                     coordinator_url=url,
+                                     categories=agenda)
         except TeamError as exc:
             raise _as_http(exc) from exc
 
         await dispatch_switch_mode(worker_id, "pool-coordinator", "",
                                    redis_client, publisher)
+        # La agenda va después del switch a propósito: el coordinador la relee
+        # de Redis en cada tick, así que llega igual aunque el pod todavía no
+        # haya arrancado — y si la escribiéramos antes, un pod que arranca en
+        # modo standalone la ignoraría por completo.
+        await push_voting_policy(worker_id, agenda, redis_client)
     finally:
         publisher.close()
 
-    log.info("equipo %s creado por %s (coordinador %s)",
-             team["team_id"], owner_id, worker_id)
+    log.info("equipo %s creado por %s (coordinador %s, agenda %s)",
+             team["team_id"], owner_id, worker_id, agenda or "todas")
     return _hydrate(store, redis_client, store.get_team(team["team_id"]))
 
 
@@ -267,6 +302,44 @@ async def leave_team(
     return {"ok": True, "worker_id": worker_id, "mode": "standalone"}
 
 
+@router.put("/{team_id}/categories", response_model=Team)
+async def set_team_categories(
+    team_id: str,
+    request: TeamCategoriesRequest,
+    owner_id: str = Depends(get_owner_id),
+    store: TeamsStore = Depends(get_teams_store),
+    redis: RedisReader = Depends(get_redis_reader),
+):
+    """Cambia las áreas de ley sobre las que vota el equipo (AGENT.md 3.10).
+
+    Es la decisión política del equipo: con agenda declarada, su coordinador
+    ignora las ventanas de otras áreas y ni él ni sus mineros aportan un solo
+    hash a esas leyes. Lista vacía = vuelve a votar todo.
+
+    Sólo quien fundó el equipo la cambia. La agenda es lo que el equipo *es*
+    frente al resto de la red, y dejar que cualquier miembro la reescriba
+    permitiría entrar a un equipo sólo para desviarle el cómputo.
+    """
+    team = store.get_team(team_id)
+    if not team:
+        raise HTTPException(status_code=404, detail="El equipo no existe")
+    if team.get("owner") != owner_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Sólo quien fundó el equipo puede cambiar sus categorías")
+
+    agenda = _valid_agenda(request.categories)
+    redis_client = redis.store.r
+    try:
+        store.set_categories(team_id, agenda)
+    except TeamError as exc:
+        raise _as_http(exc) from exc
+    await push_voting_policy(team["coordinator_worker_id"], agenda, redis_client)
+
+    log.info("equipo %s cambió su agenda a %s", team_id, agenda or "todas")
+    return _hydrate(store, redis_client, store.get_team(team_id))
+
+
 @router.delete("/{team_id}", response_model=dict)
 async def dissolve_team(
     team_id: str,
@@ -297,6 +370,10 @@ async def dissolve_team(
         for worker_id in affected:
             await dispatch_switch_mode(worker_id, "standalone", "",
                                        redis_client, publisher)
+        # El coordinador deja de serlo: su política de voto ya no representa a
+        # nadie, y dejarla puesta le impondría la agenda de este equipo si más
+        # adelante funda otro.
+        clear_voting_policy(team["coordinator_worker_id"], redis_client)
     finally:
         publisher.close()
 

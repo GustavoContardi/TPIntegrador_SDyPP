@@ -15,6 +15,10 @@ Esquema de claves:
 - ``worker:team:<worker_id>``  índice inverso: en qué equipo está cada worker
 - ``team:owner:<owner>``       índice inverso: el (único) equipo que fundó cada identidad
 
+El hash del equipo guarda su **agenda** (``categories``) como lista separada por
+comas, porque un hash de Redis sólo almacena strings. Vacío significa "vota
+todas las categorías", que es el pool clásico y por eso es el default.
+
 Los dos índices inversos existen por la misma razón: las preguntas que más se
 hacen son "¿este worker está en algún equipo?" y "¿esta identidad ya fundó
 uno?", y sin ellos habría que recorrer todos los equipos en cada fila de la
@@ -29,6 +33,8 @@ import re
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
+
+from common.blockchain import parse_categories
 
 _NO_SLUG = re.compile(r"[^a-z0-9]+")
 
@@ -78,6 +84,10 @@ class TeamsStore:
         if not data:
             return None
         data["members"] = self.member_ids(team_id)
+        # En Redis la agenda es un string separado por comas; hacia afuera es
+        # siempre una lista normalizada, para que nadie tenga que acordarse de
+        # partirla (y de que "" no es lo mismo que [""]).
+        data["categories"] = parse_categories(data.get("categories"))
         return data
 
     def member_ids(self, team_id: str) -> list[str]:
@@ -128,7 +138,7 @@ class TeamsStore:
 
     # ---- escritura -------------------------------------------------------
     def create_team(self, *, name: str, owner: str, coordinator_worker_id: str,
-                    coordinator_url: str) -> dict:
+                    coordinator_url: str, categories=None) -> dict:
         """Crea el equipo y deja al worker indicado como su coordinador.
 
         **Una identidad funda un solo equipo.** No es una limitación técnica: es
@@ -138,6 +148,9 @@ class TeamsStore:
         agravando gratis la concentración de poder que el sistema ya documenta
         como su debilidad. Unirse al equipo de otro con más de un minero sí se
         puede: lo que se limita es fundar, no participar.
+
+        ``categories`` es la agenda del equipo (AGENT.md 3.10): las áreas de ley
+        a cuyas ventanas va a aportar cómputo. Sin agenda vota todas.
         """
         already = self.team_of_owner(owner)
         if already:
@@ -155,12 +168,14 @@ class TeamsStore:
                 status_code=409,
             )
         team_id = slugify_team(name)
+        agenda = parse_categories(categories)
         team = {
             "team_id": team_id,
             "name": name.strip(),
             "owner": owner,
             "coordinator_worker_id": coordinator_worker_id,
             "coordinator_url": coordinator_url,
+            "categories": ",".join(agenda),
             "created_at": _now_iso(),
         }
         pipe = self.r.pipeline()
@@ -170,6 +185,7 @@ class TeamsStore:
         pipe.set(f"team:owner:{owner}", team_id)
         pipe.execute()
         team["members"] = []
+        team["categories"] = agenda
         return team
 
     def set_coordinator_url(self, team_id: str, coordinator_url: str) -> None:
@@ -181,6 +197,22 @@ class TeamsStore:
         reciben la buena.
         """
         self.r.hset(f"team:{team_id}", "coordinator_url", coordinator_url)
+
+    def set_categories(self, team_id: str, categories) -> list[str]:
+        """Cambia la agenda del equipo. Devuelve la lista normalizada.
+
+        Sólo toca el estado del equipo: **empujarla al coordinador es del
+        llamador** (``push_voting_policy``). Están separadas porque el store no
+        habla con RabbitMQ ni con Redis de workers, pero la separación es
+        peligrosa: una agenda guardada que no llegó al coordinador es un equipo
+        que dice votar economía y sigue minando todo. El router hace las dos
+        cosas en la misma operación por eso.
+        """
+        if not self.r.exists(f"team:{team_id}"):
+            raise TeamError("El equipo no existe", status_code=404)
+        agenda = parse_categories(categories)
+        self.r.hset(f"team:{team_id}", "categories", ",".join(agenda))
+        return agenda
 
     def join_team(self, team_id: str, worker_id: str) -> dict:
         team = self.get_team(team_id)

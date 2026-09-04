@@ -2,6 +2,10 @@
 
 No depende del TrP ni del Pool Coordinator. Mina el espacio completo de
 nonces y publica el resultado directamente al NCT.
+
+Puede declarar una agenda temática por entorno (``STANDALONE_CATEGORIES``), el
+equivalente individual de la agenda de un equipo (AGENT.md 3.10): sin ella mina
+toda ventana que pase, que es el comportamiento por defecto.
 """
 
 from __future__ import annotations
@@ -11,6 +15,7 @@ import os
 import time
 from datetime import datetime, timezone
 
+from common.blockchain.categories import normalize_category, parse_categories
 from common.blockchain.challenge import prefix_for_zeros
 from common.metrics import (
     observe_challenge_latency,
@@ -37,6 +42,13 @@ class StandaloneWorker:
         self._rejected_actions = set(a.strip() for a in rejected.split(",") if a)
         if self._rejected_actions:
             log.info("standalone rechaza acciones: %s", self._rejected_actions)
+        # Agenda temática del minero individual (AGENT.md 3.10). Vacía = mina
+        # todo, que es lo que hace un ciudadano sin facción. Acá es una variable
+        # de entorno y no una decisión de UI porque un standalone no tiene
+        # equipo que la administre: el que quiere agenda arma o se suma a uno.
+        self._categories = parse_categories(os.getenv("STANDALONE_CATEGORIES", ""))
+        if self._categories:
+            log.info("standalone sólo mina categorías: %s", self._categories)
         log.info("standalone nonce_space=%d", self.nonce_space)
 
     def wire(self) -> None:
@@ -52,6 +64,11 @@ class StandaloneWorker:
         action = challenge.get("action", "")
         if action in self._rejected_actions:
             log.info("%s rechaza ventana %s (acción=%s)", self.worker_id, wid, action)
+            return
+        category = normalize_category(challenge.get("category"))
+        if self._categories and category not in self._categories:
+            log.info("%s no aporta cómputo a la ventana %s (categoría=%s)",
+                     self.worker_id, wid, category)
             return
         deadline_str = challenge.get("deadline", "")
         if deadline_str:

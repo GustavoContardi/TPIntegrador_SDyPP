@@ -60,3 +60,26 @@ body {
     background-color: #1e3a5f !important;
   }
 }
+
+// El área de gobierno de una ley se muestra igual en todos lados (Leyes, Cola,
+// Equipos), así que vive acá y no en cada componente. Está global además por una
+// razón práctica: los estilos de componente tienen presupuesto propio en
+// angular.json (`anyComponentStyle`), y repetir el mismo chip en tres pantallas
+// lo gastaba tres veces.
+.category-chip {
+  display: inline-block;
+  font-size: 0.75rem;
+  color: #90caf9;
+  background: rgba(144, 202, 249, 0.1);
+  border: 1px solid rgba(144, 202, 249, 0.25);
+  border-radius: 12px;
+  padding: 1px 10px;
+  white-space: nowrap;
+
+  // "todas las áreas": es la ausencia de agenda, no un área concreta.
+  &.all {
+    color: #999;
+    background: rgba(255, 255, 255, 0.05);
+    border-color: #383838;
+  }
+}

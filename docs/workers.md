@@ -153,15 +153,18 @@ El NCT aplica, en este orden (`nct/coordinator.py`, `handle_nonce_response`):
 
 ### Autonomía política del worker standalone
 
-`STANDALONE_REJECTED_ACTIONS` (`standalone_worker.py:36`) permite que un worker se
-niegue a minar cierto tipo de ley:
+Dos variables permiten que un worker se niegue a minar cierta ley:
 
 ```bash
-STANDALONE_REJECTED_ACTIONS=derogacion   # este nodo no ayuda a derogar nada
+STANDALONE_REJECTED_ACTIONS=derogacion       # este nodo no ayuda a derogar nada
+STANDALONE_CATEGORIES=economia,educacion     # y sólo mina esas dos áreas
 ```
 
-Es la contraparte individual de la `voting_policy` del pool (§4.4): en standalone
-**cada minero decide qué vota**; en pool, decide el dueño del pool.
+`STANDALONE_REJECTED_ACTIONS` filtra por **acción**; `STANDALONE_CATEGORIES`
+filtra por **área de gobierno** de la ley (AGENT.md 3.10) y vacía significa
+"mina todo". Las dos son la contraparte individual de la `voting_policy` del
+pool (§4.4): en standalone **cada minero decide qué vota**; en pool, decide el
+dueño del pool.
 
 ### Deduplicación
 
@@ -279,7 +282,7 @@ Cliente: `worker_pkg/pool_worker.py`.
 | `POST` | `/heartbeat` | `{"miner_id":"..."}` | `{"ok":true|false}` | pool-worker cada 10 s |
 | `GET` | `/work/next/<miner_id>` | — | `200` + fragmento, o **`204`** si no hay | pool-worker en loop |
 | `POST` | `/work/result` | `{"miner_id":"...","result":{...}}` | `{"ok":true|false}` | pool-worker al encontrar nonce |
-| `POST` | `/pool/policy` | `{"decision":"reject","action":"derogacion"}` | `{"ok":true}` | UI / dueño del pool |
+| `POST` | `/pool/policy` | `{"decision":"reject","action":"derogacion","categories":["economia"]}` | `{"ok":true}` | UI / dueño del pool |
 | `GET` | `/health` | — | `{"pool","rabbitmq","miners","voting_policy"}` | probes, UI, run_scaling.sh |
 
 **Payload de un fragmento** (`get_next_task`, `coordinator.py:163`):
@@ -343,13 +346,25 @@ la métrica de Prometheus, no la cola. Ver §7, hallazgo K.
 
 ### Política de voto del pool
 
-`_check_voting_policy` (`coordinator.py:236`) se evalúa **antes de fragmentar**.
-Si el dueño del pool rechaza una ley, el coordinator ni siquiera crea los
-fragmentos, así que los mineros nunca la ven. Es la diferencia conceptual con
-standalone: **en el pool el minero delega su voto en el dueño del pool**, y eso es
-justamente la "facción política" que describe AGENT.md §5/P5.
+`_check_voting_policy` se evalúa **antes de fragmentar**. Si el dueño del pool
+rechaza una ley, el coordinator ni siquiera crea los fragmentos, así que los
+mineros nunca la ven. Es la diferencia conceptual con standalone: **en el pool el
+minero delega su voto en el dueño del pool**, y eso es justamente la "facción
+política" que describe AGENT.md §5/P5.
 
-Combinaciones aceptadas: por `action`, por `law_id`, ambas, o rechazo total.
+Son dos filtros independientes:
+
+1. **Agenda temática** (`categories`, AGENT.md 3.10): las áreas de ley a cuyas
+   ventanas el equipo aporta cómputo. Vacía = todas, que es el default y el
+   comportamiento del pool clásico. La elige el fundador del equipo desde la UI
+   y el backend la escribe en `pool:policy:<pool_id>`.
+2. **Veto puntual** (`decision: reject`): por `action`, por `law_id`, ambas, o
+   rechazo total.
+
+El coordinador relee `pool:policy:<pool_id>` en cada tick (`_sync_voting_policy`),
+**sin condicionarlo al liderazgo**: `handle_challenge` fragmenta mire o no el
+lease, así que gatear la sincronización dejaría a un coordinador sin lease
+minando con la agenda por defecto en vez de con la que su equipo eligió.
 
 ---
 
@@ -413,20 +428,44 @@ nada:
 | | `pool_coordinator/election.py` | `bully.py` |
 |---|---|---|
 | Usada por el modo | `pool-coordinator` | `pool-auto` |
-| Transporte | **Redis** (`SET NX pool:election:<epoch>`) | **RabbitMQ** (exchange `pool.election`) |
+| Transporte | **Redis** (`SET NX pool:election:<pool_id>:<epoch>`) | **RabbitMQ** (exchange `pool.election`) |
 | Seed del PoW | `<last_block_hash>:<epoch>` | `<pool_id>:<epoch>` |
-| Árbitro final | lease `pool:leader` en Redis | primer `claim` que ve cada worker |
+| Elige al candidato | claim atómico `SET NX` | primer `claim` que ve cada worker |
 | Detección de caída | TTL del lease (10 s) | timeout de heartbeat (12 s) |
-| Ceros | `POOL_ELECTION_N_ZEROS` (2) | `ELECTION_N_ZEROS` hardcodeado (2) |
+| Ceros | `POOL_ELECTION_N_ZEROS` (2) | `POOL_ELECTION_N_ZEROS` (2) |
+| Árbitro final | lease `pool:leader:<pool_id>` en Redis — **compartido por ambas** ||
 
-Un worker en `pool-auto` y otro en `pool-coordinator`, en el mismo "pool", **no se
-ven entre sí**: uno arbitra por Redis y el otro por mensajes. Ambos pueden creerse
-coordinator simultáneamente. Ver §7, hallazgo B.
+Cada modo **elige** con su mecanismo, pero cuando hay Redis alcanzable los dos
+terminan disputándose el **mismo lease** `pool:leader:<pool_id>`, que es el
+recurso del que hay uno solo. Un worker en `pool-auto` y otro en
+`pool-coordinator` sirviendo al mismo pool ya no pueden creerse coordinator
+los dos a la vez: el que no consigue el lease se retira (ver §7, hallazgo B).
 
-Nota: cuando `PoolBully` arranca su coordinator lo hace con `redis=None`
-(`bully.py:201`), lo que en `PoolCoordinator.__init__` fuerza `is_leader = True`
-incondicionalmente — o sea, la elección por Redis queda **desactivada** dentro de
-`pool-auto`, a propósito, porque el arbitraje ya lo hizo el bully.
+**Las dos claves de Redis van namespaceadas por `pool_id`** (`lease_key_for` /
+`election_key_for` en `election.py`). El lease responde "¿soy yo el coordinador
+vivo de **mi** pool?", no "¿soy el único pool de la red": dos equipos son
+organizaciones independientes y compiten por el nonce de la ventana, no por un
+lease. Antes las claves eran globales, y con más de un equipo el coordinador del
+primero se quedaba con `pool:leader` mientras los demás nunca lograban tomarlo —
+se quedaban sin emitir keepalive y sin figurar en las métricas. Quien lea el
+lease desde afuera (por ejemplo el colector de estrés) tiene que **barrer el
+prefijo `pool:leader:*`**, no leer una clave única.
+
+Cómo se articula, en concreto: `PoolBully` le pasa a su `PoolCoordinator` interno
+`elect_leader=False` (el bully ya arbitró: no hay elección por Redis dentro de
+`pool-auto`) más `lease_key=lease_key_for(pool_id)` y un callback
+`on_lost_leadership`. El coordinador entonces **manda desde el arranque pero
+sostiene el lease igual**; si al renovarlo descubre que lo tiene otro, avisa por
+el callback y el bully vuelve a candidato en vez de seguir sirviendo HTTP en
+paralelo. Ojo con los dos identificadores, que no son el mismo:
+
+- `pool_id` del `PoolCoordinator` = **worker_id** del nodo. Es su identidad como
+  pool: firma los nonces y nombra `pool:health:*`. Cambiarla cambiaría a quién se
+  le atribuyen los bloques.
+- `lease_key` = derivada del **`POOL_ID`** del bully. Es el recurso compartido.
+
+Sin `REDIS_URL`, nada de esto aplica: el bully arbitra solo, como siempre. Es
+deliberado — no depender de Redis es su ventaja para nodos federados.
 
 ---
 
@@ -587,7 +626,9 @@ pool real hace falta `run_scaling.sh` o el clúster.
 ## 7. Hallazgos: lo que hay que decidir si se toca o se deja
 
 Ordenados por impacto. Los primeros tres son diferencias entre lo que el código
-hace y lo que la documentación entregable afirma.
+hace y lo que la documentación entregable afirma. Los marcados ✅ ya se
+resolvieron y se dejan documentados con la decisión que se tomó, porque el
+razonamiento sigue siendo el contexto de lo que hoy está en el código.
 
 ### A. No hay reasignación de fragmentos al caer un minero 🔴
 
@@ -617,21 +658,40 @@ honesta si no se quiere tocar código: corregir el INFORME y el README para que
 describan lo que hay (el trabajo perdido es como mucho un fragmento, y la ventana
 sigue abierta para el resto).
 
-### B. Dos elecciones de coordinator incompatibles 🟠
+### B. Dos elecciones de coordinator incompatibles ✅ resuelto
 
 Descrito en §5. `election.py` (Redis) y `bully.py` (RabbitMQ) resuelven el mismo
-problema con seeds, árbitros y timeouts distintos. Funciona porque cada modo usa
-sólo la suya, pero:
+problema con seeds y transportes distintos.
 
-- Es difícil de explicar en una defensa ("¿cuál de las dos es *la* elección?").
-- Un pool mixto (algunos pods en `pool-auto`, otros en `pool-coordinator`) tiene
-  dos coordinators activos sin que ninguno lo detecte.
-- `ELECTION_N_ZEROS` está hardcodeado en `bully.py:22` mientras el otro camino lo
-  lee de `POOL_ELECTION_N_ZEROS`.
+**Qué se decidió.** No unificar las elecciones, sino **unificar el árbitro**. Las
+dos siguen existiendo porque sirven a topologías genuinamente distintas: en
+`pool-coordinator` el coordinador es un rol *designado* por una persona desde la
+pantalla de Equipos (el equipo guarda su `coordinator_worker_id` y sus miembros
+apuntan a esa dirección HTTP), así que una elección que se lo diera a otro nodo
+rompería el modelo de equipos; en `pool-auto` los nodos son intercambiables y no
+hay a quién designar. Lo que sí era un bug es que no se vieran entre sí.
 
-**Decisión a tomar**: unificar en una (la de `bully.py` es la que corre en el
-despliegue real y no necesita Redis, que es una ventaja para workers federados), o
-documentar explícitamente que son dos mecanismos para dos topologías distintas.
+Qué cambió:
+
+- El coordinador elegido por el bully **toma el lease `pool:leader:<pool_id>`**
+  igual que el de la otra rama (`elect_leader=False` en `PoolCoordinator`: manda
+  desde el arranque, no elige, pero sostiene el lease). El que no lo consigue se
+  retira a candidato en vez de coordinar en paralelo.
+- Al retirarse cuenta el momento como "escuché a un líder", para no reelegirse en
+  bucle contra un lease que no va a soltarse.
+- `PoolCoordinator.stop()` **suelta** el lease en vez de dejarlo expirar, así el
+  sucesor no espera el TTL entero.
+- `ELECTION_N_ZEROS` sale ahora de `POOL_ELECTION_N_ZEROS` en las dos ramas.
+- Sin Redis el bully arbitra solo, exactamente como antes.
+
+**Lo que queda abierto** (no se tocó): los *seeds* siguen siendo distintos —
+`<last_block_hash>:<epoch>` contra `<pool_id>:<epoch>`— y no pueden unificarse sin
+obligar al bully a depender de Redis para leer la cadena. El seed del bully es
+además **predecible**: un candidato puede precalcular nonces de épocas futuras y
+ganar siempre, con lo que la "prueba de esfuerzo" de esa rama no prueba esfuerzo
+reciente. Mitigarlo requiere una fuente de aleatoriedad compartida que no dependa
+de Redis (por ejemplo el último `voting_window_id` visto por RabbitMQ) y es un
+cambio de protocolo, no una corrección puntual.
 
 ### C. El minado es bloqueante y no mira el deadline 🟠
 
@@ -742,7 +802,7 @@ El fallback a CPU es automático en los cuatro modos, porque vive dentro de
 | Variable | `standalone` | `pool-coordinator` | `pool-worker` | `pool-auto` |
 |---|---|---|---|---|
 | `RABBITMQ_URL` | ✅ desafío + comandos | ✅ desafío + comandos | ⚪ sólo comandos | ✅ elección + desafío |
-| `REDIS_URL` | ⚪ sólo reporte de estado | ✅ lease + política | ⚪ sólo reporte | ❌ no se usa |
+| `REDIS_URL` | ⚪ sólo reporte de estado | ✅ lease + política | ⚪ sólo reporte | ⚪ opcional: sólo para compartir el lease |
 | `NONCE_SPACE` | — | ✅ espacio a fragmentar | — | ✅ (si gana) |
 | `STANDALONE_NONCE_SPACE` | ✅ espacio a barrer | — | — | — |
 | `FRAGMENT_SIZE` | — | ✅ grano del reparto | — | ✅ (si gana) |
@@ -752,6 +812,7 @@ El fallback a CPU es automático en los cuatro modos, porque vive dentro de
 | `POOL_COORDINATOR_URL` | — | — | ✅ a quién pedirle | ⚪ default |
 | `POOL_ID` | — | — | — | ✅ ámbito de la elección |
 | `WORKER_CAPACITY` | — | ✅ propia + agregada | ✅ se reporta | ✅ |
-| `STANDALONE_REJECTED_ACTIONS` | ✅ voto propio | — | — | — |
+| `STANDALONE_REJECTED_ACTIONS` | ✅ voto propio (por acción) | — | — | — |
+| `STANDALONE_CATEGORIES` | ✅ voto propio (por área) | — | — | — |
 | `WORKER_PRIVKEY_PEM` | ✅ firma nonces | ✅ firma nonces | — (firma el coord.) | ✅ |
 | `MINER_GPU_BIN` / `MINER_CPU_SCRIPT` | ✅ | ✅ | ✅ | ✅ |

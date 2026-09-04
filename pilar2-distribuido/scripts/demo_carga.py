@@ -286,12 +286,25 @@ def planificar(perfil: str, total: int, duracion_s: float) -> list[tuple[str, in
 
 # ── Envío ──────────────────────────────────────────────────────────────────
 
+# Áreas de gobierno con las que la demo reparte la carga. Que las leyes caigan
+# en categorías distintas es lo que hace visible el efecto de los equipos con
+# agenda: si todas fueran "general", ningún equipo dejaría de aportar cómputo y
+# la demo no mostraría la diferencia.
+CATEGORIAS = (
+    "economia", "salud", "educacion", "seguridad",
+    "ambiente", "infraestructura", "derechos", "general",
+)
+
+
 def enviar_ley(api: Api, est: Estado, numero: int) -> None:
     """Propone una ley con autor único (autor distinto ⇒ nunca cae en cooldown)."""
     payload = {
         "text": texto_de_ley(numero),
         "author_pubkey": f"pk-demo-{numero:04d}-{uuid.uuid4().hex[:8]}",
         "action": "promulgacion",
+        # Round-robin en vez de aleatorio: dos corridas de la demo con el mismo
+        # total reparten igual, y eso hace comparables sus resultados.
+        "category": CATEGORIAS[numero % len(CATEGORIAS)],
     }
     est.registrar(*api.post_ley(payload))
 

@@ -41,7 +41,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import requests
 
 import config as cfg
-from helpers.law_generator import IdentityPool, unique_text
+from helpers.law_generator import IdentityPool, category_for, unique_text
 from helpers.report import StressReport
 
 # Intenta importar Redis directo; si no está disponible, usa HTTP metrics
@@ -100,7 +100,8 @@ class _SoakProducer:
             with self._lock:
                 self._seq += 1
                 seq = self._seq
-            payload = identity.make_proposal(unique_text("soak", seq))
+            payload = identity.make_proposal(unique_text("soak", seq),
+                                             category=category_for(seq))
             t0 = time.time()
             try:
                 resp = requests.post(

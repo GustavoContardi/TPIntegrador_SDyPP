@@ -256,3 +256,73 @@ def test_seal_aborta_si_cas_falla_sin_fork(bus, store):
     # así que el NCT no queda con estado colgado del intento fallido
     assert nct._active is not None
     assert nct._active["law_id"] == "L1"
+
+
+# ---------------------------------------------------------------------------
+# Categorías de ley (AGENT.md 3.10)
+# ---------------------------------------------------------------------------
+
+class TestCategorias:
+    """La categoría viaja desde la propuesta hasta el desafío publicado.
+
+    Es la cadena que hace posible que un equipo decida no aportar cómputo: si la
+    categoría se pierde en cualquier eslabón, el coordinador la ve como
+    ``general`` y su agenda deja de filtrar nada.
+    """
+
+    def test_la_categoria_declarada_llega_al_desafio(self, bus, store):
+        challenges = capture_challenges(bus)
+        make_nct(bus, store, Clock())
+        bus.publish_proposal({"law_id": "L1", "author_pubkey": "A",
+                              "text_hash": "h1", "created_at": "t0",
+                              "category": "economia"})
+        assert store.get_law("L1")["category"] == "economia"
+        assert challenges[0]["category"] == "economia"
+        assert store.get_window(challenges[0]["voting_window_id"])["category"] \
+            == "economia"
+
+    def test_sin_categoria_declarada_es_general(self, bus, store):
+        # Todo el camino legacy (scripts sin --category, nodos viejos) sigue
+        # funcionando: cae en general, que es un área como cualquier otra.
+        challenges = capture_challenges(bus)
+        make_nct(bus, store, Clock())
+        bus.publish_proposal({"law_id": "L1", "author_pubkey": "A",
+                              "text_hash": "h1", "created_at": "t0"})
+        assert challenges[0]["category"] == "general"
+
+    def test_categoria_inventada_no_se_encola(self, bus, store):
+        # Se rechaza en vez de normalizar a general: el autor firmó "economia
+        # popular" y encolar otra cosa dejaría su ley esperando a equipos que no
+        # existen.
+        challenges = capture_challenges(bus)
+        make_nct(bus, store, Clock())
+        bus.publish_proposal({"law_id": "L1", "author_pubkey": "A",
+                              "text_hash": "h1", "created_at": "t0",
+                              "category": "astrologia"})
+        assert challenges == []
+        assert store.get_law("L1") is None
+
+    def test_la_derogacion_hereda_la_categoria_de_la_ley(self, bus, store):
+        """Derogar convoca a los mismos equipos que promulgaron.
+
+        Si el que deroga pudiera reetiquetar, elegiría el área donde su facción
+        mina y la ajena no — y la asimetría n+1 dejaría de ser el único costo
+        extra de derogar.
+        """
+        challenges = capture_challenges(bus)
+        make_nct(bus, store, Clock())
+        bus.publish_proposal({"law_id": "L1", "author_pubkey": "A",
+                              "text_hash": "h1", "created_at": "t0",
+                              "category": "salud"})
+        ch = challenges[0]
+        nonce = solve(ch["partial_hash_base"], ch["n_zeros_required"])
+        bus.publish_nonce_response({"voting_window_id": ch["voting_window_id"],
+                                    "nonce": nonce, "winning_node_or_pool": "pool-X"})
+        assert store.get_law("L1")["status"] == LawStatus.PROMULGATED
+
+        # B propone derogarla declarando otra área; se ignora.
+        bus.publish_proposal({"law_id": "L1", "author_pubkey": "B",
+                              "text_hash": "h1", "created_at": "t1",
+                              "action": "derogacion", "category": "economia"})
+        assert challenges[-1]["action"] == "derogacion"
+        assert challenges[-1]["category"] == "salud"

@@ -20,7 +20,7 @@ API Gateway para VoxChain, implementada con FastAPI. Expone endpoints REST para 
 | `config.py` | Configuración desde variables de entorno (Redis, RabbitMQ, URLs de health, puerto). |
 | `models.py` | Modelos Pydantic para requests/responses (Law, Window, Block, HealthResponse, etc.). |
 | `routers/chain.py` | Endpoints para consultar la blockchain (`GET /api/chain`, `GET /api/chain/{block_hash}`). |
-| `routers/laws.py` | Endpoints para leyes (`GET /api/laws`, `POST /api/laws`, `GET /api/laws/{law_id}`, cola y texto). |
+| `routers/laws.py` | Endpoints para leyes (`GET /api/laws`, `POST /api/laws`, `GET /api/laws/{law_id}`, cola, texto y catálogo de categorías). |
 | `routers/windows.py` | Endpoints para ventanas de votación (`GET /api/windows/active`, `GET /api/windows/{voting_window_id}`; no hay listado de todas). |
 | `routers/workers.py` | Gestión de workers: status, registro/baja dinámica, switch de modo, y política de voto (`accept`/`reject` por `action` o `law_id`) de pool coordinators. |
 | `routers/accounts.py` | Cuentas demo: listado, reserva y liberación de sesión (`GET/POST /api/accounts/...`). |
@@ -50,19 +50,25 @@ Metrics: `GET /metrics` → Métricas Prometheus (Prometheus text format).
 |----------|--------|-------------|
 | `/api/chain` | GET | Obtiene toda la blockchain |
 | `/api/chain/{block_hash}` | GET | Obtiene un bloque por su hash (no por índice) |
-| `/api/laws` | GET | Obtiene todas las leyes (filtro opcional `?status=`) |
+| `/api/laws` | GET | Obtiene todas las leyes (filtros opcionales `?status=` y `?category=`) |
+| `/api/laws/categories` | GET | Áreas de gobierno disponibles (`value`/`label`); es la lista autoritativa que valida el NCT |
 | `/api/laws/next` | GET | Próxima ley que entrará en ventana de votación (orden round-robin) |
 | `/api/laws/queue` | GET | Cola completa de leyes pendientes, en orden |
 | `/api/laws/{law_id}` | GET | Obtiene una ley por ID |
 | `/api/laws/{law_id}/text` | GET | Texto descomprimido de una ley |
-| `/api/laws` | POST | Propone una nueva ley (publica a RabbitMQ) |
+| `/api/laws` | POST | Propone una nueva ley (publica a RabbitMQ). Acepta `category`; una categoría desconocida es 400, y en una derogación se ignora y manda la de la ley original |
 | `/api/windows/active` | GET | Obtiene la ventana activa actual |
 | `/api/windows/{voting_window_id}` | GET | Obtiene una ventana por ID (no existe un listado de todas) |
 | `/api/workers/status` | GET | Estado de todos los workers registrados |
 | `/api/workers/{worker_id}/status` | GET | Estado de un worker puntual |
 | `/api/workers/{worker_id}/switch-mode` | POST | Cambia el modo de un worker (standalone/pool-coordinator/pool-worker) |
 | `/api/workers/pool/{pool_id}/health` | GET | Health de un pool coordinator (miners, rabbitmq, política de voto) |
-| `/api/workers/pool/{pool_id}/policy` | POST | Fija la política de voto del pool: `accept` o `reject` (por `action` y/o `law_id`) |
+| `/api/workers/pool/{pool_id}/policy` | POST | Fija la política de voto del pool: `accept` o `reject` (por `action` y/o `law_id`). Si no manda `categories`, conserva la agenda temática que ya tuviera el pool |
+| `/api/teams` | GET/POST | Lista los equipos / funda uno (acepta `categories`: la agenda temática) |
+| `/api/teams/{team_id}` | GET/DELETE | Detalle de un equipo / lo disuelve (sólo el fundador) |
+| `/api/teams/{team_id}/categories` | PUT | Cambia las áreas de ley que vota el equipo (sólo el fundador). Lista vacía = vota todas |
+| `/api/teams/{team_id}/join` | POST | Suma un minero propio al equipo, en modo `pool-worker` |
+| `/api/teams/{team_id}/leave` | POST | Saca un minero propio del equipo y lo devuelve a competitivo |
 | `/api/workers/register` | POST | Registra un worker dinámico nuevo |
 | `/api/workers/{worker_id}` | DELETE | Da de baja un worker dinámico |
 | `/api/accounts` | GET | Lista las cuentas demo disponibles/ocupadas |

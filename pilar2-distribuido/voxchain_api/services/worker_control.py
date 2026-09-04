@@ -33,6 +33,11 @@ LOCAL_ADMIN_URLS = {
 # tiene el backend de saber la dirección real de un coordinador.
 STATUS_KEY = "worker:status:{worker_id}"
 
+# Política de voto del pool: la lee el PoolCoordinator en su tick (cada 3 s) y
+# también viaja por HTTP como atajo para el Compose local. Es donde vive la
+# agenda temática del equipo del lado del worker.
+POLICY_KEY = "pool:policy:{worker_id}"
+
 
 def read_worker_status(redis_client, worker_id: str) -> Optional[dict]:
     """Último estado reportado por el worker, o ``None`` si no reporta."""
@@ -116,3 +121,68 @@ async def dispatch_switch_mode(worker_id: str, target: str, pool_url: str,
                                   timeout=2.0)
         except Exception:  # noqa: BLE001
             log.debug("atajo HTTP a %s no disponible", worker_id, exc_info=True)
+
+
+async def push_voting_policy(coordinator_worker_id: str, categories,
+                             redis_client) -> dict:
+    """Baja la agenda del equipo a su coordinador (AGENT.md 3.10).
+
+    La agenda se guarda en el equipo, pero quien decide si se mina una ventana
+    es el ``PoolCoordinator``, que corre en otra máquina. El puente es
+    ``pool:policy:<coordinador>`` en Redis, que el coordinador relee en cada
+    tick; el POST HTTP es sólo el atajo del Compose local, y su fallo se ignora
+    porque Redis ya cubrió el caso.
+
+    Se preserva ``decision`` si ya había una política escrita: la agenda por
+    categorías y el rechazo puntual por ``action``/``law_id`` son dos filtros
+    distintos y ninguno debería pisar al otro.
+    """
+    key = POLICY_KEY.format(worker_id=coordinator_worker_id)
+    policy = {"decision": "accept"}
+    try:
+        raw = redis_client.get(key)
+        if raw:
+            if isinstance(raw, bytes):
+                raw = raw.decode("utf-8")
+            previous = json.loads(raw)
+            if isinstance(previous, dict):
+                policy = previous
+    except Exception:  # noqa: BLE001
+        log.debug("política previa de %s ilegible; se reescribe entera",
+                  coordinator_worker_id, exc_info=True)
+    policy["categories"] = list(categories or [])
+    policy.setdefault("decision", "accept")
+
+    redis_client.set(key, json.dumps(policy))
+
+    base_url = _pool_http_url(coordinator_worker_id, redis_client)
+    if base_url:
+        try:
+            async with httpx.AsyncClient() as client:
+                await client.post(f"{base_url}/pool/policy", json=policy,
+                                  timeout=2.0)
+        except Exception:  # noqa: BLE001
+            log.debug("atajo HTTP de política a %s no disponible",
+                      coordinator_worker_id, exc_info=True)
+    return policy
+
+
+def clear_voting_policy(coordinator_worker_id: str, redis_client) -> None:
+    """Borra la política de un coordinador que dejó de serlo.
+
+    Sin esto, disolver un equipo y volver a fundar otro con el mismo minero lo
+    haría arrancar con la agenda del equipo anterior, que nadie eligió.
+    """
+    try:
+        redis_client.delete(POLICY_KEY.format(worker_id=coordinator_worker_id))
+    except Exception:  # noqa: BLE001
+        log.debug("no se pudo borrar la política de %s", coordinator_worker_id,
+                  exc_info=True)
+
+
+def _pool_http_url(worker_id: str, redis_client) -> Optional[str]:
+    """URL HTTP del coordinador, si se la puede resolver desde su estado."""
+    status = read_worker_status(redis_client, worker_id)
+    if not status:
+        return None
+    return coordinator_address(status, worker_id)

@@ -7,6 +7,8 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
+from common.blockchain import DEFAULT_CATEGORY
+
 
 class Law(BaseModel):
     law_id: str
@@ -17,6 +19,10 @@ class Law(BaseModel):
     text_original_len: Optional[int] = None
     status: str
     action: str
+    # Área de gobierno (AGENT.md 3.10). Las leyes anteriores a las categorías no
+    # la tienen guardada y el store las lee como "general", así que el default
+    # acá es sólo una red por si el dato llega de otra fuente.
+    category: str = DEFAULT_CATEGORY
     created_at: str
 
 
@@ -24,6 +30,7 @@ class Window(BaseModel):
     voting_window_id: str
     law_id: str
     action: str
+    category: str = DEFAULT_CATEGORY
     n_zeros_required: int
     opened_at: str
     deadline: str
@@ -50,10 +57,13 @@ class LawProposalRequest(BaseModel):
     author_pubkey: str
     text: str
     action: str = "promulgacion"
+    # Área de gobierno que el autor declara y firma. En una derogación se ignora:
+    # manda la categoría de la ley original (AGENT.md 3.10).
+    category: str = DEFAULT_CATEGORY
     # Campos firmados por el cliente (A-01). El cliente calcula text_hash/created_at
-    # y firma `author_pubkey|action|text_hash|law_id|created_at`. Si vienen, el API
-    # verifica la firma y que text_hash == sha256(text); si no, usa el camino legacy
-    # (server-side) salvo que REQUIRE_SIGNATURES esté activo.
+    # y firma `author_pubkey|action|text_hash|law_id|created_at|category`. Si vienen,
+    # el API verifica la firma y que text_hash == sha256(text); si no, usa el camino
+    # legacy (server-side) salvo que REQUIRE_SIGNATURES esté activo.
     text_hash: Optional[str] = None
     created_at: Optional[str] = None
     signature: Optional[str] = None
@@ -98,6 +108,11 @@ class PoolPolicy(BaseModel):
     decision: str
     action: str | None = None
     law_id: str | None = None
+    # Agenda temática del pool (AGENT.md 3.10): las categorías a cuyas ventanas
+    # aporta cómputo. `None` significa "no la toques" en un PATCH de política;
+    # la lista vacía significa "todas". La escribe el flujo de equipos, no el
+    # usuario a mano.
+    categories: list[str] | None = None
 
 
 class PoolHealth(BaseModel):
@@ -122,6 +137,11 @@ class Team(BaseModel):
     coordinator_worker_id: str
     coordinator_url: str
     created_at: str
+    # Categorías de ley sobre las que el equipo vota. Vacío = todas (el pool
+    # clásico que mina lo que venga). Es la decisión política del equipo: si
+    # entra una ley de un área que no eligió, ni el coordinador ni sus mineros
+    # aportan un solo hash a esa ventana.
+    categories: list[str] = []
     members: list[TeamMember] = []
     member_count: int = 0
     # Mineros que el coordinator tiene efectivamente registrados por HTTP. Es un
@@ -134,6 +154,7 @@ class Team(BaseModel):
 class CreateTeamRequest(BaseModel):
     name: str
     worker_id: str
+    categories: list[str] = []
     # Alta del minero en el mismo paso, para el usuario que todavía no tiene
     # ninguno. Mismos campos que RegisterWorkerRequest. El nombre del campo
     # evita `register`, que pisa un atributo de BaseModel.
@@ -142,6 +163,12 @@ class CreateTeamRequest(BaseModel):
 
 class TeamMembershipRequest(BaseModel):
     worker_id: str
+
+
+class TeamCategoriesRequest(BaseModel):
+    """Cambio de agenda del equipo. Lista vacía = vuelve a votar todas."""
+
+    categories: list[str] = []
 
 
 class SSEEvent(BaseModel):

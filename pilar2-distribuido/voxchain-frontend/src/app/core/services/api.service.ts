@@ -2,7 +2,7 @@ import { Injectable, inject } from '@angular/core';
 import { HttpClient, HttpHeaders } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { Block } from '../models/block.model';
-import { Law, LawProposalRequest } from '../models/law.model';
+import { Law, LawCategory, LawProposalRequest } from '../models/law.model';
 import { Window } from '../models/window.model';
 import { Team, WorkerRegistration, WorkerStatus } from '../models/worker.model';
 import { IdentityService } from './identity.service';
@@ -35,9 +35,23 @@ export class ApiService {
   }
 
   // Laws endpoints
-  getLaws(status?: string): Observable<Law[]> {
-    const params = status ? { status } : undefined;
-    return this.http.get<Law[]>(`${this.apiUrl}/laws`, params ? { params } : {});
+  getLaws(status?: string, category?: string): Observable<Law[]> {
+    const params: Record<string, string> = {};
+    if (status) params['status'] = status;
+    if (category) params['category'] = category;
+    return this.http.get<Law[]>(`${this.apiUrl}/laws`,
+      Object.keys(params).length ? { params } : {});
+  }
+
+  /**
+   * Áreas de gobierno disponibles.
+   *
+   * Se piden al backend en vez de usar sólo la constante del cliente porque los
+   * slugs tienen que ser exactamente los que valida el NCT; la constante es el
+   * respaldo mientras llega la respuesta.
+   */
+  getLawCategories(): Observable<LawCategory[]> {
+    return this.http.get<LawCategory[]>(`${this.apiUrl}/laws/categories`);
   }
 
   getLaw(lawId: string): Observable<Law> {
@@ -126,10 +140,23 @@ export class ApiService {
     return this.http.get<Team>(`${this.apiUrl}/teams/${teamId}`);
   }
 
-  createTeam(name: string, workerId: string, newWorker?: WorkerRegistration): Observable<Team> {
-    const body: any = { name, worker_id: workerId };
+  createTeam(name: string, workerId: string, categories: string[] = [],
+             newWorker?: WorkerRegistration): Observable<Team> {
+    const body: any = { name, worker_id: workerId, categories };
     if (newWorker) body.new_worker = newWorker;
     return this.http.post<Team>(`${this.apiUrl}/teams`, body, { headers: this.ownerHeaders() });
+  }
+
+  /**
+   * Cambia las áreas de ley que vota el equipo. Lista vacía = vuelve a votar todo.
+   *
+   * El backend baja la agenda al coordinador en la misma operación, así que
+   * cuando esto responde el equipo ya está minando (o ignorando) lo que
+   * corresponde.
+   */
+  setTeamCategories(teamId: string, categories: string[]): Observable<Team> {
+    return this.http.put<Team>(`${this.apiUrl}/teams/${teamId}/categories`,
+      { categories }, { headers: this.ownerHeaders() });
   }
 
   joinTeam(teamId: string, workerId: string): Observable<Team> {

@@ -2,7 +2,7 @@
 
 Esquema de claves (namespaced):
 
-- ``law:<id>``            hash con la ley (7.1)
+- ``law:<id>``            hash con la ley (7.1), incluida su ``category``
 - ``window:<id>``         hash con la ventana de votación (7.2)
 - ``block:<hash>``        hash con el bloque (7.3)
 - ``cooldown:<pubkey>``   hash con el cooldown del autor (7.4)
@@ -24,6 +24,7 @@ import json
 from typing import Optional
 
 from common.blockchain.block import Block, GENESIS_PREVIOUS_HASH
+from common.blockchain.categories import DEFAULT_CATEGORY, normalize_category
 
 
 class LawStatus:
@@ -73,11 +74,15 @@ class VoxChainStore:
     def save_law(self, *, law_id: str, author_pubkey: str, text_hash: str,
                  created_at: str, status: str = LawStatus.PENDING_QUEUE,
                  action: str = "promulgacion",
+                 category: str = DEFAULT_CATEGORY,
                  text_ref: Optional[str] = None,
                  text_compressed: Optional[str] = None,
                  text_original_len: int = 0) -> None:
         # `action` es la acción que la próxima ventana de esta ley ejecutará.
         # Una derogación reutiliza la ley promulgada existente cambiando su action.
+        # `category` es el área de gobierno (AGENT.md 3.10) y NO cambia nunca:
+        # se fija al proponer y la derogación hereda la de la ley original, para
+        # que derogar convoque a los mismos equipos que promulgaron.
         self.r.hset(f"law:{law_id}", mapping=_clean({
             "law_id": law_id,
             "author_pubkey": author_pubkey,
@@ -87,12 +92,18 @@ class VoxChainStore:
             "text_original_len": str(text_original_len) if text_original_len else None,
             "status": status,
             "action": action,
+            "category": normalize_category(category),
             "created_at": created_at,
         }))
 
     def get_law(self, law_id: str) -> Optional[dict]:
         data = self.r.hgetall(f"law:{law_id}")
-        return data or None
+        if not data:
+            return None
+        # Las leyes guardadas antes de que existieran las categorías no tienen el
+        # campo; se leen como `general` en vez de romper a quien las consuma.
+        data["category"] = normalize_category(data.get("category"))
+        return data
 
     def set_law_status(self, law_id: str, status: str) -> None:
         self.r.hset(f"law:{law_id}", "status", status)
@@ -146,9 +157,14 @@ class VoxChainStore:
     # ---- ventanas (7.2) ---------------------------------------------------
     def save_window(self, *, voting_window_id: str, law_id: str, action: str,
                     n_zeros_required: int, opened_at: str, deadline: str,
-                    partial_hash_base: str, result: Optional[str] = None,
+                    partial_hash_base: str,
+                    category: str = DEFAULT_CATEGORY,
+                    result: Optional[str] = None,
                     winning_nonce: Optional[int] = None,
                     winning_node_or_pool: Optional[str] = None) -> None:
+        # La categoría se copia de la ley a la ventana: es el dato con el que la
+        # UI explica por qué un equipo aportó (o no) cómputo a esta ventana, y
+        # no queremos que eso dependa de que la ley todavía exista con esa etiqueta.
         self.r.hset(f"window:{voting_window_id}", mapping=_clean({
             "voting_window_id": voting_window_id,
             "law_id": law_id,
@@ -157,6 +173,7 @@ class VoxChainStore:
             "opened_at": opened_at,
             "deadline": deadline,
             "partial_hash_base": partial_hash_base,
+            "category": normalize_category(category),
             "result": result,
             "winning_nonce": winning_nonce,
             "winning_node_or_pool": winning_node_or_pool,
@@ -164,7 +181,10 @@ class VoxChainStore:
 
     def get_window(self, voting_window_id: str) -> Optional[dict]:
         data = self.r.hgetall(f"window:{voting_window_id}")
-        return data or None
+        if not data:
+            return None
+        data["category"] = normalize_category(data.get("category"))
+        return data
 
     def set_window_result(self, voting_window_id: str, *, result: str,
                           winning_nonce: Optional[int] = None,
@@ -296,19 +316,19 @@ return 1
     def chain_length(self) -> int:
         return self.r.llen("chain")
 
-    # ---- liderazgo del NCT (Bully distribuido, AGENT.md 4) ----------------
+    # ---- liderazgo del NCT (failover por lease, AGENT.md 4.1) -------------
     #
     # Dos modos de adquisición del lease:
     #
     # 1. try_acquire_leadership (NX): para el arranque inicial. Solo adquiere si
     #    la clave no existe, evitando que dos nodos que arrancan a la vez compitan.
     #
-    # 2. elect_acquire_leadership (SET sin NX): para el ganador de la elección PoW.
-    #    El líder anterior está muerto; su clave puede seguir viva dentro del TTL.
-    #    El PoW ya arbitró al ganador, así que sobreescribimos sin NX.
-    #    La atomicidad entre candidatos múltiples la garantiza el backoff del PoW
-    #    (el segundo candidato ve el claim del primero en nct_election y se retira
-    #    antes de llegar acá).
+    # 2. elect_acquire_leadership (SET sin NX): para el standby que detectó la
+    #    caída. El líder anterior está muerto pero su clave puede seguir viva
+    #    dentro del TTL, así que hay que poder sobreescribirla — de ahí el SET
+    #    sin NX, acotado por el dead_threshold (ver el docstring del método).
+    #    La elección del NCT NO usa PoW ni cola de mensajes (AGENT.md 4.1): entre
+    #    réplicas homogéneas el esfuerzo no discrimina, así que arbitra Redis.
     #
     # TTL coherente con el timeout de heartbeat: el leader renueva cada
     # heartbeat_interval (≈3 s); el TTL debe ser mayor que el intervalo pero
@@ -327,7 +347,7 @@ return 1
 
     def elect_acquire_leadership(self, candidate_id: str, ttl: int = 20,
                                  dead_threshold: int = 6) -> bool:
-        """Adquiere el lease tras ganar la elección PoW.
+        """Adquiere el lease de líder del NCT tras detectar la caída del anterior.
 
         Aplica tres reglas en orden:
         1. Clave inexistente (lease expiró naturalmente) → adquirir.
@@ -341,9 +361,11 @@ return 1
         LEADER_LEASE_TTL para no confundirlo con un ganador concurrente recién
         adquirido. Valor seguro: 2 × HEARTBEAT_INTERVAL ≈ 6 s.
 
-        Nota: la implementación es GET + SET, no atómica. La atomicidad real la
-        proveen el backoff del PoW (solo un candidato llega acá en condiciones
-        normales) y el corto margen temporal entre ambas operaciones.
+        Nota: la implementación es GET + SET, no atómica. En condiciones normales
+        sólo un standby llega acá —los demás siguen viendo heartbeats o encuentran
+        el lease ya tomado— y el margen entre ambas operaciones es de microsegundos.
+        Si dos entraran a la vez, el perdedor lo detecta en su siguiente
+        ``renew_leadership`` y ejecuta ``step_down`` (AGENT.md 11.4).
         """
         current = self.r.get("nct:leader")
         if current is None:

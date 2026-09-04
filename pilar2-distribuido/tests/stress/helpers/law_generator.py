@@ -26,12 +26,14 @@ class UnsignedIdentity:
         self.pubkey = pubkey or f"stress-{uuid.uuid4().hex[:12]}"
 
     def make_proposal(self, text: str, action: str = "promulgacion",
-                      law_id: str | None = None) -> dict:
+                      law_id: str | None = None,
+                      category: str = "general") -> dict:
         return {
             "law_id": law_id or f"ley-{uuid.uuid4().hex[:8]}",
             "author_pubkey": self.pubkey,
             "text": text,
             "action": action,
+            "category": category,
         }
 
 
@@ -51,7 +53,8 @@ class SignedIdentity:
         self.pubkey = base64.b64encode(der).decode()
 
     def make_proposal(self, text: str, action: str = "promulgacion",
-                      law_id: str | None = None) -> dict:
+                      law_id: str | None = None,
+                      category: str = "general") -> dict:
         import base64
         from cryptography.hazmat.primitives import hashes
         from cryptography.hazmat.primitives.asymmetric import ec
@@ -61,7 +64,10 @@ class SignedIdentity:
         law_id = law_id or f"ley-{uuid.uuid4().hex[:8]}"
         created_at = datetime.now(timezone.utc).isoformat()
 
-        msg = f"{self.pubkey}|{action}|{text_hash}|{law_id}|{created_at}".encode()
+        # Mismo mensaje canónico que common.identity.proposal_message; se replica
+        # a mano para que el generador de carga no dependa del paquete común.
+        msg = (f"{self.pubkey}|{action}|{text_hash}|{law_id}|{created_at}"
+               f"|{category}").encode()
         der_sig = self._privkey.sign(msg, ec.ECDSA(hashes.SHA256()))
         r, s = decode_dss_signature(der_sig)
         raw = r.to_bytes(32, "big") + s.to_bytes(32, "big")
@@ -72,6 +78,7 @@ class SignedIdentity:
             "text": text,
             "text_hash": text_hash,
             "action": action,
+            "category": category,
             "created_at": created_at,
             "signature": base64.b64encode(raw).decode(),
         }
@@ -112,6 +119,20 @@ def unique_text(prefix: str = "stress", seq: int | None = None) -> str:
         "Este texto fue generado automáticamente para verificar el comportamiento "
         "del sistema bajo carga sostenida. No tiene validez legal."
     )
+
+
+#: Categorías con las que el generador reparte la carga. Que las propuestas de
+#: estrés caigan en áreas distintas es lo que hace medibles los equipos con
+#: agenda: si todas fueran "general", ningún filtro por categoría se ejercitaría.
+STRESS_CATEGORIES = (
+    "economia", "salud", "educacion", "seguridad",
+    "ambiente", "infraestructura", "derechos", "general",
+)
+
+
+def category_for(seq: int) -> str:
+    """Reparte categorías de forma determinística (round-robin por secuencia)."""
+    return STRESS_CATEGORIES[seq % len(STRESS_CATEGORIES)]
 
 
 def derogation_text(law_id: str) -> str:

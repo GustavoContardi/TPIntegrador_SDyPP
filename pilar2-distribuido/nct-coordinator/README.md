@@ -19,9 +19,12 @@ por carga de red.
   actualiza el `status` de la ley y avanza a la siguiente ventana.
 - Cierra por **deadline**: ley → `discarded`, ventana → `expired_pending`, sin
   reencolar.
-- Sucesión por esfuerzo (Bully mejorado, `nct/bully.py`): si el NCT primario
-  falla, los standbys detectan la ausencia de heartbeat y resuelven un
-  mini-desafío PoW. El primero en resolver asume como nuevo líder.
+- Sucesión por **lease de Redis** (`nct/monitor.py`, AGENT.md 4.1): si el NCT
+  primario falla, los standbys detectan la ausencia de heartbeat y compiten por
+  adquirir `nct:leader` con `elect_acquire_leadership`. Gana el que llega
+  primero. **No hay mini-PoW ni cola de elección**: entre réplicas homogéneas del
+  mismo Deployment el esfuerzo no discrimina, así que sólo agregaría latencia al
+  failover. El Bully-por-esfuerzo del proyecto vive hoy en los pools (AGENT.md 4.2).
 
 ## Estructura
 
@@ -29,8 +32,7 @@ por carga de red.
 |------------------------|-----------|
 | `nct/coordinator.py`   | Núcleo (cola, ventanas, verificación, sellado). Agnóstico de transporte/backend. Incluye publicación de heartbeats y conciencia de líder/seguidor. |
 | `nct/queue_logic.py`   | Lógica pura: round-robin y cálculo de cooldown. |
-| `nct/bully.py`         | Mini-PoW de elección de NCT: `solve_mini_challenge`, `elect_new_nct` y `run_distributed_election`. |
-| `nct/monitor.py`       | Monitor de heartbeats del líder; dispara elección distribuida si detecta timeout. |
+| `nct/monitor.py`       | Monitor de heartbeats del líder; si detecta timeout, adquiere el lease `nct:leader` en Redis. Es todo el mecanismo de sucesión: no hay un `nct/bully.py`. |
 | `main.py`              | Cablea RabbitMQ + Redis + health endpoint + loop. Soporta modo `primary` y `standby`. |
 
 ## Ejecución
@@ -61,10 +63,11 @@ Health: `GET :8080/health` → `{"nct":"ok","redis":"ok","rabbitmq":"ok","mode":
 | `COOLDOWN_WINDOWS_REPROPOSED` | `2*N_ZEROS` | Cooldown mayor por reproposición idéntica. |
 | `RABBITMQ_URL`, `REDIS_URL`, `HEALTH_PORT` | ver compose | Infraestructura. |
 | `NCT_MODE` | `primary` | `primary` (procesa colas + heartbeats) o `standby` (monitorea heartbeats) |
-| `NCT_ID` | `nct-default` | Identificador único del NCT en la elección distribuida |
-| `ELECTION_N_ZEROS` | 3 | Dificultad del mini-PoW de elección del Bully distribuido |
+| `NCT_ID` | `nct-default` | Identificador único del NCT; es el valor que se guarda en el lease |
 | `HEARTBEAT_INTERVAL` | 3 | Segundos entre heartbeats del leader |
 | `HEARTBEAT_TIMEOUT` | 12 | Segundos sin heartbeat para declarar caída del líder |
+| `LEADER_LEASE_TTL` | `HEARTBEAT_TIMEOUT + HEARTBEAT_INTERVAL` (15) | TTL del lease `nct:leader`; debe expirar si el líder deja de renovar |
+| `LEADER_DEAD_THRESHOLD` | `2 × HEARTBEAT_INTERVAL` (6) | TTL restante por debajo del cual se considera muerto al dueño del lease |
 
 ## Decisiones de diseño
 

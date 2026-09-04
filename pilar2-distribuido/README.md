@@ -70,8 +70,8 @@ cuarto que toque al NCT):
 
 | # | Nombre            | Tipo            | Dirección   | Contenido |
 |---|-------------------|-----------------|-------------|-----------|
-| 1 | `propuestas`      | cola            | nodo → NCT  | `law_id, author_pubkey, text_hash, created_at, action` |
-| 2 | `desafio_activo`  | exchange *topic*| NCT → red   | `voting_window_id, law_id, n_zeros_required, deadline, partial_hash_base, action` |
+| 1 | `propuestas`      | cola            | nodo → NCT  | `law_id, author_pubkey, text_hash, created_at, action, category` |
+| 2 | `desafio_activo`  | exchange *topic*| NCT → red   | `voting_window_id, law_id, n_zeros_required, deadline, partial_hash_base, action, category` |
 | 3 | `respuesta_nonce` | cola            | red → NCT   | `voting_window_id, nonce, winning_node_or_pool, block_hash_candidato` |
 
 **Failover del NCT** (AGENT.md 4):
@@ -130,7 +130,7 @@ docker compose up --build
 # en otra terminal: proponer una ley (flujo 1)
 docker compose run --rm coordinator \
   python /app/scripts/propose_law.py \
-  --text "Presupuesto participativo 2026" --author pk-ciudadano-1
+  --text "Presupuesto participativo 2026" --category economia --author pk-ciudadano-1
 ```
 
 El sistema, sin más intervención, abre la ventana, los workers resuelven el PoW
@@ -204,6 +204,14 @@ pytest -m integration  # sólo el flujo extremo a extremo
 - **Ley pendiente → `discarded`** (3.2): si la ventana vence sin nonce, la ley se
   descarta y **no** se reencola; su `text_hash` queda marcado para detectar
   reproposición.
+- **Categorías de ley y agenda de equipos** (3.10): toda ley declara un área de
+  gobierno (`economia`, `salud`, …, `general` por defecto) que su autor **firma**
+  junto con el resto de la propuesta, y que una derogación **hereda** de la ley
+  original. Cada equipo declara la agenda de áreas que vota: si entra una ley de
+  otra área, su coordinador no fragmenta el espacio de nonces y el equipo entero
+  no aporta un solo hash. La categoría **no** entra en el `partial_hash_base`: el
+  desafío que resuelve el minero de Pilar 1 no cambia. Consecuencia buscada: una
+  ley que no le interesa a ningún equipo expira como cualquier ley pendiente.
 - **Reproposición por hash exacto del texto** (3.5): idéntica a una descartada →
   cooldown mayor (`reproposed_identical`); distinta → propuesta nueva. Misma `n`.
 - **Sellado y encadenamiento**: `block_hash = sha256(contenido)`, cada bloque

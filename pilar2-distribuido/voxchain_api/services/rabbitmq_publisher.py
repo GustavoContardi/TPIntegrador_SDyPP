@@ -7,7 +7,11 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from common.blockchain import ACTION_PROMULGACION, compress_text
+from common.blockchain import (
+    ACTION_PROMULGACION,
+    DEFAULT_CATEGORY,
+    compress_text,
+)
 from common.messaging import build_rabbitmq
 from voxchain_api.config import config
 
@@ -24,6 +28,7 @@ class RabbitMQPublisher:
         author_pubkey: str,
         text: str,
         action: str = ACTION_PROMULGACION,
+        category: str = DEFAULT_CATEGORY,
         law_id: Optional[str] = None,
         text_hash: Optional[str] = None,
         created_at: Optional[str] = None,
@@ -31,8 +36,8 @@ class RabbitMQPublisher:
     ) -> dict:
         """Publish a law proposal to the RabbitMQ queue.
 
-        Forwards the client-signed fields (text_hash, created_at, signature) so the
-        NCT can re-verify the signature authoritatively (A-01). For legacy/unsigned
+        Forwards the client-signed fields (text_hash, created_at, category,
+        signature) so the NCT can re-verify the signature authoritatively (A-01). For legacy/unsigned
         proposals these are derived server-side, preserving the previous behaviour.
         """
         text_hash = text_hash or hashlib.sha256(text.encode()).hexdigest()
@@ -47,6 +52,7 @@ class RabbitMQPublisher:
             "text_original_len": text_original_len,
             "created_at": created_at or datetime.now(timezone.utc).isoformat(),
             "action": action,
+            "category": category,
             "status": "pending_queue",
         }
         if signature:

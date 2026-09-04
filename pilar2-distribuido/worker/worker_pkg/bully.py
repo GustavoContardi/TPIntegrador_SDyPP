@@ -1,3 +1,21 @@
+"""Elección de coordinador de pool por RabbitMQ (modo ``pool-auto``).
+
+N workers intercambiables del mismo ``POOL_ID`` compiten por un mini-PoW; el
+ganador publica un ``claim``, se convierte en ``PoolCoordinator`` y el resto se
+le une como ``PoolWorker``. Es el algoritmo Bully del enunciado con esfuerzo en
+lugar de mayor ID, y **no necesita Redis**: ésa es su ventaja para nodos
+federados y la razón de que exista aparte de ``pool_coordinator/election.py``.
+
+**Interoperación con la elección por Redis.** Los dos mecanismos eligen distinto
+(uno por mensajes, otro por Redis) pero, si hay Redis alcanzable, comparten el
+mismo árbitro final: el lease ``pool:leader:<pool_id>``. El ganador del bully
+sostiene ese lease igual que lo haría un coordinador de la otra rama, así que un
+pool mixto —algunos pods en ``pool-auto``, otros en ``pool-coordinator``— ya no
+puede tener dos coordinadores activos sin que ninguno se entere: el que no logra
+el lease se retira a candidato. Sin Redis, el bully sigue arbitrando solo, tal
+como antes.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -12,6 +30,7 @@ from common.metrics import worker_busy, worker_has_gpu, worker_nonces_found_tota
 from worker_pkg.miner import run_miner
 from worker_pkg.pool_worker import PoolWorker
 from worker_pkg.pool_coordinator import PoolCoordinator
+from worker_pkg.pool_coordinator.election import lease_key_for
 from worker_pkg.pool_coordinator.server import start_pool_http_server
 
 log = logging.getLogger("voxchain.worker.bully")
@@ -19,7 +38,10 @@ log = logging.getLogger("voxchain.worker.bully")
 ELECTION_EPOCH_SECONDS = 30
 LEADER_TIMEOUT = 12.0
 HEARTBEAT_INTERVAL = 5.0
-ELECTION_N_ZEROS = 2
+# Mismo parámetro que la elección por Redis (`POOL_ELECTION_N_ZEROS`): estaba
+# hardcodeado acá, así que subir la dificultad de la elección sólo afectaba a una
+# de las dos ramas y quedaban descalibradas entre sí.
+ELECTION_N_ZEROS = int(os.getenv("POOL_ELECTION_N_ZEROS", "2"))
 
 
 class PoolBully:
@@ -29,10 +51,14 @@ class PoolBully:
 
     def __init__(self, worker_id: str, pool_id: str, messaging, *,
                  has_gpu: bool = False, capacity: int = 1,
-                 address: str = "", signer=None):
+                 address: str = "", signer=None, redis=None):
         self.worker_id = worker_id
         self.pool_id = pool_id
         self.m = messaging
+        # Opcional a propósito: `pool-auto` tiene que seguir funcionando sin
+        # Redis. Cuando lo hay, sirve para compartir el árbitro final con la
+        # otra elección (ver el docstring del módulo), no para elegir.
+        self.redis = redis
         self.has_gpu = has_gpu
         self.capacity = capacity
         self.address = address
@@ -197,8 +223,18 @@ class PoolBully:
 
         pc = PoolCoordinator(
             self.m,
+            # `pool_id` es la **identidad** de este nodo como pool (firma los
+            # nonces, nombra `pool:health:*`): sigue siendo el worker_id, porque
+            # cambiarla cambiaría a quién se le atribuyen los bloques.
             pool_id=self.worker_id,
-            redis=None,
+            redis=self.redis,
+            # El lease, en cambio, se toma en nombre del **pool**, que es el
+            # recurso del que hay uno solo. Así lo ve —y compite por él— un
+            # coordinador de la otra rama que sirva al mismo pool.
+            lease_key=lease_key_for(self.pool_id),
+            # El bully ya arbitró por RabbitMQ: acá no se elige nada.
+            elect_leader=False,
+            on_lost_leadership=self._on_lease_lost,
             mine=run_miner,
             capacity=self.capacity,
             signer=self.signer,
@@ -215,6 +251,27 @@ class PoolBully:
 
         self._last_hb_sent = 0
         log.info("%s: coordinador listo en %s", self.worker_id, self.address)
+
+    def _on_lease_lost(self):
+        """Otro coordinador del mismo pool tiene el lease: nos retiramos.
+
+        El bully nos eligió, pero Redis dice que alguien más ya está coordinando
+        este pool —típicamente un pod en modo `pool-coordinator`, que el bully no
+        ve porque arbitra por mensajes—. Volver a candidato es lo correcto:
+        seguir sirviendo HTTP y fragmentando en paralelo duplicaría el trabajo
+        del pool y es exactamente el escenario que este lease viene a evitar.
+        """
+        log.warning("%s: otro coordinador tiene el lease del pool %s; me retiro",
+                    self.worker_id, self.pool_id)
+        self._transition_to(self.CANDIDATE)
+        # `_transition_to(CANDIDATE)` pone `_last_heartbeat = 0`, que en el
+        # próximo tick dispara otra elección: volveríamos a ganarla por RabbitMQ,
+        # volveríamos a chocar con el lease y a retirarnos, en bucle de segundos.
+        # Contar este momento como "escuché a un líder" es lo correcto y no un
+        # parche: el dueño del lease **es** un líder, sólo que uno que no habla
+        # nuestro transporte. Así esperamos el mismo LEADER_TIMEOUT que ante
+        # cualquier otro coordinador y, si suelta el lease, re-eleccionamos solos.
+        self._last_heartbeat = time.time()
 
     def _stop_coordinator(self):
         if self._coordinator:

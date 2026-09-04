@@ -7,7 +7,7 @@ import { MatTabsModule } from '@angular/material/tabs';
 import { MatIconModule } from '@angular/material/icon';
 import { ApiService } from '../../core/services/api.service';
 import { EventsService } from '../../core/services/events.service';
-import { Law } from '../../core/models/law.model';
+import { LAW_CATEGORIES, Law, LawCategory, categoryLabel } from '../../core/models/law.model';
 
 @Component({
   selector: 'app-laws',
@@ -51,6 +51,13 @@ import { Law } from '../../core/models/law.model';
                     <td mat-cell *matCellDef="let law">{{ law.action }}</td>
                   </ng-container>
 
+                  <ng-container matColumnDef="category">
+                    <th mat-header-cell *matHeaderCellDef>Área</th>
+                    <td mat-cell *matCellDef="let law">
+                      <span class="category-chip">{{ label(law.category) }}</span>
+                    </td>
+                  </ng-container>
+
                   <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
                   <tr mat-row *matRowDef="let row; columns: displayedColumns;"></tr>
                 </table>
@@ -79,6 +86,13 @@ import { Law } from '../../core/models/law.model';
                     <td mat-cell *matCellDef="let law">{{ law.action }}</td>
                   </ng-container>
 
+                  <ng-container matColumnDef="category">
+                    <th mat-header-cell *matHeaderCellDef>Área</th>
+                    <td mat-cell *matCellDef="let law">
+                      <span class="category-chip">{{ label(law.category) }}</span>
+                    </td>
+                  </ng-container>
+
                   <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
                   <tr mat-row *matRowDef="let row; columns: displayedColumns;"></tr>
                 </table>
@@ -105,6 +119,13 @@ import { Law } from '../../core/models/law.model';
                   <ng-container matColumnDef="action">
                     <th mat-header-cell *matHeaderCellDef>Acción</th>
                     <td mat-cell *matCellDef="let law">{{ law.action }}</td>
+                  </ng-container>
+
+                  <ng-container matColumnDef="category">
+                    <th mat-header-cell *matHeaderCellDef>Área</th>
+                    <td mat-cell *matCellDef="let law">
+                      <span class="category-chip">{{ label(law.category) }}</span>
+                    </td>
                   </ng-container>
 
                   <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
@@ -182,6 +203,7 @@ import { Law } from '../../core/models/law.model';
     tr.mat-mdc-row:hover {
       background-color: rgba(255, 255, 255, 0.03);
     }
+
   `]
 })
 export class LawsComponent {
@@ -190,9 +212,19 @@ export class LawsComponent {
   allLaws = signal<Law[]>([]);
   pendingLaws = signal<Law[]>([]);
   promulgatedLaws = signal<Law[]>([]);
-  displayedColumns: string[] = ['law_id', 'author', 'status', 'action'];
+  displayedColumns: string[] = ['law_id', 'author', 'category', 'status', 'action'];
+  /** Etiquetas de las áreas; el backend las pisa con la lista autoritativa. */
+  categories = signal<LawCategory[]>(LAW_CATEGORIES);
+
+  label(category: string): string {
+    return categoryLabel(category, this.categories());
+  }
 
   constructor() {
+    this.apiService.getLawCategories().subscribe({
+      next: (cats) => { if (cats?.length) this.categories.set(cats); },
+      error: () => {},  // nos quedamos con las etiquetas locales
+    });
     effect(() => {
       // Track SSE signals so this effect re-runs on new blocks or law updates
       this.eventsService.latestBlock();

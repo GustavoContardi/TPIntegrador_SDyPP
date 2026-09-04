@@ -513,3 +513,132 @@ class TestUnSoloEquipoPorIdentidad:
                           coordinator_url="u")
         r.delete(*[k for k in r.scan_iter("team:*") if not k.startswith("team:owner:")])
         assert teams.team_of_owner("pk") is None
+
+
+class TestAgendaDelEquipo:
+    """Las categorías que vota el equipo (AGENT.md 3.10).
+
+    La invariante es la misma que la de los modos: **el estado del equipo y lo
+    que hace el coordinador se mueven juntos**. Toda escritura de agenda tiene
+    que bajar en el acto a `pool:policy:<coordinador>`, que es lo único que el
+    coordinador lee. Una agenda guardada que no llegó allá es un equipo que dice
+    votar economía y sigue minando todo.
+    """
+
+    def _policy(self, r, worker_id):
+        raw = r.get(f"pool:policy:{worker_id}")
+        return json.loads(raw) if raw else None
+
+    def test_fundar_con_agenda_la_baja_al_coordinador(self, api, r):
+        _own(r, "coord", "pk-gus")
+        _online(r, "coord")
+
+        resp = api.post("/api/teams",
+                        json={"name": "Los Economistas", "worker_id": "coord",
+                              "categories": ["economia", "salud"]},
+                        headers={"X-Owner-Id": "pk-gus"})
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["categories"] == ["economia", "salud"]
+        assert self._policy(r, "coord")["categories"] == ["economia", "salud"]
+
+    def test_fundar_sin_agenda_vota_todas(self, api, r):
+        _own(r, "coord", "pk-gus")
+        _online(r, "coord")
+        resp = api.post("/api/teams", json={"name": "Los Pibes", "worker_id": "coord"},
+                        headers={"X-Owner-Id": "pk-gus"})
+        assert resp.json()["categories"] == []
+        # y la política que baja es explícitamente "sin agenda", no la ausencia
+        # de política: así el coordinador que venía de otro equipo se entera.
+        assert self._policy(r, "coord")["categories"] == []
+
+    def test_categoria_inventada_es_400(self, api, r):
+        _own(r, "coord", "pk-gus")
+        _online(r, "coord")
+        resp = api.post("/api/teams",
+                        json={"name": "Astrólogos", "worker_id": "coord",
+                              "categories": ["astrologia"]},
+                        headers={"X-Owner-Id": "pk-gus"})
+        assert resp.status_code == 400
+        assert "astrologia" in resp.json()["detail"]
+        # y no quedó un equipo a medio fundar
+        assert api.get("/api/teams").json() == []
+
+    def test_cambiar_la_agenda_la_baja_al_coordinador(self, api, r):
+        _own(r, "coord", "pk-gus")
+        _online(r, "coord", mode="pool-coordinator")
+        team_id = api.post("/api/teams", json={"name": "T", "worker_id": "coord",
+                                               "categories": ["economia"]},
+                           headers={"X-Owner-Id": "pk-gus"}).json()["team_id"]
+
+        resp = api.put(f"/api/teams/{team_id}/categories",
+                       json={"categories": ["ambiente", "salud"]},
+                       headers={"X-Owner-Id": "pk-gus"})
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["categories"] == ["salud", "ambiente"]
+        assert self._policy(r, "coord")["categories"] == ["salud", "ambiente"]
+
+    def test_vaciar_la_agenda_vuelve_a_votar_todo(self, api, r):
+        _own(r, "coord", "pk-gus")
+        _online(r, "coord", mode="pool-coordinator")
+        team_id = api.post("/api/teams", json={"name": "T", "worker_id": "coord",
+                                               "categories": ["economia"]},
+                           headers={"X-Owner-Id": "pk-gus"}).json()["team_id"]
+
+        resp = api.put(f"/api/teams/{team_id}/categories", json={"categories": []},
+                       headers={"X-Owner-Id": "pk-gus"})
+        assert resp.json()["categories"] == []
+        assert self._policy(r, "coord")["categories"] == []
+
+    def test_solo_el_fundador_cambia_la_agenda(self, api, r):
+        """La agenda es lo que el equipo es frente al resto de la red.
+
+        Si cualquier miembro pudiera reescribirla, se entraría a un equipo sólo
+        para desviarle el cómputo a otra área.
+        """
+        _own(r, "coord", "pk-gus")
+        _online(r, "coord", mode="pool-coordinator")
+        team_id = api.post("/api/teams", json={"name": "T", "worker_id": "coord",
+                                               "categories": ["economia"]},
+                           headers={"X-Owner-Id": "pk-gus"}).json()["team_id"]
+        _own(r, "w2", "pk-valen")
+        _online(r, "w2")
+        api.post(f"/api/teams/{team_id}/join", json={"worker_id": "w2"},
+                 headers={"X-Owner-Id": "pk-valen"})
+
+        resp = api.put(f"/api/teams/{team_id}/categories",
+                       json={"categories": ["salud"]},
+                       headers={"X-Owner-Id": "pk-valen"})
+        assert resp.status_code == 403
+        assert self._policy(r, "coord")["categories"] == ["economia"]
+
+    def test_disolver_borra_la_politica_del_coordinador(self, api, r):
+        """Fundar otro equipo con el mismo minero no debe heredar la agenda vieja."""
+        _own(r, "coord", "pk-gus")
+        _online(r, "coord", mode="pool-coordinator")
+        team_id = api.post("/api/teams", json={"name": "T", "worker_id": "coord",
+                                               "categories": ["economia"]},
+                           headers={"X-Owner-Id": "pk-gus"}).json()["team_id"]
+        assert self._policy(r, "coord") is not None
+
+        api.delete(f"/api/teams/{team_id}", headers={"X-Owner-Id": "pk-gus"})
+        assert self._policy(r, "coord") is None
+
+    def test_la_agenda_sobrevive_a_un_cambio_de_politica_de_acciones(self, api, r):
+        """Las dos pantallas escriben la misma clave y no deben pisarse.
+
+        La política por acción/ley se toca desde Mineros; la agenda desde
+        Equipos. Un POST de política sin `categories` significa "no la toques".
+        """
+        _own(r, "coord", "pk-gus")
+        _online(r, "coord", mode="pool-coordinator")
+        api.post("/api/teams", json={"name": "T", "worker_id": "coord",
+                                     "categories": ["economia"]},
+                 headers={"X-Owner-Id": "pk-gus"})
+
+        resp = api.post("/api/workers/pool/coord/policy",
+                        json={"decision": "reject", "action": "derogacion"},
+                        headers={"X-Owner-Id": "pk-gus"})
+        assert resp.status_code == 200, resp.text
+        policy = self._policy(r, "coord")
+        assert policy["categories"] == ["economia"]
+        assert policy["decision"] == "reject"

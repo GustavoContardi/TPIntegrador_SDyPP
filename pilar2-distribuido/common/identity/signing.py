@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import base64
 
+from common.blockchain.categories import DEFAULT_CATEGORY
+
 # El import de cryptography es diferido para no romper entornos de test que no
 # lo tengan instalado y sólo ejerciten la lógica de dominio pura.
 
@@ -29,9 +31,24 @@ _SIG_RAW_LEN = 64  # P-256: r (32 bytes) || s (32 bytes)
 
 
 def proposal_message(author_pubkey: str, action: str, text_hash: str,
-                     law_id: str, created_at: str) -> bytes:
-    """Mensaje canónico de una propuesta (debe coincidir byte a byte con el cliente)."""
-    return f"{author_pubkey}|{action}|{text_hash}|{law_id}|{created_at}".encode()
+                     law_id: str, created_at: str,
+                     category: str = DEFAULT_CATEGORY) -> bytes:
+    """Mensaje canónico de una propuesta (debe coincidir byte a byte con el cliente).
+
+    ``category`` va al final y **siempre se incluye** (con ``general`` como valor
+    por defecto): el área de gobierno decide qué equipos aportan cómputo a la
+    ventana de esta ley (AGENT.md 3.10), así que tiene que quedar bajo la firma
+    del autor. Si no lo estuviera, un intermediario podría re-etiquetar una ley
+    ajena y dejarla sin nadie que la mine, o al revés, arrastrar a un equipo a
+    minar algo que su agenda no incluye.
+
+    El campo es posicional al final para que un mensaje sin categoría explícita
+    (cliente viejo que firma ``…|created_at``) NO valide por accidente contra
+    uno con categoría: son bytes distintos y la firma falla, que es exactamente
+    lo que queremos.
+    """
+    return (f"{author_pubkey}|{action}|{text_hash}|{law_id}|{created_at}"
+            f"|{category or DEFAULT_CATEGORY}").encode()
 
 
 def nonce_message(voting_window_id: str, nonce, winning_node_or_pool: str) -> bytes:

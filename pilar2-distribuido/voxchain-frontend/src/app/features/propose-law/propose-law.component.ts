@@ -11,7 +11,13 @@ import { MatIconModule } from '@angular/material/icon';
 import { RouterModule } from '@angular/router';
 import { ApiService } from '../../core/services/api.service';
 import { IdentityService } from '../../core/services/identity.service';
-import { Law } from '../../core/models/law.model';
+import {
+  DEFAULT_CATEGORY,
+  LAW_CATEGORIES,
+  Law,
+  LawCategory,
+  categoryLabel,
+} from '../../core/models/law.model';
 
 @Component({
   selector: 'app-propose-law',
@@ -54,10 +60,27 @@ import { Law } from '../../core/models/law.model';
                 </mat-select>
                 <mat-hint>Elegí la ley promulgada que querés derogar</mat-hint>
               </mat-form-field>
+              <p *ngIf="repealCategory() as cat" class="hint">
+                Se deroga en el área <strong>{{ label(cat) }}</strong>: derogar convoca
+                a los mismos equipos que promulgaron, así que el área no se elige.
+              </p>
               <p *ngIf="promulgatedLaws().length === 0" class="hint">No hay leyes promulgadas para derogar.</p>
             </div>
 
             <div *ngIf="action !== 'derogacion'">
+              <mat-form-field appearance="outline" class="full-width">
+                <mat-label>Área de gobierno</mat-label>
+                <mat-select [(ngModel)]="category">
+                  <mat-option *ngFor="let c of categories()" [value]="c.value">
+                    {{ c.label }}
+                  </mat-option>
+                </mat-select>
+                <mat-hint>
+                  Decide qué equipos van a aportar cómputo: los que no votan esta
+                  área no minan tu ley.
+                </mat-hint>
+              </mat-form-field>
+
               <mat-form-field appearance="outline" class="full-width">
                 <mat-label>Texto de la ley</mat-label>
                 <textarea matInput [(ngModel)]="text" rows="10" placeholder="Escribí acá el texto de la ley..."></textarea>
@@ -128,16 +151,41 @@ export class ProposeLawComponent {
 
   text = signal('');
   action = 'promulgacion';
+  category = DEFAULT_CATEGORY;
   lawIdToRepeal = '';
   submitting = signal(false);
   error = signal('');
   success = signal('');
   promulgatedLaws = signal<Law[]>([]);
+  /** Arranca con la lista local para no pintar un select vacío; el backend la pisa. */
+  categories = signal<LawCategory[]>(LAW_CATEGORIES);
 
   constructor() {
     this.apiService.getLaws('promulgated').subscribe((laws: Law[]) => {
       this.promulgatedLaws.set(laws);
     });
+    this.apiService.getLawCategories().subscribe({
+      next: (cats) => { if (cats?.length) this.categories.set(cats); },
+      // Sin conexión nos quedamos con la lista local: peor sería no dejar
+      // proponer porque no se pudo leer un catálogo que casi nunca cambia.
+      error: () => {},
+    });
+  }
+
+  label(category: string): string {
+    return categoryLabel(category, this.categories());
+  }
+
+  /**
+   * Área de la ley que se está por derogar.
+   *
+   * El backend la impone (la de la ley original) y el cliente tiene que firmar
+   * esa misma: si firmara otra, la verificación de la firma fallaría.
+   */
+  repealCategory(): string | null {
+    if (this.action !== 'derogacion' || !this.lawIdToRepeal) return null;
+    const law = this.promulgatedLaws().find((l) => l.law_id === this.lawIdToRepeal);
+    return law?.category ?? DEFAULT_CATEGORY;
   }
 
   canSubmit(): boolean {
@@ -172,18 +220,24 @@ export class ProposeLawComponent {
         : `ley-${crypto.randomUUID().slice(0, 8)}`;
       const text_hash = await this.identityService.sha256Hex(text);
       const created_at = new Date().toISOString();
+      // En una derogación el área la manda la ley original; firmar cualquier otra
+      // haría fallar la verificación del backend, que resuelve la categoría antes
+      // de comprobar la firma.
+      const category = this.repealCategory() ?? this.category;
 
       // En modo demo la clave privada está en el worker (backend); se envía sin firma.
       // REQUIRE_SIGNATURES=false en el backend acepta signature vacío.
       let signature = '';
       if (!this.identityService.isDemoMode()) {
-        const message = `${id.pubkey}|${this.action}|${text_hash}|${law_id}|${created_at}`;
+        const message =
+          `${id.pubkey}|${this.action}|${text_hash}|${law_id}|${created_at}|${category}`;
         signature = await this.identityService.sign(message);
       }
 
       const payload: any = {
         author_pubkey: id.pubkey,
         action: this.action,
+        category,
         law_id,
         text,
         text_hash,

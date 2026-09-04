@@ -28,7 +28,10 @@ class Snapshot:
     window_counter: int
     sealed_windows: int
     nct_leader: str | None
-    pool_leader: str | None
+    # Coordinadores de pool con lease vivo, separados por "|". Ya no es uno solo:
+    # cada pool tiene su propio lease (`pool:leader:<pool_id>`), así que en una
+    # red con varios equipos acá se ven todos.
+    pool_leaders: str | None
     redis_used_memory_mb: float
 
 
@@ -70,14 +73,16 @@ class RedisMetricsCollector:
         pipe.get("active_window")
         pipe.get("window_counter")
         pipe.get("nct:leader")
-        pipe.get("pool:leader")
         pipe.info("memory")
         results = pipe.execute()
 
-        chain_len, queue_depth, active_win, win_counter, nct_leader, pool_leader, mem = results
+        chain_len, queue_depth, active_win, win_counter, nct_leader, mem = results
 
         # Cuenta ventanas selladas activas (TTL positivo)
         sealed = sum(1 for _ in self._client.scan_iter("window_sealed:*"))
+        # Un lease por pool: hay que barrer el prefijo en vez de leer una clave.
+        pool_leaders = sorted(
+            key.split(":", 2)[2] for key in self._client.scan_iter("pool:leader:*"))
 
         now = time.time()
         return Snapshot(
@@ -89,7 +94,7 @@ class RedisMetricsCollector:
             window_counter=int(win_counter or 0),
             sealed_windows=sealed,
             nct_leader=nct_leader,
-            pool_leader=pool_leader,
+            pool_leaders="|".join(pool_leaders) or None,
             redis_used_memory_mb=round(mem.get("used_memory", 0) / 1024 / 1024, 3),
         )
 

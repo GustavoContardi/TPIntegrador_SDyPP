@@ -33,7 +33,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
 from locust import HttpUser, TaskSet, between, constant, events, task
 
 import config as cfg
-from helpers.law_generator import IdentityPool, unique_text
+from helpers.law_generator import IdentityPool, category_for, unique_text
 
 # Pool de identidades compartido entre todas las instancias de usuarios.
 # Cada identidad tiene su propio author_pubkey → cooldowns independientes.
@@ -49,6 +49,9 @@ def _next_proposal() -> dict:
         text=unique_text("load", _proposal_seq),
         action=random.choice(["promulgacion", "promulgacion", "promulgacion"]),
         # promulgacion 3x más frecuente que derogacion (requiere ley previa)
+        # Reparto determinístico de áreas: con todas las leyes en "general" el
+        # filtro por categoría de los equipos no se ejercitaría nunca.
+        category=category_for(_proposal_seq),
     )
 
 

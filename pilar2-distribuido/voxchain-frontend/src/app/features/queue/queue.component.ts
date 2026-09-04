@@ -8,7 +8,7 @@ import { MatIconModule } from '@angular/material/icon';
 import { ApiService } from '../../core/services/api.service';
 import { IdentityService } from '../../core/services/identity.service';
 import { EventsService } from '../../core/services/events.service';
-import { Law } from '../../core/models/law.model';
+import { LAW_CATEGORIES, Law, LawCategory, categoryLabel } from '../../core/models/law.model';
 import { Window } from '../../core/models/window.model';
 import { RouterModule } from '@angular/router';
 
@@ -39,6 +39,13 @@ import { RouterModule } from '@angular/router';
               <p><strong>Ventana:</strong> {{ window.voting_window_id }}</p>
               <p><strong>Ley:</strong> {{ window.law_id }}</p>
               <p><strong>Acción:</strong> {{ window.action }}</p>
+              <p>
+                <strong>Área:</strong>
+                <span class="category-chip">{{ label(window.category) }}</span>
+                <span class="category-note">
+                  sólo aportan cómputo los equipos que votan esta área
+                </span>
+              </p>
               <p><strong>Dificultad:</strong> {{ window.n_zeros_required }} ceros</p>
               <p><strong>Vence:</strong> {{ window.deadline }}</p>
               <div class="challenge-box">
@@ -65,6 +72,9 @@ import { RouterModule } from '@angular/router';
             <p><strong>ID de ley:</strong> {{ next.law_id }}</p>
             <p><strong>Autor:</strong> {{ next.author_pubkey.slice(0, 16) }}...</p>
             <p><strong>Acción:</strong> {{ next.action }}</p>
+            <p><strong>Área:</strong>
+              <span class="category-chip">{{ label(next.category) }}</span>
+            </p>
             <p><strong>Estado:</strong> {{ next.status }}</p>
           </mat-card-content>
           <mat-card-actions>
@@ -85,7 +95,11 @@ import { RouterModule } from '@angular/router';
                     <span class="position">#{{ i + 1 }}</span>
                     <div class="info">
                       <p class="law-id">{{ law.law_id }}</p>
-                      <p class="meta">{{ law.action }} — {{ law.author_pubkey.slice(0, 16) }}...</p>
+                      <p class="meta">
+                        {{ law.action }}
+                        <span class="category-chip">{{ label(law.category) }}</span>
+                        — {{ law.author_pubkey.slice(0, 16) }}...
+                      </p>
                       <button mat-button color="accent" (click)="showLawText(law.law_id)" class="view-text-btn">Ver texto</button>
                       <div *ngIf="lawTexts()[law.law_id]" class="law-text-box">
                         <pre>{{ lawTexts()[law.law_id] }}</pre>
@@ -106,7 +120,11 @@ import { RouterModule } from '@angular/router';
                   <div class="history-item">
                     <div class="info">
                       <p class="law-id">{{ law.law_id }}</p>
-                      <p class="meta">{{ law.action }} — {{ law.author_pubkey.slice(0, 16) }}...</p>
+                      <p class="meta">
+                        {{ law.action }}
+                        <span class="category-chip">{{ label(law.category) }}</span>
+                        — {{ law.author_pubkey.slice(0, 16) }}...
+                      </p>
                       <button mat-button color="accent" (click)="showLawText(law.law_id)" class="view-text-btn">Ver texto</button>
                       <div *ngIf="lawTexts()[law.law_id]" class="law-text-box">
                         <pre>{{ lawTexts()[law.law_id] }}</pre>
@@ -219,6 +237,8 @@ import { RouterModule } from '@angular/router';
       color: #888;
     }
     .no-identity a { color: #64b5f6; }
+    .category-chip { margin: 0 6px; }
+    .category-note { font-size: 0.8rem; color: #777; }
   `]
 })
 export class QueueComponent implements OnInit {
@@ -231,9 +251,19 @@ export class QueueComponent implements OnInit {
   activeWindow = signal<Window | null>(null);
   history = signal<Law[]>([]);
   lawTexts = signal<Record<string, string>>({});
+  /** Etiquetas de las áreas; el backend las pisa con la lista autoritativa. */
+  categories = signal<LawCategory[]>(LAW_CATEGORIES);
 
   ngOnInit() {
     this.loadData();
+    this.apiService.getLawCategories().subscribe({
+      next: (cats) => { if (cats?.length) this.categories.set(cats); },
+      error: () => {},  // nos quedamos con las etiquetas locales
+    });
+  }
+
+  label(category: string): string {
+    return categoryLabel(category, this.categories());
   }
 
   private loadData() {
@@ -257,6 +287,7 @@ export class QueueComponent implements OnInit {
       voting_window_id: window.voting_window_id,
       law_id: window.law_id,
       action: window.action,
+      category: window.category,
       n_zeros_required: window.n_zeros_required,
       partial_hash_base: window.partial_hash_base,
       deadline: window.deadline,
@@ -287,6 +318,7 @@ export class QueueComponent implements OnInit {
     const info = {
       law_id: law.law_id,
       action: law.action,
+      category: law.category,
       author_pubkey: law.author_pubkey,
       text_hash: law.text_hash,
     };

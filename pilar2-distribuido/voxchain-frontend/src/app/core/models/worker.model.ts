@@ -28,6 +28,14 @@ export interface Team {
   coordinator_worker_id: string;
   coordinator_url: string;
   created_at: string;
+  /**
+   * Áreas de ley sobre las que vota el equipo. Vacío = vota todas.
+   *
+   * No es cosmético: con agenda declarada, el coordinador del equipo ignora las
+   * ventanas de otras áreas y ni él ni sus mineros aportan un solo hash a esas
+   * leyes.
+   */
+  categories: string[];
   members: TeamMember[];
   member_count: number;
   /** Mineros con keep-alive vivo contra el coordinador. Puede diferir de member_count. */

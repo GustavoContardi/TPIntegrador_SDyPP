@@ -362,6 +362,17 @@ class WorkerManager:
         pool_id = os.getenv("POOL_ID", "default")
         address = self.address
 
+        # Redis es opcional en pool-auto: el bully arbitra por RabbitMQ y tiene
+        # que seguir funcionando sin él (es su ventaja para nodos federados).
+        # Cuando está, se usa sólo para compartir el árbitro final —el lease del
+        # pool— con los coordinadores elegidos por la otra vía, de modo que un
+        # pool mixto no termine con dos coordinadores activos.
+        try:
+            redis = create_redis(config.REDIS_URL) if config.REDIS_URL else None
+        except Exception as exc:  # noqa: BLE001
+            log.warning("pool-auto sin Redis (%s): el bully arbitra solo", exc)
+            redis = None
+
         bully = PoolBully(
             self.worker_id,
             pool_id,
@@ -370,6 +381,7 @@ class WorkerManager:
             capacity=config.get_int("WORKER_CAPACITY", 1),
             address=address,
             signer=self.signer,
+            redis=redis,
         )
         bully.wire()
         self._bully = bully

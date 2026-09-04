@@ -105,3 +105,68 @@ def test_e2e_ventana_vencida_descarta_sin_sellar(bus, store):
     assert store.get_law("L-lenta")["status"] == LawStatus.DISCARDED
     win_id = f"W1-L-lenta"
     assert store.get_window(win_id)["result"] == WindowResult.EXPIRED_PENDING
+
+
+@pytest.mark.integration
+def test_e2e_solo_mina_quien_vota_la_categoria(bus, store):
+    """La categoría de la ley decide quién aporta cómputo (AGENT.md 3.10).
+
+    Dos mineros con agendas distintas escuchan el mismo desafío. La ley es de
+    salud, así que el que sólo vota economía no toca un hash y el bloque lo
+    sella el otro. Es el criterio de aceptación de la función, extremo a
+    extremo: propuesta con categoría → ventana → desafío → filtro del minero.
+    """
+    nct = NCTCoordinator(bus, store, n_zeros=2, window_seconds_promulgacion=300,
+                         window_seconds_derogacion=300, cooldown_new=1,
+                         cooldown_reproposed=2)
+    nct.wire()
+
+    economista = StandaloneWorker(bus, worker_id="solo-economia", mine=cpu_mine,
+                                  clock=lambda: 0)
+    economista._rejected_actions = set()
+    economista._categories = ["economia"]
+    economista.wire()
+
+    sanitarista = StandaloneWorker(bus, worker_id="solo-salud", mine=cpu_mine,
+                                   clock=lambda: 0)
+    sanitarista._rejected_actions = set()
+    sanitarista._categories = ["salud"]
+    sanitarista.wire()
+
+    bus.publish_proposal({"law_id": "ley-hospitales", "author_pubkey": "ciudadano-A",
+                          "text_hash": "h-salud", "created_at": "2026-06-16T00:00:00Z",
+                          "category": "salud"})
+
+    assert store.chain_length() == 1
+    block = store.get_chain()[0]
+    assert block.winning_node_or_pool == "solo-salud"
+    # El que no vota el área ni siquiera intentó: la ventana no figura entre las
+    # que resolvió, así que no gastó cómputo en una ley que no le interesa.
+    assert economista._solved == set()
+
+
+@pytest.mark.integration
+def test_e2e_ley_sin_equipo_que_la_vote_expira(bus, store):
+    """Una ley que no le interesa a nadie no se promulga.
+
+    No es un caso de error: es la consecuencia política de que los equipos
+    elijan agenda. Si ningún minero vota el área, la ventana vence y la ley se
+    descarta como cualquier otra ley pendiente (AGENT.md 3.2).
+    """
+    nct = NCTCoordinator(bus, store, n_zeros=2, window_seconds_promulgacion=-1,
+                         window_seconds_derogacion=-1, cooldown_new=1,
+                         cooldown_reproposed=2)
+    nct.wire()
+    worker = StandaloneWorker(bus, worker_id="solo-economia", mine=cpu_mine,
+                              clock=lambda: 0)
+    worker._rejected_actions = set()
+    worker._categories = ["economia"]
+    worker.wire()
+
+    bus.publish_proposal({"law_id": "ley-humedales", "author_pubkey": "ciudadano-B",
+                          "text_hash": "h-amb", "created_at": "t0",
+                          "category": "ambiente"})
+    nct.check_deadline()
+
+    assert store.chain_length() == 0
+    assert store.get_law("ley-humedales")["status"] == LawStatus.DISCARDED
