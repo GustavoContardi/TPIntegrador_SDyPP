@@ -83,3 +83,55 @@ body {
     border-color: #383838;
   }
 }
+
+// Primitivas del tema oscuro compartidas por la pantalla de Minería y su sección
+// de Equipos. Viven acá por la misma razón que `.category-chip`: los estilos de
+// componente tienen presupuesto propio en angular.json (`anyComponentStyle`,
+// 2 kB de aviso y 4 kB de **error**), y tenerlas duplicadas en los dos
+// componentes dejaba a teams.component a 80 bytes de romper el build.
+//
+// Los componentes que necesitan otra cosa la pisan con un selector más
+// específico: en encapsulación emulada, la regla del componente lleva su
+// atributo y le gana a estas.
+code {
+  font-family: 'Courier New', monospace;
+  color: #90caf9;
+  background: #0c0c0c;
+  padding: 3px 7px;
+  border-radius: 4px;
+  border: 1px solid #222;
+}
+
+// Etiqueta del modo de un minero (standalone / pool-worker / …).
+.mode-tag {
+  font-size: 0.75rem;
+  color: #b0b0b0;
+  background: rgba(255, 255, 255, 0.06);
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+// Semáforo de "está reportando". Rojo por defecto: si no llegó el estado, no
+// está vivo.
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #e57373;
+  display: inline-block;
+
+  &.online { background: #81c784; }
+}
+
+// Material en tema oscuro. Antes iba con ::ng-deep dentro de cada componente,
+// que igual filtraba a todo el documento: acá hace lo mismo, una sola vez y sin
+// gastar presupuesto de componente.
+.mat-mdc-form-field {
+  --mdc-outlined-text-field-outline-color: #444;
+  --mdc-outlined-text-field-label-text-color: #888;
+}
+
+.mat-mdc-select-value,
+.mat-mdc-input-element {
+  color: #e0e0e0;
+}

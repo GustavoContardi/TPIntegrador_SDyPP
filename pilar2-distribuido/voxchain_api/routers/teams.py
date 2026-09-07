@@ -49,6 +49,7 @@ from voxchain_api.services.worker_control import (
     dispatch_switch_mode,
     push_voting_policy,
     read_worker_status,
+    refresh_desired_pool_url,
 )
 
 router = APIRouter(prefix="/api/teams", tags=["teams"])
@@ -110,12 +111,20 @@ def _hydrate(store: TeamsStore, redis_client, team: dict) -> Team:
     coordinator_url = team.get("coordinator_url", "")
     if status:
         # La dirección del coordinador puede cambiar sola: en Kubernetes alcanza
-        # con que el pod se reinicie para que le toque otra IP. Se re-escribe en
-        # cada lectura para que quien se una después reciba la vigente.
+        # con que el pod se reinicie para que le toque otra IP, y un coordinador
+        # que se registró antes de arrancar recién la publica ahora. Se
+        # re-escribe en cada lectura para que quien se una después reciba la
+        # vigente...
         fresh = coordinator_address(status, coordinator_id)
         if fresh and fresh != coordinator_url:
             store.set_coordinator_url(team["team_id"], fresh)
             coordinator_url = fresh
+            # ...y se corrige la de los que ya estaban adentro, que si no
+            # seguirían pidiéndole fragmentos a una dirección muerta. No hace
+            # falta re-despachar por RabbitMQ: cada minero reconcilia su modo
+            # contra este registro.
+            for member_id in team.get("members", []):
+                refresh_desired_pool_url(redis_client, member_id, fresh)
 
     miners_connected = None
     try:
@@ -243,17 +252,24 @@ async def join_team(
     if not team:
         raise HTTPException(status_code=404, detail="El equipo no existe")
 
-    # La dirección se resuelve al unirse, no al crear el equipo: un coordinador
-    # recién desplegado todavía no había reportado la suya cuando se lo promovió.
+    # La dirección se resuelve al unirse con lo mejor que se sepa en el momento:
+    # el `address` que el coordinador publica si está encendido, y si no la
+    # última conocida.
+    #
+    # Antes acá había un 409 si el coordinador no reportaba, para no mandar a un
+    # minero a pedirle trabajo a un HTTP muerto. Resultó peor el remedio: un
+    # equipo cuyo coordinador todavía no arrancó quedaba imposible de integrar
+    # **para siempre**, y como registrar un minero no lo enciende, ese era el
+    # caso normal y no la excepción. Ahora se puede entrar antes: la URL se
+    # corrige sola cuando el coordinador aparece (ver `_hydrate`) y el
+    # `PoolWorker` reintenta el registro indefinidamente, así que el equipo se
+    # arma solo en cuanto las dos puntas están encendidas.
     coordinator_id = team["coordinator_worker_id"]
     coordinator_status = read_worker_status(redis_client, coordinator_id)
-    if not coordinator_status or not coordinator_status.get("running"):
-        raise HTTPException(
-            status_code=409,
-            detail=(f"El coordinador del equipo ({coordinator_id}) no está en "
-                    "línea todavía. Probá de nuevo en unos segundos."),
-        )
-    url = coordinator_address(coordinator_status, coordinator_id)
+    url = (coordinator_address(coordinator_status, coordinator_id)
+           if coordinator_status
+           else (team.get("coordinator_url")
+                 or coordinator_address({}, coordinator_id)))
     store.set_coordinator_url(team_id, url)
 
     try:

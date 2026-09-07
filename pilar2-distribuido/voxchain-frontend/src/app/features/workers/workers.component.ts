@@ -1,4 +1,4 @@
-import { Component, OnDestroy, OnInit, inject, signal } from '@angular/core';
+import { Component, OnDestroy, OnInit, computed, inject, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { MatCardModule } from '@angular/material/card';
@@ -64,12 +64,16 @@ interface PoolHealth {
           mat-raised-button
           color="accent"
           (click)="showRegisterForm.set(true)"
-          *ngIf="identityService.identity() && !identityService.identity()?.isDemo && !showRegisterForm()">
+          *ngIf="canRegisterWorker() && !showRegisterForm()">
           <svg class="btn-svg" viewBox="0 0 24 24" fill="currentColor">
             <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
           </svg>
           Registrar minero
         </button>
+        <p class="already-registered" *ngIf="myWorker() as mine">
+          Tu minero es <code>{{ mine.worker_id }}</code>.<br>
+          <span class="muted">Cada identidad registra uno solo.</span>
+        </p>
       </div>
 
       <!-- Register New Worker Card -->
@@ -101,6 +105,7 @@ interface PoolHealth {
       
       <!-- Equipos (modo cooperativo) -->
       <app-teams
+        id="seccion-equipos"
         [teams]="teams()"
         [workers]="workers()"
         (changed)="loadAll()">
@@ -148,8 +153,8 @@ interface PoolHealth {
               <ng-container matColumnDef="team">
                 <th mat-header-cell *matHeaderCellDef>Equipo</th>
                 <td mat-cell *matCellDef="let worker">
-                  <a *ngIf="worker.team_id" routerLink="/teams" class="team-link"
-                     [title]="'Coordinador en ' + worker.pool_url">
+                  <a *ngIf="worker.team_id" class="team-link" (click)="scrollToTeams()"
+                     [title]="'Coordinador en ' + (worker.pool_url || 'dirección aún desconocida')">
                     {{ worker.team_name }}
                     <span class="role-badge" [class.coord]="worker.team_role === 'coordinator'">
                       {{ worker.team_role === 'coordinator' ? 'coordina' : 'mina' }}
@@ -170,10 +175,15 @@ interface PoolHealth {
               </ng-container>
 
               <ng-container matColumnDef="running">
-                <th mat-header-cell *matHeaderCellDef>Corriendo</th>
+                <th mat-header-cell *matHeaderCellDef>Estado</th>
                 <td mat-cell *matCellDef="let worker">
-                  <span [class.running-text]="worker.running" [class.stopped-text]="!worker.running">
-                    {{ worker.running ? 'Running' : 'Stopped' }}
+                  <span [class.running-text]="worker.running"
+                        [class.stopped-text]="!worker.running">
+                    {{ worker.running ? 'Corriendo' : 'Sin arrancar' }}
+                  </span>
+                  <span class="pending-note" *ngIf="!worker.running && isWorkerOwned(worker)"
+                        title="Registrarlo lo anota en la red; para que mine hay que levantar su contenedor">
+                    registrado, falta levantarlo
                   </span>
                 </td>
               </ng-container>
@@ -185,18 +195,18 @@ interface PoolHealth {
                     <button
                       mat-button
                       (click)="backToSolo(worker)"
-                      *ngIf="isWorkerOwned(worker) && worker.mode !== 'standalone'"
-                      [disabled]="!worker.running || switching()"
+                      *ngIf="isWorkerOwned(worker) && worker.team_id"
+                      [disabled]="switching()"
                       title="Sacarlo del equipo y devolverlo a modo competitivo">
                       Volver a competitivo
                     </button>
-                    <a
+                    <button
                       mat-button
-                      routerLink="/teams"
-                      *ngIf="isWorkerOwned(worker) && worker.mode === 'standalone'"
-                      title="El modo cooperativo se administra desde Equipos">
+                      (click)="scrollToTeams()"
+                      *ngIf="isWorkerOwned(worker) && !worker.team_id"
+                      title="Los equipos se administran en la sección de arriba">
                       Sumar a un equipo
-                    </a>
+                    </button>
                     <button 
                       mat-button 
                       (click)="openPolicyDialog(worker)" 
@@ -324,6 +334,8 @@ interface PoolHealth {
       margin: 0;
       font-weight: 500;
     }
+    .already-registered { color: #b0b0b0; font-size: 0.85rem; text-align: right; margin: 0; line-height: 1.6; }
+    .already-registered .muted { color: #777; font-size: 0.8rem; }
     .register-card, .workers-card, .policy-card {
       background-color: #1e1e1e;
       color: #e0e0e0;
@@ -413,6 +425,12 @@ interface PoolHealth {
     }
     .empty-text {
       color: #555;
+    }
+    .pending-note {
+      display: block;
+      color: #777;
+      font-size: 0.72rem;
+      margin-top: 4px;
     }
     .mode-badge {
       padding: 4px 8px;
@@ -520,16 +538,6 @@ interface PoolHealth {
       background-color: rgba(255, 152, 0, 0.15);
       color: #ffb74d;
     }
-    ::ng-deep .mat-mdc-form-field {
-      --mdc-outlined-text-field-outline-color: #444;
-      --mdc-outlined-text-field-label-text-color: #888;
-    }
-    ::ng-deep .mat-mdc-select-value {
-      color: #e0e0e0;
-    }
-    ::ng-deep .mat-mdc-input-element {
-      color: #e0e0e0;
-    }
   `]
 })
 export class WorkersComponent implements OnInit, OnDestroy {
@@ -553,6 +561,24 @@ export class WorkersComponent implements OnInit, OnDestroy {
   newWorkerId = signal('');
   registering = signal(false);
 
+  /**
+   * El minero de esta identidad, si ya registró alguno.
+   *
+   * Cada identidad registra uno solo (el backend responde 409 al segundo), así
+   * que mostrar cuál es explica por qué no aparece el botón de registrar mejor
+   * que hacerlo desaparecer sin más.
+   */
+  myWorker = computed(() => {
+    const id = this.identityService.identity();
+    if (!id || id.isDemo) return null;
+    return this.workers().find((w) => isOwnedBy(w, id)) ?? null;
+  });
+
+  canRegisterWorker = computed(() => {
+    const id = this.identityService.identity();
+    return !!id && !id.isDemo && !this.myWorker();
+  });
+
   ngOnInit() {
     this.loadAll();
     // El estado de los mineros vive con TTL de 15 s en Redis y un cambio de modo
@@ -563,6 +589,12 @@ export class WorkersComponent implements OnInit, OnDestroy {
 
   ngOnDestroy() {
     if (this.timer) clearInterval(this.timer);
+  }
+
+  /** Lleva la vista a la sección de equipos, que está en esta misma página. */
+  scrollToTeams() {
+    document.getElementById('seccion-equipos')
+      ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
   /** Una sola carga para las dos secciones de la página. */
@@ -780,8 +812,17 @@ export class WorkersComponent implements OnInit, OnDestroy {
       }
 
       this.apiService.registerWorker(workerId, id.pubkey, timestamp, signature, pemKey).subscribe({
-        next: () => {
-          this.snackBar.open(`Minero "${workerId}" registrado y desplegado en el clúster.`, 'Cerrar', { duration: 3000 });
+        next: (res: any) => {
+          // El backend dice si además de anotarlo levantó un proceso. Sin
+          // Kubernetes configurado (el compose local) el alta es sólo metadata,
+          // y prometer un despliegue que no ocurrió deja al usuario esperando
+          // un contenedor que nadie va a crear.
+          this.snackBar.open(
+            res?.deployed
+              ? `Minero "${workerId}" registrado y desplegado en el clúster.`
+              : `Minero "${workerId}" registrado. Todavía no está corriendo: `
+                + `levantá su contenedor con  ./run.sh worker ${workerId}`,
+            'Cerrar', { duration: res?.deployed ? 3000 : 9000 });
           this.cancelRegister();
           this.loadAll();
         },

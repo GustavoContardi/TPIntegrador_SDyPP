@@ -255,3 +255,66 @@ class TestDireccionAnunciada:
         estado = m.get_status()
         assert estado["pool_url"] == "http://10.42.0.7:9001"
         assert estado["address"] == "http://10.42.0.7:9001"
+
+
+class TestModoDeseado:
+    """El minero adopta el modo que su dueño le fijó, aunque no estuviera prendido.
+
+    El comando de cambio de modo llega por una cola exclusiva del worker: si el
+    minero estaba apagado cuando lo asignaron a un equipo, ese mensaje no lo
+    recibió nadie. La reconciliación contra `worker:desired_mode:<id>` es lo que
+    hace que un minero registrado hoy y encendido mañana arranque en su equipo.
+    """
+
+    @pytest.fixture
+    def redis(self):
+        import fakeredis
+        return fakeredis.FakeRedis(decode_responses=True)
+
+    def _fijar(self, redis, worker_id, mode, pool_url=""):
+        import json
+        redis.set(f"worker:desired_mode:{worker_id}",
+                  json.dumps({"mode": mode, "pool_url": pool_url}))
+
+    def test_aplica_el_modo_deseado(self, manager, redis):
+        m, _ = manager
+        assert m.get_status()["mode"] == "standalone"
+        self._fijar(redis, "gustavo10", "pool-worker", "http://coord:9001")
+
+        m._reconcile_desired_mode(redis)
+
+        assert m.get_status()["mode"] == "pool-worker"
+        assert m.get_status()["pool_url"] == "http://coord:9001"
+
+    def test_sin_intencion_no_toca_nada(self, manager, redis):
+        """Un minero del compose sin registro en Redis sigue con su WORKER_MODE."""
+        m, _ = manager
+        m._reconcile_desired_mode(redis)
+        assert m.get_status()["mode"] == "standalone"
+
+    def test_no_reinicia_si_ya_esta_en_el_modo_pedido(self, manager, redis):
+        """Reconciliar es idempotente: cambiar de modo para y arranca hilos."""
+        m, _ = manager
+        self._fijar(redis, "gustavo10", "standalone")
+        hilo = m._thread
+
+        m._reconcile_desired_mode(redis)
+
+        assert m._thread is hilo, "reinició el modo sin necesidad"
+
+    def test_sigue_al_coordinador_cuando_cambia_de_direccion(self, manager, redis):
+        """En Kubernetes alcanza con que el pod del coordinador se reinicie."""
+        m, _ = manager
+        self._fijar(redis, "gustavo10", "pool-worker", "http://viejo:9001")
+        m._reconcile_desired_mode(redis)
+        assert m.get_status()["pool_url"] == "http://viejo:9001"
+
+        self._fijar(redis, "gustavo10", "pool-worker", "http://nuevo:9001")
+        m._reconcile_desired_mode(redis)
+        assert m.get_status()["pool_url"] == "http://nuevo:9001"
+
+    def test_ignora_un_modo_invalido(self, manager, redis):
+        m, _ = manager
+        self._fijar(redis, "gustavo10", "modo-que-no-existe")
+        m._reconcile_desired_mode(redis)
+        assert m.get_status()["mode"] == "standalone"

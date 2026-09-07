@@ -122,6 +122,55 @@ class WorkerManager:
             log.info("modo activo: %s", self._mode)
             return {"ok": True, "mode": self._mode, "pool_url": self._pool_url}
 
+    # -- modo deseado (intención persistida por el backend) ----------------
+
+    DESIRED_KEY = "worker:desired_mode:{worker_id}"
+
+    @classmethod
+    def read_desired_mode(cls, redis_client, worker_id: str):
+        """Modo que el dueño del minero le fijó, o ``None``.
+
+        Es la contraparte de lo que escribe el backend al asignar un minero a un
+        equipo. Existe porque el comando por RabbitMQ viaja a una cola exclusiva
+        del worker: si el minero estaba apagado cuando su dueño lo asignó, esa
+        orden no la recibió nadie. Leerla acá es lo que hace que un minero
+        registrado hoy y encendido mañana arranque en el equipo que le tocó.
+        """
+        try:
+            import json
+            raw = redis_client.get(cls.DESIRED_KEY.format(worker_id=worker_id))
+            if not raw:
+                return None
+            return json.loads(raw)
+        except Exception:  # noqa: BLE001
+            log.debug("no se pudo leer el modo deseado", exc_info=True)
+            return None
+
+    def _reconcile_desired_mode(self, redis_client) -> None:
+        """Aplica el modo deseado si difiere del actual.
+
+        Reconciliar en vez de depender sólo del mensaje cubre tres casos que el
+        comando no cubre: el minero estaba apagado cuando lo asignaron, el
+        mensaje se perdió, o la dirección de su coordinador cambió (su pod se
+        reinició y le tocó otra IP).
+        """
+        desired = self.read_desired_mode(redis_client, self.worker_id)
+        if not desired:
+            return
+        mode = desired.get("mode", "")
+        if mode not in ("standalone", "pool-worker", "pool-coordinator", "pool-auto"):
+            return
+        pool_url = (desired.get("pool_url") or "").rstrip("/")
+        if mode == self._mode and (mode != "pool-worker"
+                                   or pool_url == self._pool_url.rstrip("/")):
+            return
+        log.info("reconciliando modo: %s → %s (%s)", self._mode, mode,
+                 pool_url or "sin pool")
+        try:
+            self.switch_mode(mode, pool_url)
+        except Exception:  # noqa: BLE001
+            log.exception("no se pudo aplicar el modo deseado %s", mode)
+
     def _redis_report_loop(self) -> None:
         redis_client = None
         try:
@@ -144,6 +193,7 @@ class WorkerManager:
                     if fallando:
                         log.info("reporte de estado a Redis restablecido")
                         fallando = False
+                    self._reconcile_desired_mode(redis_client)
                 except Exception as exc:
                     if not fallando:
                         log.warning("no se puede reportar estado a Redis (%s): %s",
@@ -405,9 +455,31 @@ def main() -> None:
     worker_id = os.getenv("WORKER_ID", f"worker-{socket.gethostname()}")
     has_gpu = gpu_usable(os.getenv("MINER_GPU_BIN", ""))
 
-    # Leer modo desde ConfigMap (persistencia), fallback a env var
-    mode = WorkerManager._read_mode_from_configmap(worker_id) or os.getenv("WORKER_MODE", "standalone")
-    pool_url = os.getenv("POOL_COORDINATOR_URL", "")
+    # Orden de precedencia del modo inicial, de más específico a más genérico:
+    #
+    #   1. `worker:desired_mode:<id>` en Redis — lo que su dueño decidió desde la
+    #      UI. Es lo más reciente y lo único que puede haberse decidido mientras
+    #      este minero estaba apagado.
+    #   2. El ConfigMap `worker-modes` de Kubernetes — persistencia del hot-switch.
+    #   3. `WORKER_MODE` — el default del despliegue.
+    mode = ""
+    pool_url = ""
+    try:
+        redis_client = create_redis(config.REDIS_URL) if config.REDIS_URL else None
+        desired = (WorkerManager.read_desired_mode(redis_client, worker_id)
+                   if redis_client else None)
+        if desired and desired.get("mode"):
+            mode = desired["mode"]
+            pool_url = desired.get("pool_url", "") or ""
+            log.info("modo deseado leído de Redis: %s", mode)
+    except Exception:  # noqa: BLE001
+        log.debug("sin modo deseado en Redis", exc_info=True)
+
+    if not mode:
+        mode = (WorkerManager._read_mode_from_configmap(worker_id)
+                or os.getenv("WORKER_MODE", "standalone"))
+    if not pool_url:
+        pool_url = os.getenv("POOL_COORDINATOR_URL", "")
     log.info("iniciando %s modo=%s (gpu=%s)", worker_id, mode, has_gpu)
 
     signer = WorkerSigner.from_env()

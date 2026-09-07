@@ -18,7 +18,10 @@ from voxchain_api.models import (
 from voxchain_api.services.redis_reader import RedisReader
 from voxchain_api.services.rabbitmq_publisher import RabbitMQPublisher
 from voxchain_api.services.teams_store import TeamsStore
-from voxchain_api.services.worker_control import dispatch_switch_mode
+from voxchain_api.services.worker_control import (
+    clear_desired_mode,
+    dispatch_switch_mode,
+)
 from common.identity import verify
 from datetime import datetime, timezone
 
@@ -696,6 +699,35 @@ def _verify_timestamp_freshness(timestamp_str: str) -> None:
         raise HTTPException(status_code=400, detail="Timestamp expired or too far in the future")
 
 
+def worker_of_owner(redis_client, pubkey: str) -> Optional[str]:
+    """El minero que ya registró esta identidad, o ``None`` si no registró ninguno.
+
+    Se resuelve recorriendo ``registered_workers`` en vez de con un índice
+    inverso a propósito: el conjunto ya es la fuente de verdad del alta y la baja
+    lo limpia, así que esto **no puede quedar desincronizado** ni necesita migrar
+    el estado que ya existe en Redis. Las altas son raras y los mineros
+    dinámicos, pocos; el costo lineal no se nota.
+
+    Un id que quedó en el conjunto sin su ``worker:owner:*`` se ignora en vez de
+    contarse: es un registro a medias, y bloquear a alguien por un resto de
+    estado sería peor que dejarlo registrar de nuevo.
+    """
+    try:
+        registered = redis_client.smembers("registered_workers") or []
+    except Exception:  # noqa: BLE001
+        logger.warning("no se pudo leer registered_workers", exc_info=True)
+        return None
+    for worker_id in registered:
+        if isinstance(worker_id, bytes):
+            worker_id = worker_id.decode("utf-8")
+        owner = redis_client.get(f"worker:owner:{worker_id}")
+        if isinstance(owner, bytes):
+            owner = owner.decode("utf-8")
+        if owner and owner == pubkey:
+            return worker_id
+    return None
+
+
 def persist_worker_registration(request: RegisterWorkerRequest, redis_client) -> dict:
     """Alta de un minero: verifica la firma del dueño y lo despliega.
 
@@ -737,7 +769,26 @@ def persist_worker_registration(request: RegisterWorkerRequest, redis_client) ->
     if not verify(pubkey, msg, signature):
         raise HTTPException(status_code=401, detail="Invalid signature")
 
-    # 4. Save to Redis
+    # 4. Un minero por identidad.
+    #
+    # No es una limitación técnica sino la misma regla que ya rige para fundar
+    # equipos (AGENT.md 3.9): el sistema documenta la concentración de poder como
+    # su debilidad estructural, y dejar que una sola clave acumule mineros la
+    # agrava gratis. Con Sybil sigue siendo evadible —generar otra identidad
+    # cuesta nada, AGENT.md 9— pero acá no se pretende cerrar ese agujero, sólo
+    # no ensancharlo.
+    #
+    # Re-registrar el MISMO id es válido y no cuenta como un minero nuevo: es el
+    # camino para volver a subir la clave privada o recrear su despliegue.
+    existing = worker_of_owner(redis_client, pubkey)
+    if existing and existing != worker_id:
+        raise HTTPException(
+            status_code=409,
+            detail=(f"Ya tenés registrado el minero '{existing}'. Cada identidad "
+                    "puede registrar uno solo: dalo de baja si querés usar otro id."),
+        )
+
+    # 5. Save to Redis
     try:
         redis_client.sadd("registered_workers", worker_id)
         redis_client.set(f"worker:owner:{worker_id}", pubkey)
@@ -745,11 +796,22 @@ def persist_worker_registration(request: RegisterWorkerRequest, redis_client) ->
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save registration: {e}")
 
-    # 5. Dynamic Kubernetes worker deployment if private key uploaded
-    if request.private_key:
+    # 6. Dynamic Kubernetes worker deployment if private key uploaded
+    #
+    # `deployed` dice si además de anotar el minero se levantó un proceso para
+    # él. Sin Kubernetes configurado —el caso del docker-compose local— el alta
+    # es sólo metadata: el minero queda registrado y sin correr, y la UI tiene
+    # que decirlo. Antes respondía lo mismo en los dos casos y el frontend
+    # anunciaba "registrado y desplegado en el clúster" aunque no hubiera
+    # desplegado nada, así que el usuario se quedaba esperando un contenedor que
+    # nadie iba a crear.
+    deployed = False
+    if request.private_key and K8S_ENABLED:
         _spawn_k8s_worker(worker_id, request.private_key)
+        deployed = True
 
-    return {"ok": True, "worker_id": worker_id, "pubkey": pubkey}
+    return {"ok": True, "worker_id": worker_id, "pubkey": pubkey,
+            "deployed": deployed}
 
 
 @router.post("/register", response_model=dict)
@@ -798,6 +860,9 @@ async def unregister_worker(
         redis_client.delete(f"worker:owner:{worker_id}")
         redis_client.delete(f"worker:pubkey:{worker_id}")
         redis_client.delete(f"worker:status:{worker_id}")
+        # Sin esto, volver a registrar un minero con el mismo id lo haría
+        # arrancar en el equipo del que fue dado de baja.
+        clear_desired_mode(redis_client, worker_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to unregister worker: {e}")
 

@@ -33,10 +33,81 @@ LOCAL_ADMIN_URLS = {
 # tiene el backend de saber la dirección real de un coordinador.
 STATUS_KEY = "worker:status:{worker_id}"
 
+# Modo que el minero **debe** tener, decidido por su dueño. A diferencia del
+# estado (que caduca a los 15 s y describe el presente), esto es una intención y
+# no caduca nunca.
+#
+# Existe porque el comando por RabbitMQ es efímero: el consumidor de
+# ``worker.command`` es una cola exclusiva por worker, así que una orden
+# publicada mientras el minero está apagado no la recibe nadie y se pierde en
+# silencio. Sin este registro, asignar a un equipo un minero que todavía no
+# arrancó era una operación que la UI daba por buena y el minero jamás ejecutaba.
+#
+# Con él, el comando pasa a ser una optimización de latencia: el minero aplica
+# su modo al arrancar y lo reconcilia mientras corre, así que la orden llega
+# igual aunque el mensaje se haya perdido.
+DESIRED_KEY = "worker:desired_mode:{worker_id}"
+
 # Política de voto del pool: la lee el PoolCoordinator en su tick (cada 3 s) y
 # también viaja por HTTP como atajo para el Compose local. Es donde vive la
 # agenda temática del equipo del lado del worker.
 POLICY_KEY = "pool:policy:{worker_id}"
+
+
+def read_desired_mode(redis_client, worker_id: str) -> Optional[dict]:
+    """Modo que el dueño le fijó al minero, o ``None`` si nunca se le fijó uno."""
+    try:
+        raw = redis_client.get(DESIRED_KEY.format(worker_id=worker_id))
+    except Exception:  # noqa: BLE001
+        return None
+    if not raw:
+        return None
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8")
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+
+
+def write_desired_mode(redis_client, worker_id: str, mode: str,
+                       pool_url: str = "") -> None:
+    """Deja registrado el modo que este minero debe adoptar."""
+    try:
+        redis_client.set(DESIRED_KEY.format(worker_id=worker_id),
+                         json.dumps({"mode": mode, "pool_url": pool_url or ""}))
+    except Exception:  # noqa: BLE001
+        log.warning("no se pudo fijar el modo deseado de %s", worker_id,
+                    exc_info=True)
+
+
+def clear_desired_mode(redis_client, worker_id: str) -> None:
+    """Olvida la intención (al dar de baja el minero)."""
+    try:
+        redis_client.delete(DESIRED_KEY.format(worker_id=worker_id))
+    except Exception:  # noqa: BLE001
+        log.debug("no se pudo borrar el modo deseado de %s", worker_id,
+                  exc_info=True)
+
+
+def refresh_desired_pool_url(redis_client, worker_id: str, pool_url: str) -> bool:
+    """Actualiza la URL del coordinador en la intención de un miembro.
+
+    La dirección del coordinador puede cambiar sin que cambie el equipo (en
+    Kubernetes alcanza con que su pod se reinicie). Como el minero reconcilia su
+    modo contra este registro, corregirlo acá basta para que se reconecte solo:
+    no hace falta re-despachar nada por RabbitMQ.
+
+    Devuelve True si hubo un cambio real.
+    """
+    desired = read_desired_mode(redis_client, worker_id)
+    if not desired or desired.get("mode") != "pool-worker":
+        return False
+    if (desired.get("pool_url") or "") == (pool_url or ""):
+        return False
+    write_desired_mode(redis_client, worker_id, "pool-worker", pool_url)
+    log.info("minero %s: URL del coordinador actualizada a %s", worker_id, pool_url)
+    return True
 
 
 def read_worker_status(redis_client, worker_id: str) -> Optional[dict]:
@@ -81,14 +152,19 @@ async def dispatch_switch_mode(worker_id: str, target: str, pool_url: str,
 
     Tres pasos, y los tres importan:
 
-    1. **RabbitMQ**: la orden real. Si falla, se propaga — no tiene sentido
-       decirle a la UI que el modo cambió cuando la orden nunca salió.
-    2. **Redis**: escritura optimista del modo esperado, para que la UI no
-       muestre el modo viejo durante los segundos que tarda el worker en
-       aplicar el cambio y volver a reportar.
-    3. **HTTP**: atajo para el Compose local; si falla se ignora, porque el
-       camino de RabbitMQ ya cubrió el caso.
+    1. **Redis (``worker:desired_mode:*``)**: la intención, que sobrevive a que
+       el minero esté apagado. Es el canal autoritativo.
+    2. **RabbitMQ**: el aviso inmediato, para que un minero encendido no espere
+       al siguiente ciclo de reconciliación.
+    3. **Redis (``worker:status:*``)**: escritura optimista del modo esperado,
+       para que la UI no muestre el modo viejo mientras tanto.
+    4. **HTTP**: atajo para el Compose local; si falla se ignora.
     """
+    # La intención va primero y es lo único que no se puede perder: si el minero
+    # está apagado, el mensaje de abajo no lo recibe nadie, pero al arrancar va a
+    # leer esto y adoptar el modo.
+    write_desired_mode(redis_client, worker_id, target, pool_url)
+
     cmd = {"type": "switch_mode", "mode": target, "pool_url": pool_url or ""}
     publisher.messaging.publish_worker_command(worker_id, cmd)
 

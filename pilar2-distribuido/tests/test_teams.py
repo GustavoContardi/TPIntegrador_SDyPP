@@ -213,6 +213,28 @@ def _own(r, worker_id, owner):
     r.set(f"worker:pubkey:{worker_id}", owner)
 
 
+def _registro_firmado(worker_id: str):
+    """Alta válida de un minero, firmada con una identidad nueva."""
+    import base64
+    from datetime import datetime, timezone
+
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec, utils as asym
+
+    from voxchain_api.models import RegisterWorkerRequest
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    pub = base64.b64encode(key.public_key().public_bytes(
+        serialization.Encoding.DER,
+        serialization.PublicFormat.SubjectPublicKeyInfo)).decode()
+    ts = datetime.now(timezone.utc).isoformat()
+    der = key.sign(f"{worker_id}|register|{ts}".encode(), ec.ECDSA(hashes.SHA256()))
+    rr, ss = asym.decode_dss_signature(der)
+    sig = base64.b64encode(rr.to_bytes(32, "big") + ss.to_bytes(32, "big")).decode()
+    return RegisterWorkerRequest(worker_id=worker_id, pubkey=pub, timestamp=ts,
+                                 signature=sig)
+
+
 def _commands_for(client, worker_id):
     return [cmd for wid, cmd in client.publisher.messaging.commands if wid == worker_id]
 
@@ -270,19 +292,36 @@ class TestFlujoApi:
              "pool_url": "http://10.42.0.7:9001"}
         ]
 
-    def test_no_se_puede_unir_a_un_coordinador_caido(self, api, r):
+    def test_se_puede_unir_aunque_el_coordinador_no_este_encendido(self, api, r):
+        """Unirse no exige que las dos puntas estén prendidas al mismo tiempo.
+
+        Antes acá había un 409 ("el coordinador no está en línea todavía") para
+        no mandar a un minero a pedirle trabajo a un HTTP muerto. Salió peor el
+        remedio: registrar un minero **no lo enciende**, así que un equipo recién
+        fundado tenía a su coordinador apagado por definición y quedaba imposible
+        de integrar para siempre — no era un caso de borde, era el caso normal.
+
+        Ahora se puede entrar antes: la intención queda escrita, la URL se
+        corrige sola cuando el coordinador aparece, y el pool se arma solo en
+        cuanto ambos están encendidos.
+        """
         _own(r, "coord", "pk-gus")
         _online(r, "coord")
         team_id = api.post("/api/teams", json={"name": "Los Pibes", "worker_id": "coord"},
                            headers={"X-Owner-Id": "pk-gus"}).json()["team_id"]
-        r.delete("worker:status:coord")  # el coordinador se cayó
+        r.delete("worker:status:coord")  # el coordinador se apagó
 
         _own(r, "otro", "pk-valen")
         resp = api.post(f"/api/teams/{team_id}/join", json={"worker_id": "otro"},
                         headers={"X-Owner-Id": "pk-valen"})
-        assert resp.status_code == 409
-        # y sobre todo: no se lo mandó a minar contra un HTTP muerto
-        assert _commands_for(api, "otro") == []
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["member_count"] == 2
+
+        # La intención quedó escrita, que es lo que lo hace seguro: el minero la
+        # va a leer cuando arranque, aunque el comando de RabbitMQ se pierda.
+        desired = json.loads(r.get("worker:desired_mode:otro"))
+        assert desired["mode"] == "pool-worker"
+        assert desired["pool_url"]
 
     def test_salir_del_equipo_vuelve_a_competitivo(self, api, r):
         _own(r, "coord", "pk-gus")
@@ -414,12 +453,6 @@ class TestNoInventarWorkersVivos:
         assert resp.status_code == 200, resp.text
         assert resp.json()["coordinator_online"] is False
 
-        # y por lo tanto nadie puede unirse todavía
-        _own(r, "otro", "pk-valen")
-        team_id = resp.json()["team_id"]
-        assert api.post(f"/api/teams/{team_id}/join", json={"worker_id": "otro"},
-                        headers={"X-Owner-Id": "pk-valen"}).status_code == 409
-
     def test_la_orden_se_manda_igual(self, api, r):
         """No saber si arrancó no es razón para no mandarle la orden.
 
@@ -451,8 +484,12 @@ class TestUnSoloEquipoPorIdentidad:
     Un equipo concentra poder de cómputo (AGENT.md 3.9). Dejar que una misma
     clave funde varios le daría a un solo individuo tantos frentes como quisiera,
     agravando gratis la concentración de poder que el sistema documenta como su
-    debilidad. Participar en el equipo de otro con varios mineros sí se puede:
-    lo que se limita es fundar.
+    debilidad.
+
+    Los tests usan ``_own`` para dar de alta mineros directamente en Redis, así
+    que ejercitan esta regla sin pasar por el cupo de un minero por identidad
+    (ver ``TestUnMineroPorIdentidad``), que se aplica en el alta. Son dos capas
+    distintas y conviene poder probarlas por separado.
     """
 
     def test_la_segunda_fundacion_es_409(self, api, r):
@@ -493,7 +530,12 @@ class TestUnSoloEquipoPorIdentidad:
         assert api.post("/api/teams", json={"name": "Segundo", "worker_id": "w1"},
                         headers={"X-Owner-Id": "pk-gus"}).status_code == 200
 
-    def test_sumar_varios_mineros_al_equipo_de_otro_sigue_permitido(self, api, r):
+    def test_el_equipo_no_limita_cuantos_mineros_pone_cada_identidad(self, api, r):
+        """La membresía no mira al dueño; el cupo se aplica al registrar.
+
+        Por la API real una identidad llega con un solo minero, pero esa
+        restricción vive en el alta y no acá: el equipo acepta a quien le manden.
+        """
         _own(r, "coord", "pk-gus")
         _online(r, "coord", mode="pool-coordinator")
         team_id = api.post("/api/teams", json={"name": "Los Pibes", "worker_id": "coord"},
@@ -642,3 +684,190 @@ class TestAgendaDelEquipo:
         policy = self._policy(r, "coord")
         assert policy["categories"] == ["economia"]
         assert policy["decision"] == "reject"
+
+
+class TestIntencionPersistida:
+    """El modo de un minero tiene que sobrevivir a que el minero esté apagado.
+
+    El comando de cambio de modo viaja por RabbitMQ a una **cola exclusiva** del
+    worker: si el minero no está conectado, no hay quien la consuma y la orden se
+    pierde sin que nadie se entere. Como registrar un minero desde la UI no lo
+    enciende, ese era el caso corriente — el dueño lo asignaba a un equipo, la UI
+    respondía 200, y el minero jamás se enteraba.
+
+    La intención se guarda en `worker:desired_mode:<id>` y el minero la lee al
+    arrancar y la reconcilia mientras corre, así que el mensaje pasó a ser sólo
+    una optimización de latencia.
+    """
+
+    def test_asignar_a_un_equipo_deja_la_intencion_escrita(self, api, r):
+        _own(r, "coord", "pk-gus")
+        _online(r, "coord", address="http://10.0.0.5:9001")
+        team_id = api.post("/api/teams", json={"name": "T", "worker_id": "coord"},
+                           headers={"X-Owner-Id": "pk-gus"}).json()["team_id"]
+        _own(r, "w2", "pk-valen")  # nunca arrancó: no hay worker:status:w2
+
+        api.post(f"/api/teams/{team_id}/join", json={"worker_id": "w2"},
+                 headers={"X-Owner-Id": "pk-valen"})
+
+        desired = json.loads(r.get("worker:desired_mode:w2"))
+        assert desired == {"mode": "pool-worker", "pool_url": "http://10.0.0.5:9001"}
+
+    def test_la_intencion_no_caduca(self, api, r):
+        """A diferencia del estado (TTL 15 s), la intención no expira.
+
+        Si expirara, un minero apagado más de 15 s perdería su equipo.
+        """
+        _own(r, "w1", "pk-gus")
+        _online(r, "w1")
+        api.post("/api/teams", json={"name": "T", "worker_id": "w1"},
+                 headers={"X-Owner-Id": "pk-gus"})
+        assert r.ttl("worker:desired_mode:w1") == -1  # -1 = sin expiración
+
+    def test_volver_a_competitivo_tambien_se_persiste(self, api, r):
+        _own(r, "coord", "pk-gus")
+        _online(r, "coord", mode="pool-coordinator")
+        team_id = api.post("/api/teams", json={"name": "T", "worker_id": "coord"},
+                           headers={"X-Owner-Id": "pk-gus"}).json()["team_id"]
+        _own(r, "w2", "pk-valen")
+        _online(r, "w2")
+        api.post(f"/api/teams/{team_id}/join", json={"worker_id": "w2"},
+                 headers={"X-Owner-Id": "pk-valen"})
+
+        api.post("/api/workers/w2/switch-mode", json={"target": "standalone"},
+                 headers={"X-Owner-Id": "pk-valen"})
+        assert json.loads(r.get("worker:desired_mode:w2"))["mode"] == "standalone"
+
+    def test_cuando_el_coordinador_aparece_se_corrige_la_url_de_los_miembros(self, api, r):
+        """El caso real: se arma el equipo con todo apagado y después se enciende.
+
+        Al fundar el equipo no se conoce la dirección del coordinador, así que se
+        usa una derivada del id. Cuando el coordinador arranca y publica la suya
+        —que en Kubernetes es la IP del pod, imposible de adivinar— hay que
+        corregir la de los que ya estaban adentro, o se quedan pidiéndole
+        fragmentos a un host que no existe.
+        """
+        _own(r, "coord", "pk-gus")
+        team_id = api.post("/api/teams", json={"name": "T", "worker_id": "coord"},
+                           headers={"X-Owner-Id": "pk-gus"}).json()["team_id"]
+        _own(r, "w2", "pk-valen")
+        api.post(f"/api/teams/{team_id}/join", json={"worker_id": "w2"},
+                 headers={"X-Owner-Id": "pk-valen"})
+        assert json.loads(r.get("worker:desired_mode:w2"))["pool_url"] == \
+            "http://coord:9001"
+
+        # el coordinador arranca y publica su dirección real
+        _online(r, "coord", mode="pool-coordinator", address="http://10.42.0.7:9001")
+        api.get("/api/teams")  # cualquier lectura reconcilia
+
+        assert json.loads(r.get("worker:desired_mode:w2"))["pool_url"] == \
+            "http://10.42.0.7:9001"
+
+    def test_dar_de_baja_un_minero_olvida_su_intencion(self, api, r):
+        """Sin esto, reusar el id lo haría arrancar en el equipo del que salió."""
+        from voxchain_api.services.worker_control import clear_desired_mode
+        r.set("worker:desired_mode:w9", json.dumps({"mode": "pool-worker",
+                                                    "pool_url": "http://x:9001"}))
+        clear_desired_mode(r, "w9")
+        assert r.get("worker:desired_mode:w9") is None
+
+
+class TestElAltaDiceLaVerdad:
+    def test_sin_kubernetes_el_alta_no_despliega_nada(self, api, r, monkeypatch):
+        """Registrar anota el minero; encenderlo es otra cosa.
+
+        En el compose local no hay Kubernetes, así que el alta es sólo metadata.
+        La UI usa este campo para no prometer un contenedor que nadie va a crear
+        y decirle al usuario cómo levantarlo.
+        """
+        from voxchain_api.routers import workers as workers_router
+        monkeypatch.setattr(workers_router, "K8S_ENABLED", False)
+
+        resp = workers_router.persist_worker_registration(
+            _registro_firmado("minero-nuevo"), r)
+        assert resp["deployed"] is False
+        assert r.sismember("registered_workers", "minero-nuevo")
+
+
+class TestUnMineroPorIdentidad:
+    """Registrar es un derecho por identidad, no por minero (misma regla que fundar).
+
+    Un minero es poder de cómputo; dejar que una sola clave acumule varios agrava
+    gratis la concentración de poder que el sistema documenta como su debilidad
+    (AGENT.md 3.9/9). Con Sybil sigue siendo evadible —generar otra identidad no
+    cuesta nada— pero acá no se pretende cerrar ese agujero, sólo no ensancharlo.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _alta_autenticada(self, monkeypatch):
+        """La firma y la frescura del timestamp se verifican ANTES del cupo.
+
+        Es el orden correcto —no se actúa sobre una identidad no autenticada— y
+        significa que estos tests, que ejercitan la regla de negocio, tienen que
+        pasar primero esa puerta.
+        """
+        monkeypatch.setattr("voxchain_api.routers.workers.verify", lambda *a: True)
+        monkeypatch.setattr(
+            "voxchain_api.routers.workers._verify_timestamp_freshness", lambda *a: None)
+
+    def test_el_segundo_alta_es_409(self, api, r):
+        _own(r, "mi-minero", "pk-gus")
+
+        resp = api.post("/api/workers/register", json={
+            "worker_id": "otro-minero", "pubkey": "pk-gus",
+            "timestamp": "2026-01-01T00:00:00+00:00", "signature": "x",
+        })
+        assert resp.status_code == 409
+        assert "mi-minero" in resp.json()["detail"]
+        assert not r.sismember("registered_workers", "otro-minero")
+
+    def test_otra_identidad_si_puede_registrar(self, api, r):
+        _own(r, "de-gus", "pk-gus")
+
+        resp = api.post("/api/workers/register", json={
+            "worker_id": "de-valen", "pubkey": "pk-valen",
+            "timestamp": "2026-01-01T00:00:00+00:00", "signature": "x",
+        })
+        assert resp.status_code == 200, resp.text
+        assert r.sismember("registered_workers", "de-valen")
+
+    def test_reregistrar_el_mismo_id_sigue_valiendo(self, api, r):
+        """Es el camino para volver a subir la clave privada o recrear el pod."""
+        _own(r, "mi-minero", "pk-gus")
+
+        resp = api.post("/api/workers/register", json={
+            "worker_id": "mi-minero", "pubkey": "pk-gus",
+            "timestamp": "2026-01-01T00:00:00+00:00", "signature": "x",
+        })
+        assert resp.status_code == 200, resp.text
+
+    def test_dar_de_baja_libera_el_cupo(self, api, r):
+        from voxchain_api.routers.workers import worker_of_owner
+
+        _own(r, "mi-minero", "pk-gus")
+        assert worker_of_owner(r, "pk-gus") == "mi-minero"
+
+        # Lo que hace el endpoint de baja.
+        r.srem("registered_workers", "mi-minero")
+        r.delete("worker:owner:mi-minero")
+        assert worker_of_owner(r, "pk-gus") is None
+
+    def test_un_registro_a_medias_no_bloquea_para_siempre(self, r):
+        """Un id en el set sin su `worker:owner:*` es estado roto, no un minero."""
+        from voxchain_api.routers.workers import worker_of_owner
+
+        r.sadd("registered_workers", "huerfano")
+        assert worker_of_owner(r, "pk-gus") is None
+
+    def test_fundar_equipo_con_minero_nuevo_respeta_el_cupo(self, api, r):
+        """El alta que hace `create_team` pasa por la misma regla."""
+        _own(r, "mi-minero", "pk-gus")
+        _online(r, "mi-minero")
+
+        resp = api.post("/api/teams", json={
+            "name": "Segundo intento", "worker_id": "otro-minero",
+            "new_worker": {"worker_id": "otro-minero", "pubkey": "pk-gus",
+                           "timestamp": "2026-01-01T00:00:00+00:00", "signature": "x"},
+        }, headers={"X-Owner-Id": "pk-gus"})
+        assert resp.status_code == 409
+        assert api.get("/api/teams").json() == []

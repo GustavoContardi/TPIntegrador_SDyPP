@@ -528,19 +528,89 @@ Implementación: `voxchain_api/services/teams_store.py`.
 que se registró recién y todavía no tiene ninguno: se da de alta, se despliega y
 se promueve en un solo paso. Sin eso el formulario sería un callejón sin salida.
 
-### Una identidad funda un solo equipo
+### Una identidad, un minero y un equipo
 
-`create_team` rechaza con 409 si el `owner` ya fundó uno (índice
-`team:owner:<owner>`; se libera al disolver). No es una limitación técnica sino
-una regla del dominio: un equipo es una **facción política** que concentra poder
-de cómputo (AGENT.md 3.9), y dejar que una misma clave funde varios le daría a un
-solo individuo tantos frentes como quisiera armar, agravando gratis la
-concentración de poder que el sistema ya documenta como su debilidad.
+Dos reglas del mismo espíritu, las dos con 409:
 
-Lo que se limita es **fundar**, no participar: sumar varios mineros propios al
-equipo de otro sigue permitido. Y la restricción es por identidad, no por
-minero — con Sybil sigue siendo evadible, igual que todo lo demás en el sistema
-(AGENT.md 9); acá no se pretende cerrar ese agujero, sólo no ensancharlo.
+| Regla | Dónde se aplica | Se libera |
+|---|---|---|
+| Una identidad registra **un minero** | `persist_worker_registration` (`worker_of_owner`) | al dar de baja el minero |
+| Una identidad funda **un equipo** | `create_team` (índice `team:owner:<owner>`) | al disolver el equipo |
+
+Ninguna es una limitación técnica: son reglas del dominio. Un equipo es una
+**facción política** que concentra poder de cómputo (AGENT.md 3.9) y un minero
+*es* poder de cómputo; dejar que una misma clave acumule varios de cualquiera de
+los dos le daría a un solo individuo tantos frentes como quisiera armar,
+agravando gratis la concentración de poder que el sistema ya documenta como su
+debilidad.
+
+Detalles que importan al implementar:
+
+- **Re-registrar el mismo `worker_id` no consume cupo.** Es el camino para
+  volver a subir la clave privada o recrear el despliegue, y devuelve 200.
+- **El cupo se calcula recorriendo `registered_workers`**, no con un índice
+  inverso. El conjunto ya es la fuente de verdad del alta y la baja lo limpia,
+  así que no puede desincronizarse ni hace falta migrar el estado existente. Un
+  id que quedó en el conjunto sin su `worker:owner:*` se ignora: es un registro
+  a medias, y bloquear a alguien por un resto de estado sería peor.
+- **El orden es autenticar y después la regla.** La firma y la frescura del
+  timestamp se verifican primero; recién ahí se mira el cupo. No se actúa sobre
+  una identidad que todavía no probó ser quien dice.
+- **La UI no ofrece lo que el backend va a rechazar**: con un minero ya
+  registrado desaparece el botón *Registrar minero* (y en su lugar dice cuál es
+  el tuyo), y el formulario de fundar equipo deja de proponer "registrar uno
+  nuevo".
+
+Con Sybil las dos reglas siguen siendo evadibles —generar otra identidad no
+cuesta nada, igual que todo lo demás en el sistema (AGENT.md 9)—; acá no se
+pretende cerrar ese agujero, sólo no ensancharlo.
+
+### La intención se persiste; el mensaje es sólo una optimización
+
+El comando `switch_mode` viaja por el exchange `worker.command` a una **cola
+exclusiva** que cada worker declara al conectarse. Eso tiene una consecuencia que
+no es obvia: **una orden publicada mientras el minero está apagado no la recibe
+nadie y se descarta en silencio**. RabbitMQ no la guarda, porque no hay cola.
+
+Con el flujo de equipos eso dejó de ser un caso de borde y pasó a ser el caso
+normal: registrar un minero desde la UI **no lo enciende** (sin Kubernetes
+configurado no hay quién le cree un proceso), así que el minero al que su dueño
+acababa de asignarle un equipo estaba, por definición, apagado. La UI respondía
+200, el equipo lo listaba como miembro, y el minero jamás se enteraba.
+
+Por eso el modo se guarda como **intención** en `worker:desired_mode:<worker_id>`:
+
+```json
+{"mode": "pool-worker", "pool_url": "http://10.42.0.7:9001"}
+```
+
+| | `worker:status:<id>` | `worker:desired_mode:<id>` |
+|---|---|---|
+| Quién lo escribe | el worker, cada 5 s | el backend, al asignar |
+| Qué describe | el presente | la voluntad del dueño |
+| TTL | 15 s | ninguno |
+
+El worker lo lee en dos momentos: **al arrancar** (antes de elegir modo, con
+precedencia sobre el ConfigMap y sobre `WORKER_MODE`) y **en cada vuelta de su
+loop de reporte**, donde reconcilia si difiere de su modo actual. Eso cubre tres
+casos que el mensaje no cubre:
+
+1. El minero estaba apagado cuando lo asignaron.
+2. El mensaje se perdió.
+3. La dirección de su coordinador cambió — en Kubernetes alcanza con que el pod
+   del coordinador se reinicie y le toque otra IP. El backend corrige el
+   `pool_url` de los miembros en `_hydrate`, y cada minero se reconecta solo sin
+   que haga falta re-despachar nada.
+
+El comando por RabbitMQ sigue existiendo: es lo que hace que un minero encendido
+aplique el cambio en el acto en vez de esperar hasta 5 segundos.
+
+**Corolario:** unirse a un equipo ya **no exige** que el coordinador esté
+encendido. Antes había un 409 ahí para no mandar a un minero contra un HTTP
+muerto; el remedio salió peor que la enfermedad, porque dejaba a un equipo recién
+fundado imposible de integrar para siempre. Hoy se puede armar el equipo con todo
+apagado y encender después: el pool se arma solo en cuanto las dos puntas están
+vivas, porque el `PoolWorker` reintenta el registro indefinidamente.
 
 ### La invariante que sostiene todo
 
@@ -560,6 +630,24 @@ mintiendo. Hoy:
 
 Cobertura: `tests/test_teams.py`, incluidos los cuatro casos de arriba y la
 regla de un equipo por identidad.
+
+### Registrar no es encender
+
+`POST /api/workers/register` anota el minero (dueño, clave pública, alta en
+`registered_workers`) y, **sólo si hay Kubernetes configurado**, le crea un
+Deployment. En el compose local no lo hay, así que el alta es metadata y nada
+más: el minero aparece en la tabla como `mode: unknown, running: false`.
+
+La respuesta trae `deployed: true|false` para que la UI no prometa un contenedor
+que nadie va a crear. Para encenderlo en local:
+
+```bash
+./run.sh worker <id-del-minero>
+```
+
+Ese contenedor arranca **sin** `WORKER_MODE`: lee su modo de
+`worker:desired_mode:<id>`, así que si ya lo habías metido en un equipo arranca
+directamente como minero de ese equipo.
 
 ### Dónde vive en la UI
 

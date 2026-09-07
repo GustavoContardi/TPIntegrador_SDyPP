@@ -100,14 +100,22 @@ import {
                 <mat-option *ngFor="let w of freeWorkers()" [value]="w.worker_id">
                   {{ w.worker_id }}<span *ngIf="!w.running"> (detenido)</span>
                 </mat-option>
-                <mat-option value="__new__">Registrar un minero nuevo…</mat-option>
+                <mat-option value="__new__" *ngIf="canRegisterAnother()">
+                  Registrar un minero nuevo…
+                </mat-option>
               </mat-select>
             </mat-form-field>
           </ng-container>
 
-          <p class="hint" *ngIf="freeWorkers().length === 0">
-            Todavía no tenés ningún minero libre, así que lo damos de alta ahora:
-            elegí un identificador y se despliega junto con el equipo.
+          <p class="hint" *ngIf="freeWorkers().length === 0 && canRegisterAnother()">
+            Todavía no tenés ningún minero, así que lo damos de alta ahora:
+            elegí un identificador y queda registrado junto con el equipo.
+          </p>
+
+          <p class="hint" *ngIf="freeWorkers().length === 0 && !canRegisterAnother()">
+            Tu minero <code>{{ myWorkers()[0].worker_id }}</code> ya está en un equipo.
+            Cada identidad registra un minero solo, así que sacalo de ahí antes de
+            fundar el tuyo.
           </p>
 
           <mat-form-field appearance="outline" class="full-width" *ngIf="needsNewWorker()">
@@ -152,6 +160,11 @@ import {
           </mat-card-subtitle>
         </mat-card-header>
         <mat-card-content>
+          <p class="hint pending-coord" *ngIf="!team.coordinator_online">
+            El coordinador de este equipo (<code>{{ team.coordinator_worker_id }}</code>)
+            todavía no está corriendo. Podés unirte igual: tu minero queda asignado
+            y empieza a pedirle trabajo en cuanto los dos estén encendidos.
+          </p>
           <p class="hint agenda-warning">
             <ng-container *ngIf="team.categories?.length; else minaTodo">
               Ojo: este equipo sólo vota
@@ -172,8 +185,13 @@ import {
             </mat-select>
           </mat-form-field>
           <p class="hint" *ngIf="freeWorkers().length === 0">
-            No tenés mineros libres. Sacá uno de su equipo actual, o registrá uno
-            nuevo con <strong>Registrar minero</strong>.
+            <ng-container *ngIf="canRegisterAnother(); else sacaloDeAhi">
+              No tenés ningún minero registrado. Registrá uno con
+              <strong>Registrar minero</strong> y volvé.
+            </ng-container>
+            <ng-template #sacaloDeAhi>
+              Tu minero ya está en un equipo. Sacalo de ahí antes de sumarlo a éste.
+            </ng-template>
           </p>
         </mat-card-content>
         <mat-card-actions class="actions">
@@ -266,11 +284,11 @@ import {
           <div class="team-actions" *ngIf="hasIdentity()">
             <button mat-button color="primary"
                     (click)="openJoin(team)"
-                    *ngIf="!myWorkerIn(team)"
-                    [disabled]="!team.coordinator_online"
+                    *ngIf="!hasWorkerIn(team)"
+                    [disabled]="busy()"
                     [title]="team.coordinator_online
                       ? 'Sumar uno de mis mineros'
-                      : 'El coordinador no está en línea todavía'">
+                      : 'El coordinador todavía no arrancó: tu minero se le une en cuanto lo haga'">
               Unirme
             </button>
             <button mat-button
@@ -323,14 +341,11 @@ import {
     .role { font-size: 0.7rem; color: #81c784; background: rgba(76,175,80,0.12); padding: 2px 7px; border-radius: 4px; }
     .role.coord { color: #ffb74d; background: rgba(255,152,0,0.12); }
 
-    code { font-family: 'Courier New', monospace; color: #90caf9; background: #0c0c0c; padding: 3px 7px; border-radius: 4px; border: 1px solid #222; }
-    .mode-tag { font-size: 0.75rem; color: #b0b0b0; background: rgba(255,255,255,0.06); padding: 2px 8px; border-radius: 4px; }
     .tag { font-size: 0.7rem; padding: 2px 8px; border-radius: 12px; font-weight: 600; }
     .tag-mine { background: rgba(255,152,0,0.15); color: #ffb74d; border: 1px solid rgba(255,152,0,0.3); }
-    .dot { width: 8px; height: 8px; border-radius: 50%; background: #e57373; display: inline-block; }
-    .dot.online { background: #81c784; }
     .state { color: #888; font-size: 0.8rem; }
     .team-actions { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+    .pending-coord { border-left: 2px solid rgba(255,152,0,0.4); padding-left: 12px; }
 
     /* Una sola línea divisoria para todo lo que separa bloques dentro de la tarjeta. */
     .roster, .agenda-picker.inline, .agenda-row { border-top: 1px solid #2a2a2a; }
@@ -350,9 +365,6 @@ import {
                   margin-top: 14px; padding-top: 12px; }
     .agenda-label { font-size: 0.75rem; color: #777; }
     .edit-agenda { font-size: 0.75rem !important; min-width: auto !important; padding: 0 8px !important; }
-
-    ::ng-deep .mat-mdc-form-field { --mdc-outlined-text-field-outline-color: #444; --mdc-outlined-text-field-label-text-color: #888; }
-    ::ng-deep .mat-mdc-select-value, ::ng-deep .mat-mdc-input-element { color: #e0e0e0; }
   `]
 })
 export class TeamsComponent {
@@ -451,9 +463,19 @@ export class TeamsComponent {
 
   hasIdentity = computed(() => !!this.identityService.identity());
 
+  /** Todos mis mineros, estén libres o en un equipo. */
+  myWorkers = computed(() => this.workers().filter((w) => this.isMine(w)));
+
   /** Mineros propios que no están en ningún equipo: los candidatos a coordinar o sumarse. */
   freeWorkers = computed(() =>
-    this.workers().filter((w) => this.isMine(w) && !w.team_id));
+    this.myWorkers().filter((w) => !w.team_id));
+
+  /**
+   * Cada identidad registra un minero solo (lo impone el backend con un 409).
+   * Sin esto la UI ofrecía "registrar uno nuevo" a quien ya tenía el suyo
+   * ocupado en otro equipo, y el alta fallaba recién al enviarla.
+   */
+  canRegisterAnother = computed(() => this.myWorkers().length === 0);
 
   /** El equipo que fundó esta identidad, si fundó alguno. */
   myTeam = computed(() => this.teams().find((t) => this.isMyTeam(t)) ?? null);
@@ -469,7 +491,8 @@ export class TeamsComponent {
    * tiene ninguno libre y el alta es el único camino para fundar el equipo.
    */
   needsNewWorker = computed(() =>
-    this.freeWorkers().length === 0 || this.coordinatorWorkerId() === '__new__');
+    this.canRegisterAnother()
+    && (this.freeWorkers().length === 0 || this.coordinatorWorkerId() === '__new__'));
 
   isMine(worker: WorkerStatus): boolean {
     return isOwnedBy(worker, this.identityService.identity());
@@ -482,11 +505,35 @@ export class TeamsComponent {
     return team.owner === owner;
   }
 
-  /** Cuál de mis mineros está en este equipo como miembro, si hay alguno. */
+  /** Ids de todos mis mineros, estén donde estén. */
+  private myWorkerIds(): Set<string> {
+    return new Set(this.workers().filter((w) => this.isMine(w)).map((w) => w.worker_id));
+  }
+
+  /**
+   * Cuál de mis mineros está en este equipo **como miembro**, si hay alguno.
+   *
+   * Deliberadamente ignora el rol de coordinador: el botón que usa esto es
+   * "Sacar", y al coordinador no se lo saca — se disuelve el equipo (el backend
+   * responde 409 si se intenta).
+   */
   myWorkerIn(team: Team): string | null {
-    const mine = new Set(this.workers().filter((w) => this.isMine(w)).map((w) => w.worker_id));
+    const mine = this.myWorkerIds();
     const found = team.members.find((m) => mine.has(m.worker_id) && m.role === 'member');
     return found ? found.worker_id : null;
+  }
+
+  /**
+   * ¿Tengo algún minero en este equipo, en **cualquier** rol?
+   *
+   * Es lo que decide si ofrecer "Unirme", y no puede ser `myWorkerIn` porque
+   * ésa filtra por rol `member`: al fundador, cuyo minero es el coordinador, le
+   * daba null y el equipo propio aparecía con el botón de unirse activado.
+   */
+  hasWorkerIn(team: Team): boolean {
+    if (this.isMyTeam(team)) return true;
+    const mine = this.myWorkerIds();
+    return team.members.some((m) => mine.has(m.worker_id));
   }
 
   // -- fundar --------------------------------------------------------------
@@ -497,14 +544,18 @@ export class TeamsComponent {
     this.newWorkerId.set('');
     this.newCategories.set([]);
     const free = this.freeWorkers();
-    this.coordinatorWorkerId.set(free.length ? free[0].worker_id : '__new__');
+    this.coordinatorWorkerId.set(
+      free.length ? free[0].worker_id : (this.canRegisterAnother() ? '__new__' : ''));
   }
 
   canCreate(): boolean {
     if (!this.newTeamName().trim()) return false;
-    return this.needsNewWorker()
-      ? !!this.newWorkerId().trim()
-      : !!this.coordinatorWorkerId();
+    if (this.needsNewWorker()) return !!this.newWorkerId().trim();
+    // Sin minero libre y sin cupo para registrar otro no hay con qué fundar: el
+    // '__new__' que dejaba `openCreate` habilitaba el botón para un alta que el
+    // backend iba a rechazar.
+    const chosen = this.coordinatorWorkerId();
+    return !!chosen && chosen !== '__new__';
   }
 
   async confirmCreate() {

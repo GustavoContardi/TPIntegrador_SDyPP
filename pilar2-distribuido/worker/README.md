@@ -18,6 +18,23 @@ El worker soporta **cuatro modos** intercambiables en caliente vía hot-switch:
 | Pool-worker | `pool-worker` | HTTP al Pool Coordinator | Fragmento del coordinator | Pool Coordinator |
 | Pool-auto | `pool-auto` | Elección bully por mini-PoW (RabbitMQ); el ganador coordina y el resto mina | Según el rol que le toque | NCT o coordinator |
 
+### De dónde sale el modo al arrancar
+
+En orden de precedencia:
+
+1. **`worker:desired_mode:<worker_id>` en Redis** — lo que su dueño decidió desde
+   la UI. Es lo más reciente, y lo único que puede haberse decidido *mientras
+   este minero estaba apagado*.
+2. **ConfigMap `worker-modes`** (Kubernetes) — persistencia del hot-switch.
+3. **`WORKER_MODE`** — el default del despliegue.
+
+El punto 1 existe porque el comando `switch_mode` viaja por una **cola exclusiva**
+del worker: si el minero no está conectado, no hay quien lo consuma y la orden se
+descarta en silencio. Como registrar un minero desde la UI no lo enciende, ese
+era el caso corriente. El worker además **reconcilia** contra ese registro en cada
+vuelta de su loop de reporte (cada 5 s), así que también sigue a su coordinador si
+éste cambia de dirección.
+
 > **Desde la UI los modos de pool no se eligen sueltos: se eligen creando o
 > uniéndose a un equipo.** `POST /api/workers/{id}/switch-mode` sólo acepta
 > `standalone`; entrar al modo cooperativo va por `/api/teams`, que además
@@ -117,6 +134,16 @@ Al cambiar de modo:
 
 ## Ejecución
 
+Un minero registrado desde la UI queda **anotado pero apagado**: sin Kubernetes
+configurado no hay quién le cree un proceso. Para encenderlo en local:
+
+```bash
+./run.sh worker <id-del-minero>    # desde la raíz del repo
+```
+
+Ese contenedor arranca sin `WORKER_MODE`: lee su modo de Redis, así que si ya lo
+metiste en un equipo arranca directamente como minero de ese equipo.
+
 ```bash
 docker compose up --build worker   # levanta 2 réplicas en modo standalone
 
@@ -170,6 +197,11 @@ Health: `GET :8080/health` → `{"worker_id":"...", "mode":"standalone", "status
   permite que un usuario se una al equipo de otro sin averiguar ninguna URL, y
   lo único que funciona en Kubernetes, donde los pods de un Deployment no tienen
   DNS estable.
+- **La intención se persiste, el mensaje es una optimización**: el modo deseado
+  vive en Redis y el worker lo reconcilia; el comando por RabbitMQ sólo evita
+  esperar hasta 5 s. Al revés —confiando sólo en el mensaje— asignar un minero
+  apagado a un equipo era una operación que la UI daba por buena y el minero
+  nunca ejecutaba.
 - **Un hilo para consumir, otro para minar** (modo pool-worker): el bucle de
   pedir y minar fragmentos bloquea, así que no puede compartir hilo con el
   consumo de RabbitMQ. Si lo comparte, el worker deja de escuchar

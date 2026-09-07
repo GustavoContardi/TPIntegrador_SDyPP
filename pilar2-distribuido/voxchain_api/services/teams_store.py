@@ -146,8 +146,13 @@ class TeamsStore:
         poder de cómputo (AGENT.md 3.9), y dejar que una misma clave funde
         varios le daría a un solo individuo tantos frentes como quisiera armar,
         agravando gratis la concentración de poder que el sistema ya documenta
-        como su debilidad. Unirse al equipo de otro con más de un minero sí se
-        puede: lo que se limita es fundar, no participar.
+        como su debilidad.
+
+        Este store no limita la membresía por dueño —``join_team`` acepta
+        cualquier minero libre—; el cupo de **un minero por identidad** se aplica
+        antes, al registrarlo (``worker_of_owner`` en el router de workers). Son
+        dos capas distintas a propósito: acá vive quién está en qué equipo, allá
+        cuántos mineros puede tener una identidad.
 
         ``categories`` es la agenda del equipo (AGENT.md 3.10): las áreas de ley
         a cuyas ventanas va a aportar cómputo. Sin agenda vota todas.
