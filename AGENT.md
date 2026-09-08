@@ -54,6 +54,42 @@ Estas reglas son normativas. Cualquier implementación debe respetarlas exactame
 - **Extensión futura fuera de alcance:** anclar la generación de claves a un documento de identidad real (DNI) para mitigar Sybil. No se implementa en este TP porque requeriría una autoridad certificadora externa, lo cual contradice la filosofía descentralizada del sistema. Se menciona en el informe como trabajo futuro, no como feature.
 - La clave privada **nunca sale del nodo del individuo** — ni siquiera para almacenamiento. Esto es coherente con la idea de que nadie puede votar en nombre de otro.
 
+#### Dónde vive la clave del ciudadano
+
+En el navegador, como `CryptoKey` **no extraíble** guardado en IndexedDB. El material de la clave nunca es representable en JavaScript: `exportKey`, `wrapKey` y `JSON.stringify` devuelven nada o lanzan `InvalidAccessError`. Lo único que se puede hacer con ese handle es pedirle firmas.
+
+Antes se guardaba exportada en `localStorage`, en texto plano. Un XSS —propio o de una dependencia npm— la leía y se quedaba con la identidad **para siempre**, en silencio. Ahora el peor caso de un XSS es pedirle firmas mientras la pestaña esté abierta: sigue siendo grave, pero termina al cerrarla y no sobrevive a nada.
+
+Consecuencias que hay que asumir, no esconder:
+
+- **El respaldo se muestra una sola vez**, al crear la identidad. Después ni la app ni el usuario pueden volver a leer la clave. Si no la guardó en ese momento, no hay recuperación — y no la hay porque no existe ninguna autoridad que pueda dársela de vuelta.
+- Las identidades viejas **se migran solas** al abrir la app: se reimporta el PKCS#8 como clave no extraíble, se pasa a IndexedDB y recién entonces se borra el original de `localStorage`. Si el guardado falla, la identidad sigue siendo recuperable en el próximo arranque.
+- `localStorage` conserva **sólo la parte pública** (`pubkey`, nombre para mostrar, si es demo). Es información pública y se lee de forma síncrona, que es lo que necesitan los guards de ruta y las plantillas.
+
+La otra mitad de esta defensa es la **CSP** que sirve `voxchain-frontend/nginx.conf`: `script-src 'self'` sin `unsafe-inline` ni `unsafe-eval` es lo que intenta que no haya XSS en primer lugar. Para poder ponerla hay que compilar con `inlineCritical: false` (`angular.json`), porque el inliner de CSS crítico de Angular mete un `<style>` y un `onload=` en el `index.html` que obligarían a aflojar la directiva. `style-src` sí lleva `unsafe-inline` porque Angular Material inyecta estilos en tiempo de ejecución; es un residuo mucho menor, con CSS no se ejecuta JavaScript.
+
+**Lo que esto NO cubre:** robo del perfil del navegador o del disco. La clave está protegida contra lectura por script, no contra alguien que se lleve la máquina. Eso requiere cifrarla en reposo con una passphrase (`wrapKey` con una KEK derivada por PBKDF2/Argon2id), que está identificado como el paso siguiente y no está implementado.
+
+#### Para qué se usa una clave privada
+
+Firmar es lo único que constituye una identidad acá: no hay cuentas, contraseñas ni sesiones. Se firma en cinco lugares, con dos identidades distintas:
+
+| Qué | Mensaje firmado | Quién firma | Qué impide |
+|---|---|---|---|
+| Proponer una ley | `author_pubkey\|action\|text_hash\|law_id\|created_at\|category` | Ciudadano | Proponer en nombre de otro — que además le impondría el cooldown de 3.4 |
+| Registrar un minero | `worker_id\|register\|timestamp` | Ciudadano | Gastar el cupo de mineros de otro |
+| Dar de baja un minero | `worker_id\|delete\|timestamp` | Ciudadano | Borrarle el minero a otro |
+| Administrar (ver abajo) | `recurso\|acción\|timestamp` | Ciudadano | Mover de equipo, cambiar de modo o reescribir la agenda de un minero ajeno |
+| Responder un nonce | `voting_window_id\|nonce\|winning_node_or_pool` | Nodo | Atribuir una victoria a otro, y evadir la regla 3.4 |
+
+Las acciones de administración firmadas son `switch-mode`, `pool-policy`, `create-team`, `join-team`, `leave-team`, `set-categories` y `dissolve-team`. La acción va **dentro** del mensaje para que una firma capturada de la operación más inocua no autorice la más destructiva, y el recurso también, para que una firma sobre un minero no valga sobre otro. Cada firma se **consume**: se guarda su hash en `sig:used:<sha256>` con el TTL de la ventana de frescura, así que dentro de esa ventana no se puede repetir.
+
+La autorización se verifica siempre contra el dueño **guardado en Redis**, nunca contra la cabecera `X-Owner-Id`: esa cabecera la elige quien llama y contiene una pubkey que es pública, así que sirve para dar un 403 con mensaje útil y para nada más. Autorizar por cabecera era autorización por *declarar* una identidad; el sistema entero se apoya en *probarla*.
+
+Nota importante: el PoW se verifica sin ninguna clave (`verify_nonce` cuenta ceros). **La firma no valida el trabajo, valida a quién se le acredita.**
+
+Las cuentas demo son la excepción documentada: son custodiales (la privada la tiene el backend, el navegador no puede firmar) y siguen el camino viejo de comparación por cabecera. Los dos caminos son disjuntos: los `worker_id` demo están reservados y el alta los rechaza con 409, así que ningún minero de un ciudadano real cae ahí.
+
 #### Identidad de ciudadano vs. identidad de nodo
 
 Un minero **no** firma con la clave del ciudadano que lo registró: tiene una identidad propia, un par EC P-256 que genera dentro de su propio proceso al arrancar y que no transmite nunca. Son dos identidades distintas a propósito.

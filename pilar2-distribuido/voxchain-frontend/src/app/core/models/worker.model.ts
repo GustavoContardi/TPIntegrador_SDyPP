@@ -55,8 +55,8 @@ const DEMO_WORKERS: Record<string, string[]> = {
 /**
  * Si el minero pertenece a la identidad activa.
  *
- * El backend hace la verificación autoritativa (cabecera `X-Owner-Id` contra
- * `worker:owner:*` en Redis); esto es sólo para decidir qué botones mostrar.
+ * El backend hace la verificación autoritativa exigiendo la firma del dueño
+ * sobre la acción; esto es sólo para decidir qué botones mostrar.
  */
 export function isOwnedBy(worker: WorkerStatus, identity: Identity | null): boolean {
   if (!identity) return false;

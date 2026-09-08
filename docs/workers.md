@@ -655,6 +655,32 @@ Ese contenedor arranca **sin** `WORKER_MODE`: lee su modo de
 `worker:desired_mode:<id>`, así que si ya lo habías metido en un equipo arranca
 directamente como minero de ese equipo.
 
+### Administrar un minero exige tu firma
+
+`switch-mode`, la política del pool y las cuatro operaciones de equipos
+(`create-team`, `join-team`, `leave-team`, `set-categories`, `dissolve-team`) se
+autorizan con una firma del dueño sobre `recurso|acción|timestamp`, en las
+cabeceras `X-Signature` y `X-Timestamp`.
+
+Antes se autorizaban comparando `X-Owner-Id` contra el dueño guardado. Esa
+cabecera la elige quien llama, y la pubkey que lleva es pública —está en cada
+bloque de la cadena—, así que alcanzaba con saber a quién imitar para sacarle un
+minero de su equipo a otro o reescribirle la agenda a su pool.
+
+Detalles que importan:
+
+- La firma se verifica contra el dueño **guardado en Redis**, no contra la
+  cabecera. `X-Owner-Id` sobrevive sólo para devolver un 403 con un mensaje
+  útil ("no es tuyo") en vez de un 401 genérico; no es la defensa.
+- **La acción va adentro del mensaje.** Si no estuviera, una firma capturada de
+  `leave-team` autorizaría un `dissolve-team`.
+- **Cada firma se consume** (`sig:used:<sha256>`, con el TTL de la ventana de
+  frescura). Sin eso la firma sigue siendo válida durante los 300 s de la
+  ventana y quien la vio pasar puede repetir la acción.
+- Las **cuentas demo** son custodiales y no pueden firmar desde el navegador:
+  siguen el camino viejo. Los dos caminos son disjuntos porque los `worker_id`
+  demo están reservados y el alta los rechaza con 409.
+
 ### La identidad del minero no es la del ciudadano
 
 El alta **no transporta ninguna clave privada** (AGENT.md 3.1). Antes sí: el

@@ -84,7 +84,7 @@ interface PoolHealth {
         </mat-card-header>
         <mat-card-content>
           <p class="form-hint">
-            Registrar un ID de minero lo asocia a tu clave pública. Cualquier acción de administración (cambiar el modo o configurar la política) va a pedir tu firma.
+            Registrar un ID de minero lo asocia a tu clave pública, y cada acción de administración sobre él (cambiar el modo, configurar la política, moverlo de equipo) se firma con tu clave.
             El minero genera su propia identidad al arrancar: tu clave privada no se comparte con él ni con nadie.
           </p>
           <div class="form-field">
@@ -765,8 +765,8 @@ export class WorkersComponent implements OnInit, OnDestroy {
     });
   }
 
-  // La verificación autoritativa la hace el backend (X-Owner-Id contra Redis);
-  // acá sólo se decide qué botones mostrar. Ambos helpers son compartidos con
+  // La verificación autoritativa la hace el backend exigiendo la firma del
+  // dueño sobre la acción; acá sólo se decide qué botones mostrar. Ambos helpers son compartidos con
   // la pantalla de Equipos para que las dos coincidan siempre.
   isWorkerOwned(worker: WorkerStatus): boolean {
     return isOwnedBy(worker, this.identityService.identity());

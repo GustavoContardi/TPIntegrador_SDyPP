@@ -81,8 +81,9 @@ import { AccountsService } from '../../core/services/accounts.service';
                 (ngModelChange)="acknowledged.set($event)"
                 name="acknowledged"
                 [disabled]="generating()">
-                Entiendo que mi clave privada queda guardada en este navegador y
-                que borrar los datos del sitio la elimina para siempre.
+                Entiendo que mi clave privada queda guardada en este navegador de forma
+                no exportable, que sólo voy a poder verla una vez para respaldarla, y que
+                borrar los datos del sitio la elimina para siempre.
               </mat-checkbox>
 
               <p class="name-error" *ngIf="nameTouched() && !nameValid()">
@@ -137,39 +138,49 @@ import { AccountsService } from '../../core/services/accounts.service';
             <code class="key-block pubkey-block">{{ id.pubkey }}</code>
           </div>
 
-          <div class="key-field" *ngIf="!identityService.isDemoMode() && id.exportedPrivkey">
+          <div class="key-field" *ngIf="!identityService.isDemoMode()">
             <div class="key-header">
-              <strong class="field-label">Clave privada (formato PEM):</strong>
+              <strong class="field-label">Clave privada:</strong>
+            </div>
+
+            <!-- Respaldo de una sola vez: existe sólo en esta pantalla, recién
+                 creada la identidad, y no se guarda en ningún lado. -->
+            <ng-container *ngIf="pemBackup() as pem">
+              <div class="warning-banner backup-banner">
+                <mat-icon class="warning-icon">warning</mat-icon>
+                <div class="warning-text">
+                  <strong>Guardá esto ahora.</strong> Es la única vez que vas a ver tu clave privada:
+                  el navegador la almacena de forma no exportable, así que ni la app ni vos pueden
+                  volver a leerla. Copiala a un archivo <code>.pem</code> en un lugar seguro.
+                </div>
+              </div>
               <div class="key-actions">
-                <button mat-stroked-button class="action-btn" (click)="showPrivateKey.set(!showPrivateKey())">
-                  <!-- Eye icon -->
-                  <svg *ngIf="!showPrivateKey()" class="btn-svg" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/>
-                  </svg>
-                  <!-- Eye slash icon -->
-                  <svg *ngIf="showPrivateKey()" class="btn-svg" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M12 7c2.76 0 5 2.24 5 5 0 .65-.13 1.26-.36 1.82l2.92 2.92c1.51-1.44 2.63-3.21 3.44-5.18-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7zM2 4.27l2.28 2.28.46.46C3.08 8.3 1.78 10.02 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3 2 4.27zM7.53 9.8l1.55 1.55c-.05.21-.08.43-.08.65 0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2zm4.31-.78l3.15 3.15.02-.16c0-1.66-1.34-3-3-3l-.17.01z"/>
-                  </svg>
-                  {{ showPrivateKey() ? 'Ocultar clave' : 'Ver clave' }}
-                </button>
-                <button mat-stroked-button class="action-btn" (click)="copyToClipboard(formatAsPem(id.exportedPrivkey))">
-                  <!-- Copy icon -->
+                <button mat-stroked-button class="action-btn" (click)="copyToClipboard(pem)">
                   <svg class="btn-svg" viewBox="0 0 24 24" fill="currentColor">
                     <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
                   </svg>
                   Copiar PEM
                 </button>
+                <button mat-stroked-button class="action-btn" (click)="dismissBackup()">
+                  Ya la guardé
+                </button>
               </div>
+              <pre class="key-block privkey-block">{{ pem }}</pre>
+            </ng-container>
+
+            <div class="key-placeholder" *ngIf="!pemBackup()">
+              No exportable — vive en este navegador y no se puede leer
             </div>
-            <pre class="key-block privkey-block" *ngIf="showPrivateKey()">{{ formatAsPem(id.exportedPrivkey) }}</pre>
-            <div class="key-placeholder" *ngIf="!showPrivateKey()">••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••••</div>
-            
-            <div class="warning-banner">
-              <mat-icon class="warning-icon">warning</mat-icon>
+
+            <div class="warning-banner" *ngIf="!pemBackup()">
+              <mat-icon class="warning-icon">shield</mat-icon>
               <div class="warning-text">
-                <strong>Importante:</strong> guardá la clave privada como archivo <code>.pem</code> en un lugar seguro. Es tu única copia: si borrás los datos del sitio, se pierde con ellos.
+                Tu clave privada está guardada de forma <strong>no exportable</strong>: el navegador
+                firma con ella pero no puede entregarla, ni a esta app ni a ningún script. Borrar los
+                datos del sitio la elimina para siempre.
                 <br><br>
-                <strong>No hace falta dársela a ningún minero.</strong> Cada minero genera su propia identidad al arrancar y se vincula a la tuya con un token de un solo uso; tu clave nunca sale de este navegador.
+                <strong>No hace falta dársela a ningún minero.</strong> Cada minero genera su propia
+                identidad al arrancar y se vincula a la tuya con un token de un solo uso.
               </div>
             </div>
           </div>
@@ -390,6 +401,13 @@ import { AccountsService } from '../../core/services/accounts.service';
       gap: 16px;
       align-items: flex-start;
     }
+    /* El respaldo de una sola vez: rojo, no naranja. Es la única advertencia
+       de la app cuya ventana de acción se cierra y no vuelve a abrirse. */
+    .backup-banner {
+      margin-top: 0;
+      background-color: rgba(244, 67, 54, 0.12);
+      border-left-color: #f44336;
+    }
     .warning-icon {
       color: #ff9800;
       font-size: 28px;
@@ -423,7 +441,16 @@ export class IdentityComponent {
   snackBar = inject(MatSnackBar);
 
   generating = signal(false);
-  showPrivateKey = signal(false);
+
+  /**
+   * El PEM de respaldo, sólo mientras dure esta pantalla.
+   *
+   * No se persiste a propósito: es la contracara de que la clave sea no
+   * exportable. Si se guardara en algún lado para poder mostrarlo de nuevo,
+   * volveríamos a tener una copia legible de la privada, que es justo lo que
+   * este cambio elimina.
+   */
+  pemBackup = signal<string | null>(null);
 
   displayName = signal('');
   acknowledged = signal(false);
@@ -444,8 +471,10 @@ export class IdentityComponent {
     this.generating.set(true);
     try {
       const name = this.displayName().trim();
-      await this.identityService.generateKeypair(name);
-      this.snackBar.open(`Identidad creada para ${name}.`, 'Cerrar', { duration: 3000 });
+      const { pemBackup } = await this.identityService.generateKeypair(name);
+      this.pemBackup.set(pemBackup);
+      this.snackBar.open(`Identidad creada para ${name}. Guardá tu clave privada.`,
+                         'Cerrar', { duration: 6000 });
       this.displayName.set('');
       this.acknowledged.set(false);
       this.nameTouched.set(false);
@@ -459,23 +488,19 @@ export class IdentityComponent {
 
   clear() {
     this.identityService.clearIdentity();
-    this.showPrivateKey.set(false);
+    this.pemBackup.set(null);
     this.snackBar.open('Identidad borrada.', 'Cerrar', { duration: 2000 });
+  }
+
+  /** Descarta el respaldo de la vista. No hay vuelta atrás, y es el punto. */
+  dismissBackup() {
+    this.pemBackup.set(null);
   }
 
   changeAccount() {
     this.accountsService.clearSession();
     this.identityService.clearIdentity();
     this.router.navigate(['/select-account']);
-  }
-
-  formatAsPem(b64: string | null): string {
-    if (!b64) return '';
-    const header = '-----BEGIN PRIVATE KEY-----\n';
-    const footer = '\n-----END PRIVATE KEY-----';
-    const regex = /.{1,64}/g;
-    const lines = b64.match(regex) || [b64];
-    return header + lines.join('\n') + footer;
   }
 
   copyToClipboard(text: string) {

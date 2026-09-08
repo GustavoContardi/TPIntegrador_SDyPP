@@ -36,11 +36,19 @@ from voxchain_api.models import (
     TeamMembershipRequest,
 )
 from voxchain_api.routers.workers import (
+    ADMIN_CREATE_TEAM,
+    ADMIN_DISSOLVE_TEAM,
+    ADMIN_JOIN_TEAM,
+    ADMIN_LEAVE_TEAM,
+    ADMIN_SET_CATEGORIES,
+    authorize_owner_action,
+    authorize_worker_action,
     get_owner_id,
+    get_signature,
+    get_signature_timestamp,
     get_rabbitmq_publisher,
     get_redis_reader,
     persist_worker_registration,
-    verify_worker_ownership,
 )
 from voxchain_api.services.redis_reader import RedisReader
 from voxchain_api.services.teams_store import TeamError, TeamsStore
@@ -191,6 +199,8 @@ async def get_team(team_id: str, store: TeamsStore = Depends(get_teams_store),
 async def create_team(
     request: CreateTeamRequest,
     owner_id: str = Depends(get_owner_id),
+    signature: Optional[str] = Depends(get_signature),
+    timestamp: Optional[str] = Depends(get_signature_timestamp),
     store: TeamsStore = Depends(get_teams_store),
     redis: RedisReader = Depends(get_redis_reader),
     publisher=Depends(get_rabbitmq_publisher),
@@ -229,7 +239,11 @@ async def create_team(
             # imputan a nadie.
             enrollment_token = alta.get("enrollment_token", "")
         else:
-            verify_worker_ownership(worker_id, owner_id, redis_client)
+            # Con `new_worker` el alta ya viene firmada (`worker_id|register|ts`),
+            # así que el camino de arriba está autenticado por sí mismo. Éste es
+            # el del minero que ya existía y hay que probar que es tuyo.
+            authorize_worker_action(redis_client, worker_id, ADMIN_CREATE_TEAM,
+                                    owner_id, signature, timestamp)
 
         status = read_worker_status(redis_client, worker_id)
         url = coordinator_address(status or {}, worker_id)
@@ -265,6 +279,8 @@ async def join_team(
     team_id: str,
     request: TeamMembershipRequest,
     owner_id: str = Depends(get_owner_id),
+    signature: Optional[str] = Depends(get_signature),
+    timestamp: Optional[str] = Depends(get_signature_timestamp),
     store: TeamsStore = Depends(get_teams_store),
     redis: RedisReader = Depends(get_redis_reader),
     publisher=Depends(get_rabbitmq_publisher),
@@ -272,7 +288,8 @@ async def join_team(
     """Suma un minero propio al equipo de otro, en modo ``pool-worker``."""
     worker_id = request.worker_id.strip()
     redis_client = redis.store.r
-    verify_worker_ownership(worker_id, owner_id, redis_client)
+    authorize_worker_action(redis_client, worker_id, ADMIN_JOIN_TEAM,
+                            owner_id, signature, timestamp)
 
     team = store.get_team(team_id)
     if not team:
@@ -317,6 +334,8 @@ async def leave_team(
     team_id: str,
     request: TeamMembershipRequest,
     owner_id: str = Depends(get_owner_id),
+    signature: Optional[str] = Depends(get_signature),
+    timestamp: Optional[str] = Depends(get_signature_timestamp),
     store: TeamsStore = Depends(get_teams_store),
     redis: RedisReader = Depends(get_redis_reader),
     publisher=Depends(get_rabbitmq_publisher),
@@ -324,7 +343,8 @@ async def leave_team(
     """Saca un minero propio del equipo y lo devuelve a modo competitivo."""
     worker_id = request.worker_id.strip()
     redis_client = redis.store.r
-    verify_worker_ownership(worker_id, owner_id, redis_client)
+    authorize_worker_action(redis_client, worker_id, ADMIN_LEAVE_TEAM,
+                            owner_id, signature, timestamp)
 
     if store.team_of_worker(worker_id) != team_id:
         raise HTTPException(status_code=404,
@@ -349,6 +369,8 @@ async def set_team_categories(
     team_id: str,
     request: TeamCategoriesRequest,
     owner_id: str = Depends(get_owner_id),
+    signature: Optional[str] = Depends(get_signature),
+    timestamp: Optional[str] = Depends(get_signature_timestamp),
     store: TeamsStore = Depends(get_teams_store),
     redis: RedisReader = Depends(get_redis_reader),
 ):
@@ -365,14 +387,13 @@ async def set_team_categories(
     team = store.get_team(team_id)
     if not team:
         raise HTTPException(status_code=404, detail="El equipo no existe")
-    if team.get("owner") != owner_id:
-        raise HTTPException(
-            status_code=403,
-            detail="Sólo quien fundó el equipo puede cambiar sus categorías")
 
     agenda = _valid_agenda(request.categories)
     redis_client = redis.store.r
-    enrollment_token = ""
+    # Sólo quien fundó el equipo, y probándolo con su firma: la agenda es lo que
+    # el equipo *es* frente a la red, y antes alcanzaba con decir ser el dueño.
+    authorize_owner_action(redis_client, team_id, ADMIN_SET_CATEGORIES,
+                           team.get("owner", ""), owner_id, signature, timestamp)
     try:
         store.set_categories(team_id, agenda)
     except TeamError as exc:
@@ -387,6 +408,8 @@ async def set_team_categories(
 async def dissolve_team(
     team_id: str,
     owner_id: str = Depends(get_owner_id),
+    signature: Optional[str] = Depends(get_signature),
+    timestamp: Optional[str] = Depends(get_signature_timestamp),
     store: TeamsStore = Depends(get_teams_store),
     redis: RedisReader = Depends(get_redis_reader),
     publisher=Depends(get_rabbitmq_publisher),
@@ -400,11 +423,13 @@ async def dissolve_team(
     team = store.get_team(team_id)
     if not team:
         raise HTTPException(status_code=404, detail="El equipo no existe")
-    if team.get("owner") != owner_id:
-        raise HTTPException(status_code=403,
-                            detail="Sólo quien creó el equipo puede disolverlo")
 
     redis_client = redis.store.r
+    # Disolver saca a TODO el plantel de su equipo, incluidos mineros ajenos:
+    # es la acción de más alcance de la API, y es la que menos podía permitirse
+    # autorizar por una cabecera que el atacante elige.
+    authorize_owner_action(redis_client, team_id, ADMIN_DISSOLVE_TEAM,
+                           team.get("owner", ""), owner_id, signature, timestamp)
     try:
         try:
             affected = store.dissolve_team(team_id)

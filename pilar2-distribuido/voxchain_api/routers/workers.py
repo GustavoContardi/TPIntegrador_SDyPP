@@ -405,40 +405,122 @@ ALL_REGISTERED_WORKER_IDS = [
 ]
 
 
+# --- Autorización de acciones de administración (AGENT.md 3.1) ---------------
+#
+# Estas acciones se autorizaban comparando la cabecera ``X-Owner-Id`` contra el
+# dueño guardado. La cabecera la elige quien llama y la pubkey es pública —está
+# en cada bloque de la cadena—, así que era autorización por **declarar** una
+# identidad, no por probarla: cualquiera podía sacarle un minero de su equipo a
+# otro, o reescribirle la agenda a su pool, con un curl.
+#
+# Ahora se prueba la posesión de la clave, con la misma forma de mensaje que ya
+# usan el alta y la baja: ``<recurso>|<acción>|<timestamp>``.
+
+ADMIN_SWITCH_MODE = "switch-mode"
+ADMIN_POOL_POLICY = "pool-policy"
+ADMIN_JOIN_TEAM = "join-team"
+ADMIN_LEAVE_TEAM = "leave-team"
+ADMIN_CREATE_TEAM = "create-team"
+ADMIN_SET_CATEGORIES = "set-categories"
+ADMIN_DISSOLVE_TEAM = "dissolve-team"
+
+
+def get_signature(x_signature: str = Header(None, alias="X-Signature")) -> Optional[str]:
+    return x_signature
+
+
+def get_signature_timestamp(x_timestamp: str = Header(None, alias="X-Timestamp")) -> Optional[str]:
+    return x_timestamp
+
+
+def _burn_signature(redis_client, signature: str) -> None:
+    """Consume una firma: la misma no autoriza dos veces.
+
+    Sin esto, la firma sigue siendo válida durante toda la ventana de frescura
+    (``PROPOSAL_MAX_AGE_SECONDS``), y quien la haya visto pasar puede repetir la
+    acción — volver a sacar del equipo a un minero que su dueño acaba de meter,
+    por ejemplo. El TTL es el mismo de la ventana: pasado ese punto la firma se
+    rechaza por vieja y la marca ya no hace falta.
+    """
+    ttl = max(int(float(os.getenv("PROPOSAL_MAX_AGE_SECONDS", "300"))), 1)
+    marca = f"sig:used:{hashlib.sha256(signature.encode()).hexdigest()}"
+    if not redis_client.set(marca, "1", nx=True, ex=ttl):
+        raise HTTPException(status_code=401, detail="Firma ya utilizada")
+
+
+def require_signed_action(redis_client, resource_id: str, action: str,
+                          owner_pubkey: str, signature: Optional[str],
+                          timestamp: Optional[str]) -> None:
+    """Exige una firma válida del dueño sobre ``resource_id|action|timestamp``."""
+    if not signature or not timestamp:
+        raise HTTPException(
+            status_code=401,
+            detail=(f"La acción '{action}' requiere tu firma. Enviá las cabeceras "
+                    "X-Signature y X-Timestamp."),
+        )
+    _verify_timestamp_freshness(timestamp)
+    msg = f"{resource_id}|{action}|{timestamp}".encode()
+    if not verify(owner_pubkey, msg, signature):
+        raise HTTPException(status_code=401, detail="Firma inválida")
+    _burn_signature(redis_client, signature)
+
+
+def authorize_worker_action(redis_client, worker_id: str, action: str,
+                            owner_id: str, signature: Optional[str],
+                            timestamp: Optional[str]) -> str:
+    """Autoriza una acción sobre un minero y devuelve el dueño autenticado.
+
+    Los mineros demo siguen el camino viejo: sus dueños son nombres de usuario
+    (``valentin``), no claves, y en modo demo el frontend no puede firmar porque
+    la privada la tiene el backend. Es un modo custodial documentado, y los dos
+    caminos son **disjuntos**: los ids demo están reservados y el alta los
+    rechaza con 409, así que ningún minero de un ciudadano real cae acá.
+    """
+    if worker_id in OWNER_WORKERS_MAPPING.get(owner_id, []):
+        return owner_id
+
+    registered = redis_client.get(f"worker:owner:{worker_id}")
+    if isinstance(registered, bytes):
+        registered = registered.decode("utf-8")
+    if not registered or registered != owner_id:
+        # Cortesía, no defensa: la cabecera la elige quien llama, así que este
+        # chequeo no detiene a nadie. Existe para que quien se equivocó de
+        # identidad lea "no es tuyo" en vez de "firma inválida". La defensa es
+        # la firma de abajo, y va contra el dueño guardado en Redis — declarar
+        # ser otro en la cabecera no cambia contra qué clave se verifica.
+        raise HTTPException(
+            status_code=403,
+            detail="You do not have permission to modify this worker")
+
+    require_signed_action(redis_client, worker_id, action, registered,
+                          signature, timestamp)
+    return registered
+
+
+def authorize_owner_action(redis_client, resource_id: str, action: str,
+                           owner_of_resource: str, owner_id: str,
+                           signature: Optional[str],
+                           timestamp: Optional[str]) -> None:
+    """Igual que la anterior, para recursos cuyo dueño ya se conoce (un equipo).
+
+    Un dueño que no es una clave P-256 es una cuenta demo: se compara por
+    igualdad, como antes. Uno que sí lo es tiene que firmar.
+    """
+    if owner_of_resource != owner_id:
+        # Cortesía, no defensa (ver `authorize_worker_action`).
+        raise HTTPException(status_code=403,
+                            detail="No sos el dueño de este recurso")
+    if not _is_valid_pubkey(owner_of_resource):
+        return
+    require_signed_action(redis_client, resource_id, action, owner_of_resource,
+                          signature, timestamp)
+
+
 def get_owner_id(owner_id: str = Header(None, alias="X-Owner-Id")) -> str:
     """Get the owner ID from the header, default to 'default' for local dev."""
     if owner_id is None:
         return "default"
     return owner_id
-
-
-def verify_worker_ownership(worker_id: str, owner_id: str, redis_client=None) -> bool:
-    """Verify that the owner has permission to modify the worker.
-
-    ``redis_client`` es opcional para no romper a los llamadores viejos, pero
-    conviene pasarlo: sin él la función se abre su propia conexión, que además
-    de ser una conexión de más queda fuera del alcance de los tests (cualquier
-    fallo al conectar se traga y termina respondiendo 403 por el motivo
-    equivocado).
-    """
-    # 1. Check hardcoded/demo mappings
-    owned_workers = OWNER_WORKERS_MAPPING.get(owner_id, [])
-    if worker_id in owned_workers:
-        return True
-
-    # 2. Check dynamic Redis mappings
-    try:
-        if redis_client is None:
-            redis_client = RedisReader().store.r
-        registered_owner = redis_client.get(f"worker:owner:{worker_id}")
-        if registered_owner:
-            registered_owner_str = registered_owner.decode("utf-8") if isinstance(registered_owner, bytes) else registered_owner
-            if registered_owner_str == owner_id:
-                return True
-    except Exception:
-        pass
-
-    raise HTTPException(status_code=403, detail="You do not have permission to modify this worker")
 
 
 def get_redis_reader() -> RedisReader:
@@ -640,6 +722,8 @@ async def switch_worker_mode(
     worker_id: str,
     request: WorkerSwitchRequest,
     owner_id: str = Depends(get_owner_id),
+    signature: Optional[str] = Depends(get_signature),
+    timestamp: Optional[str] = Depends(get_signature_timestamp),
     redis: RedisReader = Depends(get_redis_reader),
     publisher: RabbitMQPublisher = Depends(get_rabbitmq_publisher)
 ):
@@ -652,7 +736,8 @@ async def switch_worker_mode(
     a un minero de un equipo sin que el equipo se enterara — la lista de
     miembros quedaba mintiendo. El modo y la membresía se mueven juntos.
     """
-    verify_worker_ownership(worker_id, owner_id, redis.store.r)
+    authorize_worker_action(redis.store.r, worker_id, ADMIN_SWITCH_MODE,
+                            owner_id, signature, timestamp)
 
     if request.target != "standalone":
         raise HTTPException(
@@ -721,9 +806,11 @@ async def get_pool_health(pool_id: str, redis: RedisReader = Depends(get_redis_r
 
 @router.post("/pool/{pool_id}/policy")
 async def set_pool_policy(
-    pool_id: str, 
-    policy: PoolPolicy, 
+    pool_id: str,
+    policy: PoolPolicy,
     owner_id: str = Depends(get_owner_id),
+    signature: Optional[str] = Depends(get_signature),
+    timestamp: Optional[str] = Depends(get_signature_timestamp),
     redis: RedisReader = Depends(get_redis_reader)
 ):
     """Set voting policy for a specific pool coordinator.
@@ -734,7 +821,8 @@ async def set_pool_policy(
     que ya estaba: la agenda la escribe el flujo de equipos y no tiene por qué
     perderse porque alguien tocó la política de acciones desde la otra pantalla.
     """
-    verify_worker_ownership(pool_id, owner_id, redis.store.r)
+    authorize_worker_action(redis.store.r, pool_id, ADMIN_POOL_POLICY,
+                            owner_id, signature, timestamp)
 
     # 1. Write the policy to Redis so the remote coordinator can read it periodically
     redis_client = redis.store.r
@@ -968,13 +1056,17 @@ async def enroll_node(
     if isinstance(owner, bytes):
         owner = owner.decode("utf-8")
 
-    if not _consume_enrollment_token(redis_client, worker_id, request.enrollment_token):
-        raise HTTPException(status_code=401, detail="Enrollment token inválido o ya usado")
-
     # La pubkey tiene que ser una P-256 cargable: si no, el NCT nunca podría
     # verificar una firma suya y el vínculo sería basura permanente en el índice.
+    #
+    # Se valida ANTES de consumir el token: al revés, un request malformado
+    # quemaba el token y dejaba al minero sin poder enrolarse hasta que su dueño
+    # lo re-registrara. Un pedido que no puede prosperar no debe gastar nada.
     if not _is_valid_pubkey(node_pubkey):
         raise HTTPException(status_code=400, detail="node_pubkey no es una clave EC P-256 válida")
+
+    if not _consume_enrollment_token(redis_client, worker_id, request.enrollment_token):
+        raise HTTPException(status_code=401, detail="Enrollment token inválido o ya usado")
 
     try:
         _clear_node_binding(redis_client, worker_id)

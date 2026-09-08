@@ -232,7 +232,6 @@ export class AccountSelectionComponent implements OnInit {
         // Update identity service with the demo account's pubkey
         this.identityService.identity.set({
           pubkey: account.pubkey,
-          exportedPrivkey: null,
           username: account.username,
           isDemo: true
         });

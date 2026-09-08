@@ -10,11 +10,17 @@ mostraría gente que ya no está minando para el equipo.
 from __future__ import annotations
 
 import json
+import re
+from datetime import datetime, timezone
 
 import fakeredis
 import pytest
 
 from voxchain_api.services.teams_store import TeamError, TeamsStore, slugify_team
+
+# pubkey -> identidad, para que el cliente de tests sepa con qué clave firmar
+# cada llamada a partir del `X-Owner-Id` que le pasaron.
+_IDENTIDADES: dict[str, "_Identidad"] = {}
 
 
 @pytest.fixture
@@ -57,7 +63,7 @@ class TestSlug:
 
 class TestCrear:
     def test_crear_deja_al_worker_como_coordinador(self, teams):
-        team = teams.create_team(name="Los Pibes", owner="pk-gus",
+        team = teams.create_team(name="Los Pibes", owner=GUS.pubkey,
                                  coordinator_worker_id="w1",
                                  coordinator_url="http://w1:9001")
         assert teams.team_of_worker("w1") == team["team_id"]
@@ -84,7 +90,7 @@ class TestCrear:
 class TestUnirse:
     @pytest.fixture
     def team_id(self, teams):
-        return teams.create_team(name="Los Pibes", owner="pk-gus",
+        return teams.create_team(name="Los Pibes", owner=GUS.pubkey,
                                  coordinator_worker_id="coord",
                                  coordinator_url="http://coord:9001")["team_id"]
 
@@ -117,7 +123,7 @@ class TestUnirse:
 class TestSalirYDisolver:
     @pytest.fixture
     def team_id(self, teams):
-        tid = teams.create_team(name="Los Pibes", owner="pk-gus",
+        tid = teams.create_team(name="Los Pibes", owner=GUS.pubkey,
                                 coordinator_worker_id="coord",
                                 coordinator_url="http://coord:9001")["team_id"]
         teams.join_team(tid, "w2")
@@ -184,6 +190,70 @@ class FakePublisher:
         self.closed += 1
 
 
+# Qué recurso y qué acción firma cada endpoint de administración. Es el mismo
+# mapa que el frontend tiene en su capa de API; acá vive para que los tests
+# hablen de quién puede hacer qué y no de cómo se arma una firma.
+_ACCIONES_FIRMADAS = [
+    ("POST", re.compile(r"^/api/workers/(?P<rec>[^/]+)/switch-mode$"), "switch-mode", None),
+    ("POST", re.compile(r"^/api/workers/pool/(?P<rec>[^/]+)/policy$"), "pool-policy", None),
+    ("POST", re.compile(r"^/api/teams$"), "create-team", "worker_id"),
+    ("POST", re.compile(r"^/api/teams/[^/]+/join$"), "join-team", "worker_id"),
+    ("POST", re.compile(r"^/api/teams/[^/]+/leave$"), "leave-team", "worker_id"),
+    ("PUT", re.compile(r"^/api/teams/(?P<rec>[^/]+)/categories$"), "set-categories", None),
+    ("DELETE", re.compile(r"^/api/teams/(?P<rec>[^/]+)$"), "dissolve-team", None),
+]
+
+
+class _ClienteFirmante:
+    """TestClient que firma las acciones de administración por el llamador.
+
+    Desde que esos endpoints exigen probar la posesión de la clave y no sólo
+    declararla, cada llamada necesita `X-Signature` y `X-Timestamp` sobre
+    `recurso|acción|timestamp`. Armar eso a mano en cada test enterraría lo que
+    el test prueba bajo cinco líneas de criptografía, así que se deduce del
+    método, la URL y el cuerpo — igual que hace el frontend.
+
+    Firma con la identidad que corresponda al `X-Owner-Id` que pasó el test. Si
+    no reconoce esa identidad (una cuenta demo, o un `X-Owner-Id` inventado a
+    propósito) no firma nada: es justo el caso que varios tests quieren ejercer.
+    """
+
+    def __init__(self, client):
+        self._client = client
+
+    def __getattr__(self, name):
+        return getattr(self._client, name)
+
+    def _firmar(self, metodo, url, headers, json_body):
+        quien = _IDENTIDADES.get((headers or {}).get("X-Owner-Id", ""))
+        if quien is None:
+            return headers
+        for met, patron, accion, campo in _ACCIONES_FIRMADAS:
+            if met != metodo:
+                continue
+            match = patron.match(url)
+            if not match:
+                continue
+            recurso = ((json_body or {}).get(campo, "") if campo
+                       else match.group("rec"))
+            ts = datetime.now(timezone.utc).isoformat()
+            return {**headers, "X-Timestamp": ts,
+                    "X-Signature": quien.firma(f"{recurso}|{accion}|{ts}")}
+        return headers
+
+    def post(self, url, json=None, headers=None, **kw):
+        return self._client.post(url, json=json,
+                                 headers=self._firmar("POST", url, headers, json), **kw)
+
+    def put(self, url, json=None, headers=None, **kw):
+        return self._client.put(url, json=json,
+                                headers=self._firmar("PUT", url, headers, json), **kw)
+
+    def delete(self, url, headers=None, **kw):
+        return self._client.delete(url,
+                                   headers=self._firmar("DELETE", url, headers, None), **kw)
+
+
 @pytest.fixture
 def api(r):
     """TestClient con Redis falso y RabbitMQ falso, sin tocar la red."""
@@ -202,7 +272,7 @@ def api(r):
     app.dependency_overrides[workers_router.get_rabbitmq_publisher] = lambda: publisher
     client = TestClient(app)
     client.publisher = publisher
-    yield client
+    yield _ClienteFirmante(client)
     app.dependency_overrides.clear()
 
 
@@ -232,6 +302,7 @@ class _Identidad:
         self.pubkey = base64.b64encode(self.key.public_key().public_bytes(
             serialization.Encoding.DER,
             serialization.PublicFormat.SubjectPublicKeyInfo)).decode()
+        _IDENTIDADES[self.pubkey] = self
 
     def firma(self, mensaje: str) -> str:
         import base64
@@ -254,6 +325,15 @@ class _Identidad:
             signature=self.firma(f"{worker_id}|register|{ts}"))
 
 
+# Los cuatro personajes de los tests de equipos. Son claves de verdad porque el
+# backend verifica firmas contra el dueño guardado: un `"pk-gus"` cualquiera ya
+# no sirve, no se puede cargar como clave ni firmar con ella.
+GUS = _Identidad()
+VALEN = _Identidad()
+OTRO = _Identidad()
+INTRUSO = _Identidad()
+
+
 def _registro_firmado(worker_id: str):
     """Alta válida de un minero, firmada con una identidad nueva."""
     return _Identidad().registro(worker_id)
@@ -265,12 +345,12 @@ def _commands_for(client, worker_id):
 
 class TestFlujoApi:
     def test_crear_equipo_promueve_el_worker_a_coordinador(self, api, r):
-        _own(r, "mi-minero", "pk-gus")
+        _own(r, "mi-minero", GUS.pubkey)
         _online(r, "mi-minero")
 
         resp = api.post("/api/teams", json={"name": "Los Pibes",
                                             "worker_id": "mi-minero"},
-                        headers={"X-Owner-Id": "pk-gus"})
+                        headers={"X-Owner-Id": GUS.pubkey})
         assert resp.status_code == 200, resp.text
         team = resp.json()
         assert team["name"] == "Los Pibes"
@@ -282,30 +362,30 @@ class TestFlujoApi:
         ]
 
     def test_crear_equipo_con_worker_ajeno_es_403(self, api, r):
-        _own(r, "minero-de-otro", "pk-otro")
+        _own(r, "minero-de-otro", OTRO.pubkey)
         resp = api.post("/api/teams", json={"name": "Robo", "worker_id": "minero-de-otro"},
-                        headers={"X-Owner-Id": "pk-gus"})
+                        headers={"X-Owner-Id": GUS.pubkey})
         assert resp.status_code == 403
 
     def test_crear_equipo_sin_nombre_es_400(self, api, r):
-        _own(r, "w", "pk-gus")
+        _own(r, "w", GUS.pubkey)
         resp = api.post("/api/teams", json={"name": "   ", "worker_id": "w"},
-                        headers={"X-Owner-Id": "pk-gus"})
+                        headers={"X-Owner-Id": GUS.pubkey})
         assert resp.status_code == 400
 
     def test_unirse_usa_la_direccion_que_publica_el_coordinador(self, api, r):
-        _own(r, "coord", "pk-gus")
+        _own(r, "coord", GUS.pubkey)
         _online(r, "coord", address="http://10.42.0.7:9001")
         team_id = api.post("/api/teams", json={"name": "Los Pibes", "worker_id": "coord"},
-                           headers={"X-Owner-Id": "pk-gus"}).json()["team_id"]
+                           headers={"X-Owner-Id": GUS.pubkey}).json()["team_id"]
         # el coordinador ya arrancó y reporta su modo real
         _online(r, "coord", mode="pool-coordinator", address="http://10.42.0.7:9001")
 
-        _own(r, "otro-minero", "pk-valen")
+        _own(r, "otro-minero", VALEN.pubkey)
         _online(r, "otro-minero")
         resp = api.post(f"/api/teams/{team_id}/join",
                         json={"worker_id": "otro-minero"},
-                        headers={"X-Owner-Id": "pk-valen"})
+                        headers={"X-Owner-Id": VALEN.pubkey})
         assert resp.status_code == 200, resp.text
         assert resp.json()["member_count"] == 2
 
@@ -329,15 +409,15 @@ class TestFlujoApi:
         corrige sola cuando el coordinador aparece, y el pool se arma solo en
         cuanto ambos están encendidos.
         """
-        _own(r, "coord", "pk-gus")
+        _own(r, "coord", GUS.pubkey)
         _online(r, "coord")
         team_id = api.post("/api/teams", json={"name": "Los Pibes", "worker_id": "coord"},
-                           headers={"X-Owner-Id": "pk-gus"}).json()["team_id"]
+                           headers={"X-Owner-Id": GUS.pubkey}).json()["team_id"]
         r.delete("worker:status:coord")  # el coordinador se apagó
 
-        _own(r, "otro", "pk-valen")
+        _own(r, "otro", VALEN.pubkey)
         resp = api.post(f"/api/teams/{team_id}/join", json={"worker_id": "otro"},
-                        headers={"X-Owner-Id": "pk-valen"})
+                        headers={"X-Owner-Id": VALEN.pubkey})
         assert resp.status_code == 200, resp.text
         assert resp.json()["member_count"] == 2
 
@@ -348,32 +428,32 @@ class TestFlujoApi:
         assert desired["pool_url"]
 
     def test_salir_del_equipo_vuelve_a_competitivo(self, api, r):
-        _own(r, "coord", "pk-gus")
+        _own(r, "coord", GUS.pubkey)
         _online(r, "coord", mode="pool-coordinator")
         team_id = api.post("/api/teams", json={"name": "T", "worker_id": "coord"},
-                           headers={"X-Owner-Id": "pk-gus"}).json()["team_id"]
-        _own(r, "w2", "pk-valen")
+                           headers={"X-Owner-Id": GUS.pubkey}).json()["team_id"]
+        _own(r, "w2", VALEN.pubkey)
         _online(r, "w2")
         api.post(f"/api/teams/{team_id}/join", json={"worker_id": "w2"},
-                 headers={"X-Owner-Id": "pk-valen"})
+                 headers={"X-Owner-Id": VALEN.pubkey})
 
         resp = api.post(f"/api/teams/{team_id}/leave", json={"worker_id": "w2"},
-                        headers={"X-Owner-Id": "pk-valen"})
+                        headers={"X-Owner-Id": VALEN.pubkey})
         assert resp.status_code == 200
         assert _commands_for(api, "w2")[-1]["mode"] == "standalone"
         assert api.get(f"/api/teams/{team_id}").json()["member_count"] == 1
 
     def test_disolver_libera_a_todo_el_plantel(self, api, r):
-        _own(r, "coord", "pk-gus")
+        _own(r, "coord", GUS.pubkey)
         _online(r, "coord", mode="pool-coordinator")
         team_id = api.post("/api/teams", json={"name": "T", "worker_id": "coord"},
-                           headers={"X-Owner-Id": "pk-gus"}).json()["team_id"]
-        _own(r, "w2", "pk-valen")
+                           headers={"X-Owner-Id": GUS.pubkey}).json()["team_id"]
+        _own(r, "w2", VALEN.pubkey)
         _online(r, "w2")
         api.post(f"/api/teams/{team_id}/join", json={"worker_id": "w2"},
-                 headers={"X-Owner-Id": "pk-valen"})
+                 headers={"X-Owner-Id": VALEN.pubkey})
 
-        resp = api.delete(f"/api/teams/{team_id}", headers={"X-Owner-Id": "pk-gus"})
+        resp = api.delete(f"/api/teams/{team_id}", headers={"X-Owner-Id": GUS.pubkey})
         assert resp.status_code == 200
         assert set(resp.json()["released"]) == {"coord", "w2"}
         # Nadie queda apuntando a un coordinador que ya no reparte trabajo.
@@ -382,11 +462,11 @@ class TestFlujoApi:
         assert api.get(f"/api/teams/{team_id}").status_code == 404
 
     def test_solo_el_creador_disuelve(self, api, r):
-        _own(r, "coord", "pk-gus")
+        _own(r, "coord", GUS.pubkey)
         _online(r, "coord")
         team_id = api.post("/api/teams", json={"name": "T", "worker_id": "coord"},
-                           headers={"X-Owner-Id": "pk-gus"}).json()["team_id"]
-        resp = api.delete(f"/api/teams/{team_id}", headers={"X-Owner-Id": "pk-intruso"})
+                           headers={"X-Owner-Id": GUS.pubkey}).json()["team_id"]
+        resp = api.delete(f"/api/teams/{team_id}", headers={"X-Owner-Id": INTRUSO.pubkey})
         assert resp.status_code == 403
 
 
@@ -394,61 +474,61 @@ class TestSwitchModeEsSoloVueltaACompetitivo:
     """El modo cooperativo se entra por equipos y por ningún otro lado."""
 
     def test_pedir_pool_worker_a_mano_es_400(self, api, r):
-        _own(r, "w1", "pk-gus")
+        _own(r, "w1", GUS.pubkey)
         resp = api.post("/api/workers/w1/switch-mode",
                         json={"target": "pool-worker", "pool_url": "http://loquesea:9001"},
-                        headers={"X-Owner-Id": "pk-gus"})
+                        headers={"X-Owner-Id": GUS.pubkey})
         assert resp.status_code == 400
         assert "equipo" in resp.json()["detail"].lower()
         assert _commands_for(api, "w1") == []
 
     def test_pedir_pool_coordinator_a_mano_es_400(self, api, r):
-        _own(r, "w1", "pk-gus")
+        _own(r, "w1", GUS.pubkey)
         resp = api.post("/api/workers/w1/switch-mode", json={"target": "pool-coordinator"},
-                        headers={"X-Owner-Id": "pk-gus"})
+                        headers={"X-Owner-Id": GUS.pubkey})
         assert resp.status_code == 400
 
     def test_volver_a_competitivo_saca_del_equipo(self, api, r):
-        _own(r, "coord", "pk-gus")
+        _own(r, "coord", GUS.pubkey)
         _online(r, "coord", mode="pool-coordinator")
         team_id = api.post("/api/teams", json={"name": "T", "worker_id": "coord"},
-                           headers={"X-Owner-Id": "pk-gus"}).json()["team_id"]
-        _own(r, "w2", "pk-valen")
+                           headers={"X-Owner-Id": GUS.pubkey}).json()["team_id"]
+        _own(r, "w2", VALEN.pubkey)
         _online(r, "w2")
         api.post(f"/api/teams/{team_id}/join", json={"worker_id": "w2"},
-                 headers={"X-Owner-Id": "pk-valen"})
+                 headers={"X-Owner-Id": VALEN.pubkey})
 
         resp = api.post("/api/workers/w2/switch-mode", json={"target": "standalone"},
-                        headers={"X-Owner-Id": "pk-valen"})
+                        headers={"X-Owner-Id": VALEN.pubkey})
         assert resp.status_code == 200
         assert resp.json()["left_team"] == team_id
         # el equipo se enteró: ya no lo cuenta como miembro
         assert api.get(f"/api/teams/{team_id}").json()["member_count"] == 1
 
     def test_el_coordinador_no_sale_por_switch_mode(self, api, r):
-        _own(r, "coord", "pk-gus")
+        _own(r, "coord", GUS.pubkey)
         _online(r, "coord", mode="pool-coordinator")
         api.post("/api/teams", json={"name": "T", "worker_id": "coord"},
-                 headers={"X-Owner-Id": "pk-gus"})
+                 headers={"X-Owner-Id": GUS.pubkey})
         resp = api.post("/api/workers/coord/switch-mode", json={"target": "standalone"},
-                        headers={"X-Owner-Id": "pk-gus"})
+                        headers={"X-Owner-Id": GUS.pubkey})
         assert resp.status_code == 409
         assert "disolv" in resp.json()["detail"].lower()
 
 
 class TestListadoDeMineros:
     def test_el_listado_dice_a_que_equipo_pertenece_cada_minero(self, api, r):
-        _own(r, "coord", "pk-gus")
+        _own(r, "coord", GUS.pubkey)
         _online(r, "coord", mode="pool-coordinator")
-        _own(r, "w2", "pk-valen")
+        _own(r, "w2", VALEN.pubkey)
         _online(r, "w2")
-        _own(r, "solo", "pk-otro")
+        _own(r, "solo", OTRO.pubkey)
         _online(r, "solo")
 
         team_id = api.post("/api/teams", json={"name": "Los Pibes", "worker_id": "coord"},
-                           headers={"X-Owner-Id": "pk-gus"}).json()["team_id"]
+                           headers={"X-Owner-Id": GUS.pubkey}).json()["team_id"]
         api.post(f"/api/teams/{team_id}/join", json={"worker_id": "w2"},
-                 headers={"X-Owner-Id": "pk-valen"})
+                 headers={"X-Owner-Id": VALEN.pubkey})
 
         by_id = {w["worker_id"]: w for w in api.get("/api/workers/status").json()}
         assert by_id["coord"]["team_role"] == "coordinator"
@@ -470,10 +550,10 @@ class TestNoInventarWorkersVivos:
     def test_equipo_con_coordinador_sin_reportar_no_figura_en_linea(self, api, r):
         # Alta sin _online(): es el caso del minero recién desplegado, cuyo pod
         # tarda decenas de segundos en levantar y reportar.
-        _own(r, "recien-creado", "pk-gus")
+        _own(r, "recien-creado", GUS.pubkey)
 
         resp = api.post("/api/teams", json={"name": "Nuevo", "worker_id": "recien-creado"},
-                        headers={"X-Owner-Id": "pk-gus"})
+                        headers={"X-Owner-Id": GUS.pubkey})
         assert resp.status_code == 200, resp.text
         assert resp.json()["coordinator_online"] is False
 
@@ -483,19 +563,19 @@ class TestNoInventarWorkersVivos:
         Cuando el pod levante va a consumir su `worker.command` y arrancar ya en
         modo coordinador.
         """
-        _own(r, "recien-creado", "pk-gus")
+        _own(r, "recien-creado", GUS.pubkey)
         api.post("/api/teams", json={"name": "Nuevo", "worker_id": "recien-creado"},
-                 headers={"X-Owner-Id": "pk-gus"})
+                 headers={"X-Owner-Id": GUS.pubkey})
         assert _commands_for(api, "recien-creado") == [
             {"type": "switch_mode", "mode": "pool-coordinator", "pool_url": ""}
         ]
 
     def test_el_estado_reportado_si_se_refina(self, api, r):
         """Con estado previo, la UI ve el modo nuevo sin esperar al worker."""
-        _own(r, "vivo", "pk-gus")
+        _own(r, "vivo", GUS.pubkey)
         _online(r, "vivo", address="http://10.42.0.9:9001")
         api.post("/api/teams", json={"name": "T", "worker_id": "vivo"},
-                 headers={"X-Owner-Id": "pk-gus"})
+                 headers={"X-Owner-Id": GUS.pubkey})
         by_id = {w["worker_id"]: w for w in api.get("/api/workers/status").json()}
         assert by_id["vivo"]["mode"] == "pool-coordinator"
         # y la dirección que el worker había publicado sobrevive al refinamiento
@@ -517,42 +597,42 @@ class TestUnSoloEquipoPorIdentidad:
     """
 
     def test_la_segunda_fundacion_es_409(self, api, r):
-        _own(r, "w1", "pk-gus")
+        _own(r, "w1", GUS.pubkey)
         _online(r, "w1")
-        _own(r, "w2", "pk-gus")
+        _own(r, "w2", GUS.pubkey)
         _online(r, "w2")
 
         assert api.post("/api/teams", json={"name": "Primero", "worker_id": "w1"},
-                        headers={"X-Owner-Id": "pk-gus"}).status_code == 200
+                        headers={"X-Owner-Id": GUS.pubkey}).status_code == 200
 
         resp = api.post("/api/teams", json={"name": "Segundo", "worker_id": "w2"},
-                        headers={"X-Owner-Id": "pk-gus"})
+                        headers={"X-Owner-Id": GUS.pubkey})
         assert resp.status_code == 409
         assert "Primero" in resp.json()["detail"]
         # y el minero libre no quedó promovido a coordinador de la nada
         assert _commands_for(api, "w2") == []
 
     def test_otra_identidad_si_puede_fundar(self, api, r):
-        _own(r, "w1", "pk-gus")
+        _own(r, "w1", GUS.pubkey)
         _online(r, "w1")
-        _own(r, "w2", "pk-valen")
+        _own(r, "w2", VALEN.pubkey)
         _online(r, "w2")
 
         assert api.post("/api/teams", json={"name": "De Gus", "worker_id": "w1"},
-                        headers={"X-Owner-Id": "pk-gus"}).status_code == 200
+                        headers={"X-Owner-Id": GUS.pubkey}).status_code == 200
         assert api.post("/api/teams", json={"name": "De Valen", "worker_id": "w2"},
-                        headers={"X-Owner-Id": "pk-valen"}).status_code == 200
+                        headers={"X-Owner-Id": VALEN.pubkey}).status_code == 200
 
     def test_disolver_libera_el_derecho_a_fundar(self, api, r):
-        _own(r, "w1", "pk-gus")
+        _own(r, "w1", GUS.pubkey)
         _online(r, "w1")
         team_id = api.post("/api/teams", json={"name": "Primero", "worker_id": "w1"},
-                           headers={"X-Owner-Id": "pk-gus"}).json()["team_id"]
+                           headers={"X-Owner-Id": GUS.pubkey}).json()["team_id"]
 
-        api.delete(f"/api/teams/{team_id}", headers={"X-Owner-Id": "pk-gus"})
+        api.delete(f"/api/teams/{team_id}", headers={"X-Owner-Id": GUS.pubkey})
 
         assert api.post("/api/teams", json={"name": "Segundo", "worker_id": "w1"},
-                        headers={"X-Owner-Id": "pk-gus"}).status_code == 200
+                        headers={"X-Owner-Id": GUS.pubkey}).status_code == 200
 
     def test_el_equipo_no_limita_cuantos_mineros_pone_cada_identidad(self, api, r):
         """La membresía no mira al dueño; el cupo se aplica al registrar.
@@ -560,16 +640,16 @@ class TestUnSoloEquipoPorIdentidad:
         Por la API real una identidad llega con un solo minero, pero esa
         restricción vive en el alta y no acá: el equipo acepta a quien le manden.
         """
-        _own(r, "coord", "pk-gus")
+        _own(r, "coord", GUS.pubkey)
         _online(r, "coord", mode="pool-coordinator")
         team_id = api.post("/api/teams", json={"name": "Los Pibes", "worker_id": "coord"},
-                           headers={"X-Owner-Id": "pk-gus"}).json()["team_id"]
+                           headers={"X-Owner-Id": GUS.pubkey}).json()["team_id"]
 
         for worker_id in ("v1", "v2"):
-            _own(r, worker_id, "pk-valen")
+            _own(r, worker_id, VALEN.pubkey)
             _online(r, worker_id)
             assert api.post(f"/api/teams/{team_id}/join", json={"worker_id": worker_id},
-                            headers={"X-Owner-Id": "pk-valen"}).status_code == 200
+                            headers={"X-Owner-Id": VALEN.pubkey}).status_code == 200
 
         assert api.get(f"/api/teams/{team_id}").json()["member_count"] == 3
 
@@ -596,62 +676,62 @@ class TestAgendaDelEquipo:
         return json.loads(raw) if raw else None
 
     def test_fundar_con_agenda_la_baja_al_coordinador(self, api, r):
-        _own(r, "coord", "pk-gus")
+        _own(r, "coord", GUS.pubkey)
         _online(r, "coord")
 
         resp = api.post("/api/teams",
                         json={"name": "Los Economistas", "worker_id": "coord",
                               "categories": ["economia", "salud"]},
-                        headers={"X-Owner-Id": "pk-gus"})
+                        headers={"X-Owner-Id": GUS.pubkey})
         assert resp.status_code == 200, resp.text
         assert resp.json()["categories"] == ["economia", "salud"]
         assert self._policy(r, "coord")["categories"] == ["economia", "salud"]
 
     def test_fundar_sin_agenda_vota_todas(self, api, r):
-        _own(r, "coord", "pk-gus")
+        _own(r, "coord", GUS.pubkey)
         _online(r, "coord")
         resp = api.post("/api/teams", json={"name": "Los Pibes", "worker_id": "coord"},
-                        headers={"X-Owner-Id": "pk-gus"})
+                        headers={"X-Owner-Id": GUS.pubkey})
         assert resp.json()["categories"] == []
         # y la política que baja es explícitamente "sin agenda", no la ausencia
         # de política: así el coordinador que venía de otro equipo se entera.
         assert self._policy(r, "coord")["categories"] == []
 
     def test_categoria_inventada_es_400(self, api, r):
-        _own(r, "coord", "pk-gus")
+        _own(r, "coord", GUS.pubkey)
         _online(r, "coord")
         resp = api.post("/api/teams",
                         json={"name": "Astrólogos", "worker_id": "coord",
                               "categories": ["astrologia"]},
-                        headers={"X-Owner-Id": "pk-gus"})
+                        headers={"X-Owner-Id": GUS.pubkey})
         assert resp.status_code == 400
         assert "astrologia" in resp.json()["detail"]
         # y no quedó un equipo a medio fundar
         assert api.get("/api/teams").json() == []
 
     def test_cambiar_la_agenda_la_baja_al_coordinador(self, api, r):
-        _own(r, "coord", "pk-gus")
+        _own(r, "coord", GUS.pubkey)
         _online(r, "coord", mode="pool-coordinator")
         team_id = api.post("/api/teams", json={"name": "T", "worker_id": "coord",
                                                "categories": ["economia"]},
-                           headers={"X-Owner-Id": "pk-gus"}).json()["team_id"]
+                           headers={"X-Owner-Id": GUS.pubkey}).json()["team_id"]
 
         resp = api.put(f"/api/teams/{team_id}/categories",
                        json={"categories": ["ambiente", "salud"]},
-                       headers={"X-Owner-Id": "pk-gus"})
+                       headers={"X-Owner-Id": GUS.pubkey})
         assert resp.status_code == 200, resp.text
         assert resp.json()["categories"] == ["salud", "ambiente"]
         assert self._policy(r, "coord")["categories"] == ["salud", "ambiente"]
 
     def test_vaciar_la_agenda_vuelve_a_votar_todo(self, api, r):
-        _own(r, "coord", "pk-gus")
+        _own(r, "coord", GUS.pubkey)
         _online(r, "coord", mode="pool-coordinator")
         team_id = api.post("/api/teams", json={"name": "T", "worker_id": "coord",
                                                "categories": ["economia"]},
-                           headers={"X-Owner-Id": "pk-gus"}).json()["team_id"]
+                           headers={"X-Owner-Id": GUS.pubkey}).json()["team_id"]
 
         resp = api.put(f"/api/teams/{team_id}/categories", json={"categories": []},
-                       headers={"X-Owner-Id": "pk-gus"})
+                       headers={"X-Owner-Id": GUS.pubkey})
         assert resp.json()["categories"] == []
         assert self._policy(r, "coord")["categories"] == []
 
@@ -661,32 +741,32 @@ class TestAgendaDelEquipo:
         Si cualquier miembro pudiera reescribirla, se entraría a un equipo sólo
         para desviarle el cómputo a otra área.
         """
-        _own(r, "coord", "pk-gus")
+        _own(r, "coord", GUS.pubkey)
         _online(r, "coord", mode="pool-coordinator")
         team_id = api.post("/api/teams", json={"name": "T", "worker_id": "coord",
                                                "categories": ["economia"]},
-                           headers={"X-Owner-Id": "pk-gus"}).json()["team_id"]
-        _own(r, "w2", "pk-valen")
+                           headers={"X-Owner-Id": GUS.pubkey}).json()["team_id"]
+        _own(r, "w2", VALEN.pubkey)
         _online(r, "w2")
         api.post(f"/api/teams/{team_id}/join", json={"worker_id": "w2"},
-                 headers={"X-Owner-Id": "pk-valen"})
+                 headers={"X-Owner-Id": VALEN.pubkey})
 
         resp = api.put(f"/api/teams/{team_id}/categories",
                        json={"categories": ["salud"]},
-                       headers={"X-Owner-Id": "pk-valen"})
+                       headers={"X-Owner-Id": VALEN.pubkey})
         assert resp.status_code == 403
         assert self._policy(r, "coord")["categories"] == ["economia"]
 
     def test_disolver_borra_la_politica_del_coordinador(self, api, r):
         """Fundar otro equipo con el mismo minero no debe heredar la agenda vieja."""
-        _own(r, "coord", "pk-gus")
+        _own(r, "coord", GUS.pubkey)
         _online(r, "coord", mode="pool-coordinator")
         team_id = api.post("/api/teams", json={"name": "T", "worker_id": "coord",
                                                "categories": ["economia"]},
-                           headers={"X-Owner-Id": "pk-gus"}).json()["team_id"]
+                           headers={"X-Owner-Id": GUS.pubkey}).json()["team_id"]
         assert self._policy(r, "coord") is not None
 
-        api.delete(f"/api/teams/{team_id}", headers={"X-Owner-Id": "pk-gus"})
+        api.delete(f"/api/teams/{team_id}", headers={"X-Owner-Id": GUS.pubkey})
         assert self._policy(r, "coord") is None
 
     def test_la_agenda_sobrevive_a_un_cambio_de_politica_de_acciones(self, api, r):
@@ -695,15 +775,15 @@ class TestAgendaDelEquipo:
         La política por acción/ley se toca desde Mineros; la agenda desde
         Equipos. Un POST de política sin `categories` significa "no la toques".
         """
-        _own(r, "coord", "pk-gus")
+        _own(r, "coord", GUS.pubkey)
         _online(r, "coord", mode="pool-coordinator")
         api.post("/api/teams", json={"name": "T", "worker_id": "coord",
                                      "categories": ["economia"]},
-                 headers={"X-Owner-Id": "pk-gus"})
+                 headers={"X-Owner-Id": GUS.pubkey})
 
         resp = api.post("/api/workers/pool/coord/policy",
                         json={"decision": "reject", "action": "derogacion"},
-                        headers={"X-Owner-Id": "pk-gus"})
+                        headers={"X-Owner-Id": GUS.pubkey})
         assert resp.status_code == 200, resp.text
         policy = self._policy(r, "coord")
         assert policy["categories"] == ["economia"]
@@ -725,14 +805,14 @@ class TestIntencionPersistida:
     """
 
     def test_asignar_a_un_equipo_deja_la_intencion_escrita(self, api, r):
-        _own(r, "coord", "pk-gus")
+        _own(r, "coord", GUS.pubkey)
         _online(r, "coord", address="http://10.0.0.5:9001")
         team_id = api.post("/api/teams", json={"name": "T", "worker_id": "coord"},
-                           headers={"X-Owner-Id": "pk-gus"}).json()["team_id"]
-        _own(r, "w2", "pk-valen")  # nunca arrancó: no hay worker:status:w2
+                           headers={"X-Owner-Id": GUS.pubkey}).json()["team_id"]
+        _own(r, "w2", VALEN.pubkey)  # nunca arrancó: no hay worker:status:w2
 
         api.post(f"/api/teams/{team_id}/join", json={"worker_id": "w2"},
-                 headers={"X-Owner-Id": "pk-valen"})
+                 headers={"X-Owner-Id": VALEN.pubkey})
 
         desired = json.loads(r.get("worker:desired_mode:w2"))
         assert desired == {"mode": "pool-worker", "pool_url": "http://10.0.0.5:9001"}
@@ -742,24 +822,24 @@ class TestIntencionPersistida:
 
         Si expirara, un minero apagado más de 15 s perdería su equipo.
         """
-        _own(r, "w1", "pk-gus")
+        _own(r, "w1", GUS.pubkey)
         _online(r, "w1")
         api.post("/api/teams", json={"name": "T", "worker_id": "w1"},
-                 headers={"X-Owner-Id": "pk-gus"})
+                 headers={"X-Owner-Id": GUS.pubkey})
         assert r.ttl("worker:desired_mode:w1") == -1  # -1 = sin expiración
 
     def test_volver_a_competitivo_tambien_se_persiste(self, api, r):
-        _own(r, "coord", "pk-gus")
+        _own(r, "coord", GUS.pubkey)
         _online(r, "coord", mode="pool-coordinator")
         team_id = api.post("/api/teams", json={"name": "T", "worker_id": "coord"},
-                           headers={"X-Owner-Id": "pk-gus"}).json()["team_id"]
-        _own(r, "w2", "pk-valen")
+                           headers={"X-Owner-Id": GUS.pubkey}).json()["team_id"]
+        _own(r, "w2", VALEN.pubkey)
         _online(r, "w2")
         api.post(f"/api/teams/{team_id}/join", json={"worker_id": "w2"},
-                 headers={"X-Owner-Id": "pk-valen"})
+                 headers={"X-Owner-Id": VALEN.pubkey})
 
         api.post("/api/workers/w2/switch-mode", json={"target": "standalone"},
-                 headers={"X-Owner-Id": "pk-valen"})
+                 headers={"X-Owner-Id": VALEN.pubkey})
         assert json.loads(r.get("worker:desired_mode:w2"))["mode"] == "standalone"
 
     def test_cuando_el_coordinador_aparece_se_corrige_la_url_de_los_miembros(self, api, r):
@@ -771,12 +851,12 @@ class TestIntencionPersistida:
         corregir la de los que ya estaban adentro, o se quedan pidiéndole
         fragmentos a un host que no existe.
         """
-        _own(r, "coord", "pk-gus")
+        _own(r, "coord", GUS.pubkey)
         team_id = api.post("/api/teams", json={"name": "T", "worker_id": "coord"},
-                           headers={"X-Owner-Id": "pk-gus"}).json()["team_id"]
-        _own(r, "w2", "pk-valen")
+                           headers={"X-Owner-Id": GUS.pubkey}).json()["team_id"]
+        _own(r, "w2", VALEN.pubkey)
         api.post(f"/api/teams/{team_id}/join", json={"worker_id": "w2"},
-                 headers={"X-Owner-Id": "pk-valen"})
+                 headers={"X-Owner-Id": VALEN.pubkey})
         assert json.loads(r.get("worker:desired_mode:w2"))["pool_url"] == \
             "http://coord:9001"
 
@@ -835,10 +915,10 @@ class TestUnMineroPorIdentidad:
             "voxchain_api.routers.workers._verify_timestamp_freshness", lambda *a: None)
 
     def test_el_segundo_alta_es_409(self, api, r):
-        _own(r, "mi-minero", "pk-gus")
+        _own(r, "mi-minero", GUS.pubkey)
 
         resp = api.post("/api/workers/register", json={
-            "worker_id": "otro-minero", "pubkey": "pk-gus",
+            "worker_id": "otro-minero", "pubkey": GUS.pubkey,
             "timestamp": "2026-01-01T00:00:00+00:00", "signature": "x",
         })
         assert resp.status_code == 409
@@ -846,10 +926,10 @@ class TestUnMineroPorIdentidad:
         assert not r.sismember("registered_workers", "otro-minero")
 
     def test_otra_identidad_si_puede_registrar(self, api, r):
-        _own(r, "de-gus", "pk-gus")
+        _own(r, "de-gus", GUS.pubkey)
 
         resp = api.post("/api/workers/register", json={
-            "worker_id": "de-valen", "pubkey": "pk-valen",
+            "worker_id": "de-valen", "pubkey": VALEN.pubkey,
             "timestamp": "2026-01-01T00:00:00+00:00", "signature": "x",
         })
         assert resp.status_code == 200, resp.text
@@ -857,10 +937,10 @@ class TestUnMineroPorIdentidad:
 
     def test_reregistrar_el_mismo_id_sigue_valiendo(self, api, r):
         """Es el camino para volver a subir la clave privada o recrear el pod."""
-        _own(r, "mi-minero", "pk-gus")
+        _own(r, "mi-minero", GUS.pubkey)
 
         resp = api.post("/api/workers/register", json={
-            "worker_id": "mi-minero", "pubkey": "pk-gus",
+            "worker_id": "mi-minero", "pubkey": GUS.pubkey,
             "timestamp": "2026-01-01T00:00:00+00:00", "signature": "x",
         })
         assert resp.status_code == 200, resp.text
@@ -868,31 +948,31 @@ class TestUnMineroPorIdentidad:
     def test_dar_de_baja_libera_el_cupo(self, api, r):
         from voxchain_api.routers.workers import worker_of_owner
 
-        _own(r, "mi-minero", "pk-gus")
-        assert worker_of_owner(r, "pk-gus") == "mi-minero"
+        _own(r, "mi-minero", GUS.pubkey)
+        assert worker_of_owner(r, GUS.pubkey) == "mi-minero"
 
         # Lo que hace el endpoint de baja.
         r.srem("registered_workers", "mi-minero")
         r.delete("worker:owner:mi-minero")
-        assert worker_of_owner(r, "pk-gus") is None
+        assert worker_of_owner(r, GUS.pubkey) is None
 
     def test_un_registro_a_medias_no_bloquea_para_siempre(self, r):
         """Un id en el set sin su `worker:owner:*` es estado roto, no un minero."""
         from voxchain_api.routers.workers import worker_of_owner
 
         r.sadd("registered_workers", "huerfano")
-        assert worker_of_owner(r, "pk-gus") is None
+        assert worker_of_owner(r, GUS.pubkey) is None
 
     def test_fundar_equipo_con_minero_nuevo_respeta_el_cupo(self, api, r):
         """El alta que hace `create_team` pasa por la misma regla."""
-        _own(r, "mi-minero", "pk-gus")
+        _own(r, "mi-minero", GUS.pubkey)
         _online(r, "mi-minero")
 
         resp = api.post("/api/teams", json={
             "name": "Segundo intento", "worker_id": "otro-minero",
-            "new_worker": {"worker_id": "otro-minero", "pubkey": "pk-gus",
+            "new_worker": {"worker_id": "otro-minero", "pubkey": GUS.pubkey,
                            "timestamp": "2026-01-01T00:00:00+00:00", "signature": "x"},
-        }, headers={"X-Owner-Id": "pk-gus"})
+        }, headers={"X-Owner-Id": GUS.pubkey})
         assert resp.status_code == 409
         assert api.get("/api/teams").json() == []
 
@@ -987,6 +1067,25 @@ class TestEnrolamientoDeNodo:
             "enrollment_token": alta["token"]})
         assert resp.status_code == 400
 
+    def test_una_pubkey_invalida_no_quema_el_token(self, api, r, alta):
+        """Un pedido que no puede prosperar no debe gastar el token.
+
+        Al revés —consumir y después validar— un request malformado dejaba al
+        minero sin poder enrolarse hasta que su dueño lo re-registrara. Lo
+        encontró la prueba end-to-end, no los tests unitarios: acá cada caso
+        estrenaba token y nunca reusaba el mismo dos veces.
+        """
+        api.post("/api/workers/enroll", json={
+            "worker_id": alta["worker_id"], "node_pubkey": "no-es-una-clave",
+            "enrollment_token": alta["token"]})
+
+        node = _pubkey_valida()
+        segunda = api.post("/api/workers/enroll", json={
+            "worker_id": alta["worker_id"], "node_pubkey": node,
+            "enrollment_token": alta["token"]})
+        assert segunda.status_code == 200
+        assert r.get(f"node:owner:{node}") == alta["owner"]
+
     def test_no_se_enrola_un_minero_que_no_existe(self, api, alta):
         resp = api.post("/api/workers/enroll", json={
             "worker_id": "minero-fantasma", "node_pubkey": _pubkey_valida(),
@@ -1059,3 +1158,154 @@ class TestElVinculoLoLeeElNct:
         from common.storage import VoxChainStore
 
         assert VoxChainStore(r).owner_of_node(_pubkey_valida()) is None
+
+
+class TestAdministrarExigeFirma:
+    """Las acciones de administración se prueban, no se declaran.
+
+    Se autorizaban comparando la cabecera ``X-Owner-Id`` contra el dueño
+    guardado. La cabecera la elige quien llama y la pubkey es pública —está en
+    cada bloque de la cadena—, así que alcanzaba con saber a quién imitar:
+    cualquiera podía sacarle un minero de su equipo a otro, o reescribirle la
+    agenda a su pool, con un curl.
+
+    Estos tests usan el TestClient crudo, sin el firmante automático, porque lo
+    que ejercen es justamente la ausencia de firma.
+    """
+
+    @pytest.fixture
+    def crudo(self, api):
+        return api._client
+
+    @pytest.fixture
+    def equipo(self, api, r):
+        _own(r, "coord", GUS.pubkey)
+        _online(r, "coord")
+        _own(r, "w2", VALEN.pubkey)
+        _online(r, "w2")
+        team_id = api.post("/api/teams", json={"name": "Los Pibes", "worker_id": "coord"},
+                           headers={"X-Owner-Id": GUS.pubkey}).json()["team_id"]
+        api.post(f"/api/teams/{team_id}/join", json={"worker_id": "w2"},
+                 headers={"X-Owner-Id": VALEN.pubkey})
+        return team_id
+
+    def test_sin_firma_no_se_saca_a_nadie_de_su_equipo(self, crudo, equipo):
+        """El ataque original: conocer la pubkey de alguien alcanzaba."""
+        resp = crudo.post("/api/teams/%s/leave" % equipo, json={"worker_id": "w2"},
+                          headers={"X-Owner-Id": VALEN.pubkey})
+        assert resp.status_code == 401
+
+    def test_sin_firma_no_se_disuelve_un_equipo(self, crudo, equipo):
+        resp = crudo.delete(f"/api/teams/{equipo}", headers={"X-Owner-Id": GUS.pubkey})
+        assert resp.status_code == 401
+
+    def test_sin_firma_no_se_cambia_la_agenda(self, crudo, equipo):
+        resp = crudo.put(f"/api/teams/{equipo}/categories", json={"categories": ["salud"]},
+                         headers={"X-Owner-Id": GUS.pubkey})
+        assert resp.status_code == 401
+
+    def test_sin_firma_no_se_cambia_el_modo_de_un_minero(self, crudo, r):
+        _own(r, "mio", GUS.pubkey)
+        resp = crudo.post("/api/workers/mio/switch-mode", json={"target": "standalone"},
+                          headers={"X-Owner-Id": GUS.pubkey})
+        assert resp.status_code == 401
+
+    def test_sin_firma_no_se_reescribe_la_politica_de_un_pool(self, crudo, r):
+        _own(r, "coord", GUS.pubkey)
+        resp = crudo.post("/api/workers/pool/coord/policy",
+                          json={"decision": "reject", "action": "derogacion"},
+                          headers={"X-Owner-Id": GUS.pubkey})
+        assert resp.status_code == 401
+
+    def test_la_firma_de_otra_accion_no_sirve(self, crudo, r):
+        """Firmar `leave-team` no autoriza un `switch-mode`.
+
+        La acción va adentro del mensaje firmado justo para esto: si no
+        estuviera, una firma capturada de la acción más inocua autorizaría la
+        más destructiva.
+        """
+        _own(r, "mio", GUS.pubkey)
+        ts = datetime.now(timezone.utc).isoformat()
+        resp = crudo.post("/api/workers/mio/switch-mode", json={"target": "standalone"},
+                          headers={"X-Owner-Id": GUS.pubkey, "X-Timestamp": ts,
+                                   "X-Signature": GUS.firma(f"mio|leave-team|{ts}")})
+        assert resp.status_code == 401
+
+    def test_la_firma_de_otro_minero_no_sirve(self, crudo, r):
+        _own(r, "mio", GUS.pubkey)
+        _own(r, "otro-mio", GUS.pubkey)
+        ts = datetime.now(timezone.utc).isoformat()
+        resp = crudo.post("/api/workers/mio/switch-mode", json={"target": "standalone"},
+                          headers={"X-Owner-Id": GUS.pubkey, "X-Timestamp": ts,
+                                   "X-Signature": GUS.firma(f"otro-mio|switch-mode|{ts}")})
+        assert resp.status_code == 401
+
+    def test_una_firma_vieja_no_sirve(self, crudo, r):
+        from datetime import timedelta
+
+        _own(r, "mio", GUS.pubkey)
+        viejo = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+        resp = crudo.post("/api/workers/mio/switch-mode", json={"target": "standalone"},
+                          headers={"X-Owner-Id": GUS.pubkey, "X-Timestamp": viejo,
+                                   "X-Signature": GUS.firma(f"mio|switch-mode|{viejo}")})
+        assert resp.status_code == 400
+
+    def test_una_firma_no_se_usa_dos_veces(self, api, crudo, r, equipo):
+        """Dentro de la ventana de frescura la firma seguiría siendo válida.
+
+        Quien la vio pasar podría repetir la acción — volver a sacar del equipo
+        al minero que su dueño acaba de meter. Por eso se consume.
+        """
+        ts = datetime.now(timezone.utc).isoformat()
+        headers = {"X-Owner-Id": VALEN.pubkey, "X-Timestamp": ts,
+                   "X-Signature": VALEN.firma(f"w2|leave-team|{ts}")}
+
+        primera = crudo.post(f"/api/teams/{equipo}/leave", json={"worker_id": "w2"},
+                             headers=headers)
+        assert primera.status_code == 200
+
+        api.post(f"/api/teams/{equipo}/join", json={"worker_id": "w2"},
+                 headers={"X-Owner-Id": VALEN.pubkey})
+        repetida = crudo.post(f"/api/teams/{equipo}/leave", json={"worker_id": "w2"},
+                              headers=headers)
+        assert repetida.status_code == 401
+        assert "utilizada" in repetida.json()["detail"]
+
+
+class TestLasCuentasDemoSiguenAndando:
+    """El camino custodial no se rompe al exigir firmas.
+
+    Una cuenta demo no puede firmar desde el navegador —su clave la tiene el
+    backend— así que se autoriza como antes. Que siga funcionando es parte del
+    contrato: si al cerrar el agujero la demo dejaba de andar, el arreglo no
+    servía.
+    """
+
+    def test_una_cuenta_demo_administra_su_minero_sin_firmar(self, api, r):
+        crudo = api._client
+        _online(r, "worker-standalone")
+        resp = crudo.post("/api/workers/worker-standalone/switch-mode",
+                          json={"target": "standalone"},
+                          headers={"X-Owner-Id": "valentin"})
+        assert resp.status_code == 200, resp.text
+
+    def test_una_cuenta_demo_no_administra_el_minero_de_otra(self, api, r):
+        crudo = api._client
+        resp = crudo.post("/api/workers/worker-pool-miner-1/switch-mode",
+                          json={"target": "standalone"},
+                          headers={"X-Owner-Id": "valentin"})
+        assert resp.status_code == 403
+
+    def test_un_id_demo_no_se_puede_registrar(self, r):
+        """Lo que mantiene disjuntos los dos caminos de autorización.
+
+        Si un ciudadano real pudiera registrar `worker-standalone`, su minero
+        caería en el camino custodial y quedaría administrable sin firma.
+        """
+        from fastapi import HTTPException
+        from voxchain_api.routers import workers as workers_router
+
+        with pytest.raises(HTTPException) as exc:
+            workers_router.persist_worker_registration(
+                _Identidad().registro("worker-standalone"), r)
+        assert exc.value.status_code == 409
