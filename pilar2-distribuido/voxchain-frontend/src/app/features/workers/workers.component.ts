@@ -84,8 +84,8 @@ interface PoolHealth {
         </mat-card-header>
         <mat-card-content>
           <p class="form-hint">
-            Registrar un ID de minero lo asocia a tu clave pública. Cualquier acción de administración (cambiar el modo o configurar la política) va a pedir tu firma. 
-            El contenedor del minero tiene que correr con <code>WORKER_PRIVKEY_PEM</code> apuntando a tu clave privada.
+            Registrar un ID de minero lo asocia a tu clave pública. Cualquier acción de administración (cambiar el modo o configurar la política) va a pedir tu firma.
+            El minero genera su propia identidad al arrancar: tu clave privada no se comparte con él ni con nadie.
           </p>
           <div class="form-field">
             <mat-form-field appearance="outline" class="full-width">
@@ -801,28 +801,24 @@ export class WorkersComponent implements OnInit, OnDestroy {
       const message = `${workerId}|register|${timestamp}`;
       const signature = await this.identityService.sign(message);
 
-      let pemKey: string | undefined = undefined;
-      if (id.exportedPrivkey) {
-        const exportedPrivkey = id.exportedPrivkey;
-        const lines = [];
-        for (let i = 0; i < exportedPrivkey.length; i += 64) {
-          lines.push(exportedPrivkey.slice(i, i + 64));
-        }
-        pemKey = `-----BEGIN PRIVATE KEY-----\n${lines.join('\n')}\n-----END PRIVATE KEY-----`;
-      }
-
-      this.apiService.registerWorker(workerId, id.pubkey, timestamp, signature, pemKey).subscribe({
+      // Sin clave privada: el minero genera la suya al arrancar y se vincula a
+      // esta identidad con el token de enrolamiento que le deja el backend.
+      this.apiService.registerWorker(workerId, id.pubkey, timestamp, signature).subscribe({
         next: (res: any) => {
           // El backend dice si además de anotarlo levantó un proceso. Sin
           // Kubernetes configurado (el compose local) el alta es sólo metadata,
           // y prometer un despliegue que no ocurrió deja al usuario esperando
           // un contenedor que nadie va a crear.
+          // En el alta sin despliegue el backend devuelve el token con el que el
+          // minero reclama su slot de nodo. Es de un solo uso y expira: mostrarlo
+          // es lo que le permite al usuario levantar su contenedor a mano sin
+          // tener que pasarle ninguna clave privada.
           this.snackBar.open(
             res?.deployed
               ? `Minero "${workerId}" registrado y desplegado en el clúster.`
               : `Minero "${workerId}" registrado. Todavía no está corriendo: `
-                + `levantá su contenedor con  ./run.sh worker ${workerId}`,
-            'Cerrar', { duration: res?.deployed ? 3000 : 9000 });
+                + `levantalo con  WORKER_ENROLL_TOKEN=${res?.enrollment_token ?? ''} ./run.sh worker ${workerId}`,
+            'Cerrar', { duration: res?.deployed ? 3000 : 15000 });
           this.cancelRegister();
           this.loadAll();
         },

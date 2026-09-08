@@ -24,7 +24,7 @@ from common.logging_setup import setup_logging
 from common.messaging import build_rabbitmq
 from common.redis import create_redis
 from worker_pkg.admin_server import start_admin_server
-from worker_pkg.identity import WorkerSigner
+from worker_pkg.identity import WorkerSigner, enroll
 from worker_pkg.miner import gpu_usable, run_miner
 from worker_pkg.pool_worker import PoolWorker
 from worker_pkg.pool_coordinator import PoolCoordinator
@@ -483,6 +483,9 @@ def main() -> None:
     log.info("iniciando %s modo=%s (gpu=%s)", worker_id, mode, has_gpu)
 
     signer = WorkerSigner.from_env()
+    # Vincula la identidad recién generada con el ciudadano que registró este
+    # minero. Best-effort a propósito: sin enrolar el worker mina igual.
+    enroll(worker_id, signer)
     if mode == "pool-auto":
         pool_url = os.getenv("POOL_COORDINATOR_URL",
                              f"http://{worker_id}:{int(os.getenv('POOL_HTTP_PORT', '9001'))}")

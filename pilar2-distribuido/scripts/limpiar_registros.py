@@ -38,16 +38,25 @@ from common.redaction import redact_url  # noqa: E402
 from common.redis import create_redis  # noqa: E402
 
 
-def _claves_de_minero(worker_id: str) -> list[str]:
-    return [
+def _claves_de_minero(r, worker_id: str) -> list[str]:
+    claves = [
         f"worker:owner:{worker_id}",
         f"worker:pubkey:{worker_id}",
+        f"worker:node_pubkey:{worker_id}",
+        f"worker:enroll:{worker_id}",
         f"worker:status:{worker_id}",
         f"worker:desired_mode:{worker_id}",
         f"worker:team:{worker_id}",
         f"pool:policy:{worker_id}",
         f"pool:health:{worker_id}",
     ]
+    # Sin borrar el índice inverso, la pubkey del nodo viejo seguiría apuntando
+    # a su ex dueño y el NCT le imputaría a esa persona bloques de un minero que
+    # ya no existe.
+    nodo = r.get(f"worker:node_pubkey:{worker_id}")
+    if nodo:
+        claves.append(f"node:owner:{nodo}")
+    return claves
 
 
 def _claves_de_equipo(r, team_id: str) -> list[str]:
@@ -91,7 +100,7 @@ def borrar(r, mineros: list[str], equipos: list[str]) -> int:
         borradas += r.srem("teams", team_id)
 
     for worker_id in mineros:
-        for clave in _claves_de_minero(worker_id):
+        for clave in _claves_de_minero(r, worker_id):
             borradas += r.delete(clave)
         borradas += r.srem("registered_workers", worker_id)
     return borradas

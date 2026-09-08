@@ -167,9 +167,9 @@ import { AccountsService } from '../../core/services/accounts.service';
             <div class="warning-banner">
               <mat-icon class="warning-icon">warning</mat-icon>
               <div class="warning-text">
-                <strong>Importante:</strong> guardá la clave privada como archivo <code>.pem</code> en tu computadora. Para correr un nodo minero con esta identidad, arrancá el worker con la variable de entorno:
-                <br>
-                <code>WORKER_PRIVKEY_PEM=/path/to/private_key.pem</code>
+                <strong>Importante:</strong> guardá la clave privada como archivo <code>.pem</code> en un lugar seguro. Es tu única copia: si borrás los datos del sitio, se pierde con ellos.
+                <br><br>
+                <strong>No hace falta dársela a ningún minero.</strong> Cada minero genera su propia identidad al arrancar y se vincula a la tuya con un token de un solo uso; tu clave nunca sale de este navegador.
               </div>
             </div>
           </div>

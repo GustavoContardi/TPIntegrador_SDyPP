@@ -12,6 +12,7 @@ Esquema de claves (namespaced):
 - ``window_counter``      contador monótono de ventanas abiertas (base del cooldown)
 - ``law_queue``           lista de ``law_id`` en estado ``pending_queue``
 - ``discarded_text_hashes`` set de ``text_hash`` descartados (detección de reproposición)
+- ``node:owner:<node_pubkey>`` ciudadano dueño de un nodo minero/pool (3.1)
 
 Se asume un cliente Redis con ``decode_responses=True`` (valores como ``str``).
 Las claves privadas de los individuos **nunca** se persisten (AGENT.md 10):
@@ -399,3 +400,31 @@ return 1
 
     def clear_leadership(self) -> None:
         self.r.delete("nct:leader")
+
+    # --- Identidad de nodo ↔ ciudadano dueño (AGENT.md 3.1) -----------------
+    #
+    # Un minero firma sus nonces con una clave **propia**, generada dentro de su
+    # propio proceso, no con la del ciudadano que lo registró: así el alta de un
+    # minero nunca necesita que una clave privada de individuo viaje a ningún
+    # lado. El precio es que ``winning_node_or_pool`` deja de ser la pubkey del
+    # ciudadano, y las reglas que hablan del ciudadano (3.4: el autor no gana su
+    # propia ventana) necesitan resolver nodo → dueño. Ese es este índice.
+
+    def bind_node_identity(self, node_pubkey: str, owner_pubkey: str) -> None:
+        """Vincula la pubkey de un nodo con el ciudadano que lo registró."""
+        if node_pubkey and owner_pubkey:
+            self.r.set(f"node:owner:{node_pubkey}", owner_pubkey)
+
+    def unbind_node_identity(self, node_pubkey: str) -> None:
+        self.r.delete(f"node:owner:{node_pubkey}")
+
+    def owner_of_node(self, node_pubkey: str) -> Optional[str]:
+        """Ciudadano dueño de un nodo, o ``None`` si la pubkey no está vinculada.
+
+        ``None`` no es un error: un pool o un minero que no completó el enrolamiento
+        firma con una identidad anónima y sigue siendo un participante válido —
+        simplemente no se le puede imputar la regla 3.4 a ningún autor.
+        """
+        if not node_pubkey:
+            return None
+        return self.r.get(f"node:owner:{node_pubkey}")

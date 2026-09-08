@@ -115,8 +115,8 @@ export class ApiService {
       { headers: this.ownerHeaders() });
   }
 
-  registerWorker(workerId: string, pubkey: string, timestamp: string, signature: string, privateKey?: string): Observable<any> {
-    const body = { worker_id: workerId, pubkey, timestamp, signature, private_key: privateKey };
+  registerWorker(workerId: string, pubkey: string, timestamp: string, signature: string, deploy = true): Observable<any> {
+    const body = { worker_id: workerId, pubkey, timestamp, signature, deploy };
     return this.http.post(`${this.apiUrl}/workers/register`, body);
   }
 

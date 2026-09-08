@@ -1,7 +1,9 @@
 import hashlib
+import hmac
 import json
 import os
 import re
+import secrets
 import httpx
 import logging
 from typing import Optional
@@ -14,6 +16,7 @@ from voxchain_api.models import (
     WorkerStatus,
     WorkerSwitchRequest,
     RegisterWorkerRequest,
+    EnrollNodeRequest,
 )
 from voxchain_api.services.redis_reader import RedisReader
 from voxchain_api.services.rabbitmq_publisher import RabbitMQPublisher
@@ -52,6 +55,58 @@ WORKER_IMAGE = os.getenv(
     "southamerica-east1-docker.pkg.dev/voxchain-unlu/voxchain-images/worker-gpu:latest",
 )
 SPAWN_REQUEST_GPU = os.getenv("SPAWN_REQUEST_GPU", "false").lower() == "true"
+
+# URL con la que el pod del minero alcanza a esta API para enrolar su identidad.
+INTERNAL_API_URL = os.getenv("INTERNAL_API_URL", "http://voxchain-api.voxchain.svc.cluster.local:8000")
+
+# Vida del token de enrolamiento. Corta a propósito: sólo tiene que sobrevivir el
+# arranque del pod. Un token vencido se resuelve re-registrando el mismo id, que
+# ya es un camino soportado.
+ENROLL_TOKEN_TTL = int(os.getenv("ENROLL_TOKEN_TTL", "900"))
+
+
+def _is_valid_pubkey(pubkey_b64: str) -> bool:
+    """¿Es ``pubkey_b64`` una clave pública EC P-256 en SPKI DER base64?"""
+    import base64
+
+    try:
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.hazmat.primitives.serialization import load_der_public_key
+
+        pub = load_der_public_key(base64.b64decode(pubkey_b64))
+        return (isinstance(pub, ec.EllipticCurvePublicKey)
+                and isinstance(pub.curve, ec.SECP256R1))
+    except Exception:
+        return False
+
+
+def _issue_enrollment_token(redis_client, worker_id: str) -> str:
+    """Emite un token de un solo uso para que un pod reclame el slot de nodo.
+
+    En Redis queda sólo el SHA-256 del token: si alguien lee la base no obtiene
+    un token usable. El valor en claro existe únicamente en la respuesta a este
+    alta y en el Secret que monta el pod.
+    """
+    token = secrets.token_urlsafe(32)
+    digest = hashlib.sha256(token.encode()).hexdigest()
+    redis_client.set(f"worker:enroll:{worker_id}", digest, ex=ENROLL_TOKEN_TTL)
+    return token
+
+
+def _consume_enrollment_token(redis_client, worker_id: str, token: str) -> bool:
+    """Valida y **quema** el token. Un token sirve para un solo enrolamiento."""
+    stored = redis_client.get(f"worker:enroll:{worker_id}")
+    if not stored:
+        return False
+    if isinstance(stored, bytes):
+        stored = stored.decode("utf-8")
+    digest = hashlib.sha256((token or "").encode()).hexdigest()
+    # compare_digest y no ==: el token es un secreto y la comparación no debe
+    # filtrar por dónde difiere.
+    if not hmac.compare_digest(stored, digest):
+        return False
+    redis_client.delete(f"worker:enroll:{worker_id}")
+    return True
 
 try:
     from kubernetes import client, config as k8s_config
@@ -113,20 +168,30 @@ def _k8s_slug(worker_id: str) -> str:
     return slug
 
 
-def _spawn_k8s_worker(worker_id: str, private_key_pem: str):
+def _spawn_k8s_worker(worker_id: str, enrollment_token: str):
+    """Levanta el Deployment del minero con un token de enrolamiento de un solo uso.
+
+    Antes acá se montaba la **clave privada del ciudadano**, subida desde el
+    navegador en el alta: cualquiera con acceso al Secret podía proponer y votar
+    como esa persona para siempre, que es exactamente lo que 3.1 prohíbe. Ahora
+    el pod arranca sin ninguna clave: genera la suya al iniciar y usa el token
+    sólo para reclamar el slot de nodo de este `worker_id`. Si el token se filtra,
+    el daño máximo es que otro proceso ocupe ese slot — no la suplantación
+    permanente de un individuo.
+    """
     if not K8S_ENABLED:
         logger.info("Kubernetes is not enabled, skipping dynamic spawner.")
         return
 
     slug = _k8s_slug(worker_id)
 
-    # 1. Create Secret for the worker private key
+    # 1. Secret con el token de enrolamiento (NO una clave privada).
     secret_name = f"secret-{slug}"
     secret_body = client.V1Secret(
         api_version="v1",
         kind="Secret",
         metadata=client.V1ObjectMeta(name=secret_name, namespace=NAMESPACE),
-        string_data={"private-key.pem": private_key_pem.strip()}
+        string_data={"enrollment-token": enrollment_token}
     )
     
     # 2. Create Deployment for the worker pod
@@ -147,7 +212,17 @@ def _spawn_k8s_worker(worker_id: str, private_key_pem: str):
         env=[
             client.V1EnvVar(name="WORKER_ID", value=worker_id),
             client.V1EnvVar(name="WORKER_MODE", value="standalone"),
-            client.V1EnvVar(name="WORKER_PRIVKEY_PEM", value="/app/keys/private-key.pem"),
+            # La clave la genera el propio pod en este path (volumen efímero,
+            # no un Secret): nace y muere con el minero y nunca la vio nadie más.
+            client.V1EnvVar(name="WORKER_PRIVKEY_PEM", value="/app/keys/node-key.pem"),
+            client.V1EnvVar(
+                name="WORKER_ENROLL_TOKEN",
+                value_from=client.V1EnvVarSource(
+                    secret_key_ref=client.V1SecretKeySelector(
+                        name=secret_name, key="enrollment-token")
+                )
+            ),
+            client.V1EnvVar(name="VOXCHAIN_API_URL", value=INTERNAL_API_URL),
             # Dirección con la que los mineros de su equipo lo alcanzan si el
             # usuario lo promueve a coordinador. Tiene que ser la IP del pod: es
             # un Deployment, así que no hay DNS estable al que apuntar, y el
@@ -208,7 +283,7 @@ def _spawn_k8s_worker(worker_id: str, private_key_pem: str):
             capabilities=client.V1Capabilities(drop=["ALL"]),
         ),
         volume_mounts=[
-            client.V1VolumeMount(name="key-volume", mount_path="/app/keys", read_only=True),
+            client.V1VolumeMount(name="key-volume", mount_path="/app/keys"),
             client.V1VolumeMount(name="rabbitmq-ca", mount_path="/etc/rabbitmq-ca", read_only=True),
             client.V1VolumeMount(name="logs", mount_path="/var/log/voxchain"),
         ]
@@ -225,9 +300,10 @@ def _spawn_k8s_worker(worker_id: str, private_key_pem: str):
             ),
             containers=[container],
             volumes=[
+                # Escribible y efímero: el worker genera acá su par al arrancar.
                 client.V1Volume(
                     name="key-volume",
-                    secret=client.V1SecretVolumeSource(secret_name=secret_name)
+                    empty_dir=client.V1EmptyDirVolumeSource(medium="Memory")
                 ),
                 client.V1Volume(
                     name="rabbitmq-ca",
@@ -397,6 +473,25 @@ def _annotate_team(statuses: list[WorkerStatus], redis_client) -> list[WorkerSta
         status.team_role = ("coordinator"
                             if team.get("coordinator_worker_id") == status.worker_id
                             else "member")
+    return _annotate_node_identity(statuses, redis_client)
+
+
+def _annotate_node_identity(statuses: list[WorkerStatus], redis_client) -> list[WorkerStatus]:
+    """Completa la pubkey **de nodo** de cada minero desde el vínculo de enrolamiento.
+
+    Vacía significa "todavía no enroló": el pod puede estar arrancando, o ser un
+    minero levantado a mano al que nunca se le pasó el token. Firma sus nonces
+    igual, pero como identidad anónima — el bloque no queda imputado a su dueño.
+    """
+    for status in statuses:
+        if status.node_pubkey:
+            continue
+        try:
+            npk = redis_client.get(f"worker:node_pubkey:{status.worker_id}")
+        except Exception:
+            continue
+        if npk:
+            status.node_pubkey = npk.decode("utf-8") if isinstance(npk, bytes) else npk
     return statuses
 
 
@@ -779,7 +874,7 @@ def persist_worker_registration(request: RegisterWorkerRequest, redis_client) ->
     # no ensancharlo.
     #
     # Re-registrar el MISMO id es válido y no cuenta como un minero nuevo: es el
-    # camino para volver a subir la clave privada o recrear su despliegue.
+    # camino para recrear su despliegue o reemitir su token de enrolamiento.
     existing = worker_of_owner(redis_client, pubkey)
     if existing and existing != worker_id:
         raise HTTPException(
@@ -789,14 +884,22 @@ def persist_worker_registration(request: RegisterWorkerRequest, redis_client) ->
         )
 
     # 5. Save to Redis
+    #
+    # `worker:pubkey` es la del DUEÑO (quién responde por el minero), no la del
+    # nodo: la identidad con la que el minero firma nace dentro de su proceso y
+    # llega después, por /enroll.
     try:
         redis_client.sadd("registered_workers", worker_id)
         redis_client.set(f"worker:owner:{worker_id}", pubkey)
         redis_client.set(f"worker:pubkey:{worker_id}", pubkey)
+        # Un re-registro invalida la identidad de nodo anterior: el pod viejo se
+        # reemplaza y su clave se va con él, así que dejar el vínculo colgado
+        # sólo serviría para imputarle al dueño un nodo que ya no controla.
+        _clear_node_binding(redis_client, worker_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save registration: {e}")
 
-    # 6. Dynamic Kubernetes worker deployment if private key uploaded
+    # 6. Despliegue dinámico en Kubernetes, si el alta lo pidió.
     #
     # `deployed` dice si además de anotar el minero se levantó un proceso para
     # él. Sin Kubernetes configurado —el caso del docker-compose local— el alta
@@ -806,12 +909,83 @@ def persist_worker_registration(request: RegisterWorkerRequest, redis_client) ->
     # desplegado nada, así que el usuario se quedaba esperando un contenedor que
     # nadie iba a crear.
     deployed = False
-    if request.private_key and K8S_ENABLED:
-        _spawn_k8s_worker(worker_id, request.private_key)
+    enrollment_token = ""
+    if request.deploy and K8S_ENABLED:
+        enrollment_token = _issue_enrollment_token(redis_client, worker_id)
+        try:
+            _spawn_k8s_worker(worker_id, enrollment_token)
+        except Exception:
+            # Sin pod, el token no le sirve a nadie más que a un atacante.
+            redis_client.delete(f"worker:enroll:{worker_id}")
+            raise
         deployed = True
 
+    # El alta sin despliegue (el compose local) también recibe token: es el que
+    # el usuario le pasa a su propio proceso vía WORKER_ENROLL_TOKEN. En ese caso
+    # sí viaja en la respuesta, porque no hay Secret donde dejárselo — pero es un
+    # token de slot con TTL, no una identidad.
+    if not deployed:
+        enrollment_token = _issue_enrollment_token(redis_client, worker_id)
+
     return {"ok": True, "worker_id": worker_id, "pubkey": pubkey,
-            "deployed": deployed}
+            "deployed": deployed,
+            **({} if deployed else {"enrollment_token": enrollment_token})}
+
+
+def _clear_node_binding(redis_client, worker_id: str) -> None:
+    """Borra la identidad de nodo de un minero y su entrada en el índice inverso."""
+    prev = redis_client.get(f"worker:node_pubkey:{worker_id}")
+    if prev:
+        if isinstance(prev, bytes):
+            prev = prev.decode("utf-8")
+        redis_client.delete(f"node:owner:{prev}")
+    redis_client.delete(f"worker:node_pubkey:{worker_id}")
+
+
+@router.post("/enroll", response_model=dict)
+async def enroll_node(
+    request: EnrollNodeRequest,
+    redis: RedisReader = Depends(get_redis_reader)
+):
+    """El minero publica la identidad que generó él mismo y la vincula a su dueño.
+
+    Es la contraparte del alta: el ciudadano registra el minero firmando con su
+    clave (y esa clave nunca sale de su navegador), y el minero registra su propia
+    pubkey presentando el token de un solo uso que recibió al desplegarse. El
+    vínculo resultante (`node:owner:*`) es lo que le permite al NCT seguir
+    aplicando la regla 3.4 sin que las dos identidades sean la misma clave.
+    """
+    redis_client = redis.store.r
+    worker_id = request.worker_id.strip()
+    node_pubkey = request.node_pubkey.strip()
+
+    if not worker_id or not node_pubkey:
+        raise HTTPException(status_code=400, detail="worker_id y node_pubkey son obligatorios")
+
+    owner = redis_client.get(f"worker:owner:{worker_id}")
+    if not owner:
+        raise HTTPException(status_code=404, detail="Worker registration not found")
+    if isinstance(owner, bytes):
+        owner = owner.decode("utf-8")
+
+    if not _consume_enrollment_token(redis_client, worker_id, request.enrollment_token):
+        raise HTTPException(status_code=401, detail="Enrollment token inválido o ya usado")
+
+    # La pubkey tiene que ser una P-256 cargable: si no, el NCT nunca podría
+    # verificar una firma suya y el vínculo sería basura permanente en el índice.
+    if not _is_valid_pubkey(node_pubkey):
+        raise HTTPException(status_code=400, detail="node_pubkey no es una clave EC P-256 válida")
+
+    try:
+        _clear_node_binding(redis_client, worker_id)
+        redis_client.set(f"worker:node_pubkey:{worker_id}", node_pubkey)
+        redis_client.set(f"node:owner:{node_pubkey}", owner)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to bind node identity: {e}")
+
+    logger.info("minero %s enroló identidad de nodo %s… (dueño %s…)",
+                worker_id, node_pubkey[:12], owner[:12])
+    return {"ok": True, "worker_id": worker_id, "owner_pubkey": owner}
 
 
 @router.post("/register", response_model=dict)
@@ -860,6 +1034,8 @@ async def unregister_worker(
         redis_client.delete(f"worker:owner:{worker_id}")
         redis_client.delete(f"worker:pubkey:{worker_id}")
         redis_client.delete(f"worker:status:{worker_id}")
+        redis_client.delete(f"worker:enroll:{worker_id}")
+        _clear_node_binding(redis_client, worker_id)
         # Sin esto, volver a registrar un minero con el mismo id lo haría
         # arrancar en el equipo del que fue dado de baja.
         clear_desired_mode(redis_client, worker_id)

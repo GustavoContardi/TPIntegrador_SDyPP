@@ -150,12 +150,23 @@ cmd_worker() {
   fi
 
   info "== Levantando el minero '$id' =="
+  # El minero genera su propia identidad adentro del contenedor; con
+  # WORKER_ENROLL_TOKEN (el que muestra la UI al registrarlo) la vincula al
+  # ciudadano dueño. Sin token mina igual, pero como identidad anónima.
+  if [ -z "${WORKER_ENROLL_TOKEN:-}" ]; then
+    info "Sin WORKER_ENROLL_TOKEN: el minero va a firmar como identidad anónima."
+    info "  Para vincularlo a tu identidad, copiá el token que muestra la UI al registrarlo:"
+    info "    WORKER_ENROLL_TOKEN=<token> ./run.sh worker $id"
+  fi
   # `run` en vez de un servicio nuevo del compose: el ID lo elige el usuario en
   # tiempo de ejecución, así que no se puede declarar de antemano.
   docker compose -f "$COMPOSE" run -d --rm \
     --name "$nombre" \
     -e WORKER_ID="$id" \
     -e WORKER_ADDRESS="http://$nombre:9001" \
+    -e WORKER_PRIVKEY_PEM="/tmp/voxchain-node-key.pem" \
+    -e WORKER_ENROLL_TOKEN="${WORKER_ENROLL_TOKEN:-}" \
+    -e VOXCHAIN_API_URL="${VOXCHAIN_API_URL:-http://voxchain-api:8000}" \
     --no-deps \
     worker-1 >/dev/null
 

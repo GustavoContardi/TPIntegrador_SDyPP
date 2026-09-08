@@ -54,6 +54,21 @@ Estas reglas son normativas. Cualquier implementación debe respetarlas exactame
 - **Extensión futura fuera de alcance:** anclar la generación de claves a un documento de identidad real (DNI) para mitigar Sybil. No se implementa en este TP porque requeriría una autoridad certificadora externa, lo cual contradice la filosofía descentralizada del sistema. Se menciona en el informe como trabajo futuro, no como feature.
 - La clave privada **nunca sale del nodo del individuo** — ni siquiera para almacenamiento. Esto es coherente con la idea de que nadie puede votar en nombre de otro.
 
+#### Identidad de ciudadano vs. identidad de nodo
+
+Un minero **no** firma con la clave del ciudadano que lo registró: tiene una identidad propia, un par EC P-256 que genera dentro de su propio proceso al arrancar y que no transmite nunca. Son dos identidades distintas a propósito.
+
+La razón es que la alternativa —que el minero use la clave de su dueño— obliga a que esa clave llegue hasta el minero, y por lo tanto a que viaje y se almacene en algún lado. Es exactamente lo que hacía la implementación anterior: el alta subía el PEM del ciudadano desde el navegador al backend, que lo escribía en un Secret de Kubernetes; cualquiera con acceso al clúster podía proponer y votar como esa persona indefinidamente. Un sistema cuyo único mecanismo de identidad es la posesión de una clave no puede pedirle al usuario que entregue esa clave.
+
+El vínculo entre las dos identidades se establece **sin mover claves**, desde los dos extremos:
+
+1. El ciudadano registra el minero firmando `worker_id|register|timestamp` con su clave, desde su navegador. El backend anota `worker:owner:<worker_id>` y emite un **token de enrolamiento de un solo uso** (en Redis queda sólo su SHA-256), que le entrega al pod vía Secret o al usuario vía la respuesta del alta.
+2. El minero genera su par, y presenta su pubkey junto con ese token en `POST /api/workers/enroll`. El backend valida y quema el token, y guarda el vínculo `node:owner:<node_pubkey>`.
+
+Un token filtrado permite, como máximo, ocupar el slot de nodo de ese minero durante su TTL. No permite firmar como el ciudadano, que es la única propiedad que el sistema realmente protege.
+
+**Consecuencia para las reglas de gobierno:** `winning_node_or_pool` es la pubkey del **nodo**, no la del ciudadano. Toda regla que hable del ciudadano (3.4: el autor no gana su propia ventana) tiene que resolver nodo → dueño con `owner_of_node` antes de comparar. Un nodo sin vincular se representa a sí mismo: mina y gana válidamente, pero su bloque no se le imputa a ningún ciudadano.
+
 ### 3.2 Ciclo de vida de una ley
 
 1. Cualquier nodo propone una ley. **Proponer no tiene costo de PoW**, solo de cooldown (ver 3.4).
@@ -208,7 +223,7 @@ Preguntas de investigación para el informe (cualitativas, no requieren estudio 
 Responde directamente al requisito de seguridad del TP ("Zero static keys", credenciales por ambiente). En VoxChain, Vault custodia:
 
 - Credenciales de conexión a Redis y RabbitMQ por ambiente.
-- **No** custodia las claves privadas de los individuos — esas nunca salen del nodo del individuo (ver 3.1). Vault es para secretos de infraestructura, no para identidad de los participantes.
+- **No** custodia las claves privadas de los individuos — esas nunca salen del nodo del individuo (ver 3.1). Vault es para secretos de infraestructura, no para identidad de los participantes. Los Secrets de Kubernetes que monta un minero llevan su token de enrolamiento (efímero, de un solo uso), nunca una clave de identidad.
 
 ---
 
@@ -352,7 +367,7 @@ Responde directamente al requisito de seguridad del TP ("Zero static keys", cred
 - La dificultad es fija: `n` para promulgar, `n+1` para derogar. Está demostrado (ver sección 11) que cualquier intento de ajuste dinámico autónomo es gameable o requiere una complejidad excesiva. El ajuste se realiza externamente (operador humano o Pilar 3) con conocimiento de la población de mineros.
 - No implementar verificación de identidad real (DNI, OAuth, etc.) sin discusión explícita — está documentado como fuera de alcance.
 - Cualquier nuevo tipo de mensaje en RabbitMQ debe respetar los flujos descritos en la sección 5 (Pilar 2 / P2). Si se necesita un nuevo flujo, documentarlo acá antes de implementarlo.
-- Las claves privadas de los individuos nunca deben persistirse en Redis, Vault, ni en ningún servicio de backend. Si código nuevo intenta hacer esto, es un error de diseño y debe rechazarse.
+- Las claves privadas de los individuos nunca deben persistirse en Redis, Vault, ni en ningún servicio de backend, **ni transmitirse a él**. Si código nuevo intenta hacer esto, es un error de diseño y debe rechazarse. Un componente que necesita firmar genera su propia identidad y se vincula a su dueño por enrolamiento (ver 3.1); no recibe la clave de nadie.
 
 ---
 

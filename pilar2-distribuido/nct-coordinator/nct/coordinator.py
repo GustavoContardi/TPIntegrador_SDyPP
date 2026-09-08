@@ -205,6 +205,18 @@ class NCTCoordinator:
             return False
         return True
 
+    def _citizen_behind(self, node_pubkey: str) -> str:
+        """Ciudadano al que se imputa un nodo ganador (para las reglas de 3.4).
+
+        Si el nodo no está vinculado a ningún dueño devuelve la propia pubkey del
+        nodo: un participante anónimo se representa a sí mismo.
+        """
+        try:
+            return self.store.owner_of_node(node_pubkey) or node_pubkey
+        except AttributeError:
+            # Stores viejos/dobles de test sin el índice: comportamiento previo.
+            return node_pubkey
+
     def _created_at_fresh(self, created_at: str) -> bool:
         try:
             ts = datetime.fromisoformat(created_at).timestamp()
@@ -339,7 +351,13 @@ class NCTCoordinator:
                                         sol.get("signature")):
             return
         # Regla 3.4: el autor pierde el voto en la ventana de su propia ley.
-        if winner and winner == active["author_pubkey"]:
+        #
+        # ``winner`` es la pubkey del **nodo** que resolvió, no la del ciudadano:
+        # desde que el minero firma con identidad propia (3.1), comparar contra
+        # ``author_pubkey`` a secas dejaría pasar al autor minando su propia ley
+        # con su minero. Se resuelve nodo → dueño; un nodo sin vincular no se
+        # imputa a nadie y se compara consigo mismo, como antes.
+        if winner and self._citizen_behind(winner) == active["author_pubkey"]:
             log.info("nonce descartado: el autor no puede ganar su propia ventana")
             return
 

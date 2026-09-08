@@ -213,26 +213,50 @@ def _own(r, worker_id, owner):
     r.set(f"worker:pubkey:{worker_id}", owner)
 
 
+class _Identidad:
+    """Una identidad de ciudadano de mentira, para firmar altas y bajas.
+
+    Guarda la privada porque varios tests necesitan firmar **dos veces con la
+    misma identidad** (re-registrar un minero, o darlo de baja después de
+    haberlo dado de alta); con una clave nueva por firma el backend contestaría
+    409/401 y el test estaría probando otra cosa.
+    """
+
+    def __init__(self):
+        import base64
+
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+
+        self.key = ec.generate_private_key(ec.SECP256R1())
+        self.pubkey = base64.b64encode(self.key.public_key().public_bytes(
+            serialization.Encoding.DER,
+            serialization.PublicFormat.SubjectPublicKeyInfo)).decode()
+
+    def firma(self, mensaje: str) -> str:
+        import base64
+
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import ec, utils as asym
+
+        der = self.key.sign(mensaje.encode(), ec.ECDSA(hashes.SHA256()))
+        rr, ss = asym.decode_dss_signature(der)
+        return base64.b64encode(rr.to_bytes(32, "big") + ss.to_bytes(32, "big")).decode()
+
+    def registro(self, worker_id: str):
+        from datetime import datetime, timezone
+
+        from voxchain_api.models import RegisterWorkerRequest
+
+        ts = datetime.now(timezone.utc).isoformat()
+        return RegisterWorkerRequest(
+            worker_id=worker_id, pubkey=self.pubkey, timestamp=ts,
+            signature=self.firma(f"{worker_id}|register|{ts}"))
+
+
 def _registro_firmado(worker_id: str):
     """Alta válida de un minero, firmada con una identidad nueva."""
-    import base64
-    from datetime import datetime, timezone
-
-    from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric import ec, utils as asym
-
-    from voxchain_api.models import RegisterWorkerRequest
-
-    key = ec.generate_private_key(ec.SECP256R1())
-    pub = base64.b64encode(key.public_key().public_bytes(
-        serialization.Encoding.DER,
-        serialization.PublicFormat.SubjectPublicKeyInfo)).decode()
-    ts = datetime.now(timezone.utc).isoformat()
-    der = key.sign(f"{worker_id}|register|{ts}".encode(), ec.ECDSA(hashes.SHA256()))
-    rr, ss = asym.decode_dss_signature(der)
-    sig = base64.b64encode(rr.to_bytes(32, "big") + ss.to_bytes(32, "big")).decode()
-    return RegisterWorkerRequest(worker_id=worker_id, pubkey=pub, timestamp=ts,
-                                 signature=sig)
+    return _Identidad().registro(worker_id)
 
 
 def _commands_for(client, worker_id):
@@ -871,3 +895,167 @@ class TestUnMineroPorIdentidad:
         }, headers={"X-Owner-Id": "pk-gus"})
         assert resp.status_code == 409
         assert api.get("/api/teams").json() == []
+
+
+# --- Identidad de nodo separada de la del ciudadano (AGENT.md 3.1) -----------
+
+
+def _pubkey_valida() -> str:
+    """Una pubkey EC P-256 en SPKI DER base64, como la que genera un minero."""
+    import base64
+
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    return base64.b64encode(key.public_key().public_bytes(
+        serialization.Encoding.DER,
+        serialization.PublicFormat.SubjectPublicKeyInfo)).decode()
+
+
+class TestLaPrivadaDelCiudadanoNoViaja:
+    """El alta de un minero no transporta ninguna clave privada de individuo.
+
+    Antes sí lo hacía: el frontend armaba el PEM del ciudadano y el backend lo
+    escribía en un Secret de Kubernetes, con lo cual cualquiera con acceso al
+    clúster podía proponer y votar como esa persona indefinidamente. Ahora el
+    minero genera su identidad adentro de su propio proceso y sólo reclama el
+    vínculo con un token de un solo uso.
+    """
+
+    def test_el_alta_no_acepta_una_clave_privada(self):
+        from voxchain_api.models import RegisterWorkerRequest
+
+        assert "private_key" not in RegisterWorkerRequest.model_fields
+
+    def test_el_alta_sin_despliegue_entrega_el_token_de_enrolamiento(self, r, monkeypatch):
+        from voxchain_api.routers import workers as workers_router
+        monkeypatch.setattr(workers_router, "K8S_ENABLED", False)
+
+        resp = workers_router.persist_worker_registration(
+            _registro_firmado("minero-token"), r)
+        assert resp["deployed"] is False
+        assert resp["enrollment_token"]
+        # En Redis queda el hash, no el token: leer la base no da nada usable.
+        assert r.get("worker:enroll:minero-token") != resp["enrollment_token"]
+
+
+class TestEnrolamientoDeNodo:
+    @pytest.fixture
+    def alta(self, r, monkeypatch):
+        from voxchain_api.routers import workers as workers_router
+        monkeypatch.setattr(workers_router, "K8S_ENABLED", False)
+        yo = _Identidad()
+        resp = workers_router.persist_worker_registration(yo.registro("minero-enrol"), r)
+        return {"worker_id": "minero-enrol", "owner": yo.pubkey, "yo": yo,
+                "token": resp["enrollment_token"]}
+
+    def test_vincula_el_nodo_con_su_dueno(self, api, r, alta):
+        node = _pubkey_valida()
+        resp = api.post("/api/workers/enroll", json={
+            "worker_id": alta["worker_id"], "node_pubkey": node,
+            "enrollment_token": alta["token"]})
+        assert resp.status_code == 200
+        assert r.get(f"node:owner:{node}") == alta["owner"]
+        assert r.get(f"worker:node_pubkey:{alta['worker_id']}") == node
+
+    def test_el_token_sirve_una_sola_vez(self, api, r, alta):
+        primera = api.post("/api/workers/enroll", json={
+            "worker_id": alta["worker_id"], "node_pubkey": _pubkey_valida(),
+            "enrollment_token": alta["token"]})
+        assert primera.status_code == 200
+
+        impostor = _pubkey_valida()
+        segunda = api.post("/api/workers/enroll", json={
+            "worker_id": alta["worker_id"], "node_pubkey": impostor,
+            "enrollment_token": alta["token"]})
+        assert segunda.status_code == 401
+        assert r.get(f"node:owner:{impostor}") is None
+
+    def test_sin_token_valido_no_se_puede_reclamar_un_minero_ajeno(self, api, r, alta):
+        impostor = _pubkey_valida()
+        resp = api.post("/api/workers/enroll", json={
+            "worker_id": alta["worker_id"], "node_pubkey": impostor,
+            "enrollment_token": "token-inventado"})
+        assert resp.status_code == 401
+        assert r.get(f"node:owner:{impostor}") is None
+
+    def test_una_pubkey_que_no_es_p256_se_rechaza(self, api, alta):
+        """Vincular basura dejaría un nodo cuya firma el NCT nunca podría verificar."""
+        resp = api.post("/api/workers/enroll", json={
+            "worker_id": alta["worker_id"], "node_pubkey": "no-es-una-clave",
+            "enrollment_token": alta["token"]})
+        assert resp.status_code == 400
+
+    def test_no_se_enrola_un_minero_que_no_existe(self, api, alta):
+        resp = api.post("/api/workers/enroll", json={
+            "worker_id": "minero-fantasma", "node_pubkey": _pubkey_valida(),
+            "enrollment_token": alta["token"]})
+        assert resp.status_code == 404
+
+    def test_re_registrar_desvincula_el_nodo_anterior(self, api, r, alta, monkeypatch):
+        """El pod viejo se reemplaza y su clave se va con él.
+
+        Dejar el vínculo colgado le imputaría al dueño un nodo que ya no controla.
+        """
+        from voxchain_api.routers import workers as workers_router
+        monkeypatch.setattr(workers_router, "K8S_ENABLED", False)
+
+        viejo = _pubkey_valida()
+        api.post("/api/workers/enroll", json={
+            "worker_id": alta["worker_id"], "node_pubkey": viejo,
+            "enrollment_token": alta["token"]})
+        assert r.get(f"node:owner:{viejo}")
+
+        workers_router.persist_worker_registration(
+            alta["yo"].registro(alta["worker_id"]), r)
+        assert r.get(f"node:owner:{viejo}") is None
+        assert r.get(f"worker:node_pubkey:{alta['worker_id']}") is None
+
+    def test_la_baja_borra_el_vinculo_y_el_token(self, api, r, alta):
+        from datetime import datetime, timezone
+
+        node = _pubkey_valida()
+        api.post("/api/workers/enroll", json={
+            "worker_id": alta["worker_id"], "node_pubkey": node,
+            "enrollment_token": alta["token"]})
+
+        wid = alta["worker_id"]
+        ts = datetime.now(timezone.utc).isoformat()
+        resp = api.delete(f"/api/workers/{wid}", headers={
+            "X-Timestamp": ts, "X-Signature": alta["yo"].firma(f"{wid}|delete|{ts}")})
+        assert resp.status_code == 200
+        assert r.get(f"node:owner:{node}") is None
+        assert r.get(f"worker:enroll:{wid}") is None
+
+
+class TestElVinculoLoLeeElNct:
+    """El índice que escribe la API es el mismo que lee el NCT.
+
+    Los dos lados viven en módulos distintos (`routers/workers.py` escribe,
+    `VoxChainStore.owner_of_node` lee) y sólo se encuentran por el nombre de la
+    clave de Redis. Un desacuerdo ahí no rompe ningún test de cada lado: la regla
+    3.4 simplemente dejaría de aplicarse, en silencio. Este test los enfrenta
+    contra el mismo Redis.
+    """
+
+    def test_el_nct_resuelve_nodo_a_dueno_con_lo_que_escribio_la_api(self, api, r, monkeypatch):
+        from common.storage import VoxChainStore
+        from voxchain_api.routers import workers as workers_router
+
+        monkeypatch.setattr(workers_router, "K8S_ENABLED", False)
+        yo = _Identidad()
+        alta = workers_router.persist_worker_registration(yo.registro("mi-minero"), r)
+
+        node = _pubkey_valida()
+        assert api.post("/api/workers/enroll", json={
+            "worker_id": "mi-minero", "node_pubkey": node,
+            "enrollment_token": alta["enrollment_token"]}).status_code == 200
+
+        store = VoxChainStore(r)
+        assert store.owner_of_node(node) == yo.pubkey
+
+    def test_un_nodo_desconocido_no_se_le_imputa_a_nadie(self, r):
+        from common.storage import VoxChainStore
+
+        assert VoxChainStore(r).owner_of_node(_pubkey_valida()) is None

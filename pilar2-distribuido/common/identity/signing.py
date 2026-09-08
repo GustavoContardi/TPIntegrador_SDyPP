@@ -121,3 +121,25 @@ def verify(pubkey_b64: str, message: bytes, signature_b64: str) -> bool:
             return False
     except Exception:
         return False
+
+
+def generate_private_key():
+    """Genera un par EC P-256 nuevo (identidad de nodo, A-01 fase 2).
+
+    La usa el worker al arrancar para tener una identidad **propia**, distinta de
+    la del ciudadano que lo registró: así el alta de un minero no necesita que
+    nadie suba su clave privada a ningún lado (ver 3.1 y el vínculo firmado de
+    ``worker:node_pubkey``).
+    """
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    return ec.generate_private_key(ec.SECP256R1())
+
+
+def private_key_pem(private_key) -> bytes:
+    """Serializa una clave privada EC a PEM PKCS#8 sin passphrase."""
+    from cryptography.hazmat.primitives.serialization import (
+        Encoding, NoEncryption, PrivateFormat)
+
+    return private_key.private_bytes(
+        Encoding.PEM, PrivateFormat.PKCS8, NoEncryption())

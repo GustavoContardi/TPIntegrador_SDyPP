@@ -153,3 +153,64 @@ def test_nonce_firma_invalida_rechazado(bus, store):
         "block_hash_candidato": "x",
     })
     assert store.chain_length() == 0
+
+
+# --- Regla 3.4 con identidad de nodo separada (AGENT.md 3.1) -----------------
+#
+# Desde que el minero firma con una clave propia y no con la de su dueño, el
+# ``winning_node_or_pool`` de un nonce ya no es la pubkey del ciudadano. Si la
+# comparación de 3.4 se hiciera contra esa pubkey a secas, el autor de una ley
+# podría ganar su propia ventana simplemente minándola con su minero — que es
+# justo el escenario que la regla existe para impedir.
+
+
+def test_el_autor_no_gana_su_ventana_minando_con_su_propio_nodo(bus, store):
+    make_nct(bus, store, Clock(), require_signatures=True)
+    ch, author = _open_window(bus, store)
+    npriv, npub = _keypair()
+    store.bind_node_identity(npub, author)  # el minero del autor
+
+    nonce = solve(ch["partial_hash_base"], ch["n_zeros_required"])
+    sig = sign(npriv, nonce_message(ch["voting_window_id"], nonce, npub))
+    bus.publish_nonce_response({
+        "voting_window_id": ch["voting_window_id"], "nonce": nonce,
+        "winning_node_or_pool": npub, "signature": sig,
+        "block_hash_candidato": "x",
+    })
+    assert store.chain_length() == 0
+
+
+def test_el_nodo_de_otro_ciudadano_si_gana(bus, store):
+    make_nct(bus, store, Clock(), require_signatures=True)
+    ch, _author = _open_window(bus, store)
+    _otro_priv, otro_pub = _keypair()
+    npriv, npub = _keypair()
+    store.bind_node_identity(npub, otro_pub)
+
+    nonce = solve(ch["partial_hash_base"], ch["n_zeros_required"])
+    sig = sign(npriv, nonce_message(ch["voting_window_id"], nonce, npub))
+    bus.publish_nonce_response({
+        "voting_window_id": ch["voting_window_id"], "nonce": nonce,
+        "winning_node_or_pool": npub, "signature": sig,
+        "block_hash_candidato": "x",
+    })
+    assert store.chain_length() == 1
+
+
+def test_nodo_sin_vincular_se_representa_a_si_mismo(bus, store):
+    """Un minero que nunca enroló sigue siendo un participante válido.
+
+    No se le puede imputar la ley de nadie, así que 3.4 no lo alcanza: gana.
+    """
+    make_nct(bus, store, Clock(), require_signatures=True)
+    ch, _author = _open_window(bus, store)
+    npriv, npub = _keypair()
+
+    nonce = solve(ch["partial_hash_base"], ch["n_zeros_required"])
+    sig = sign(npriv, nonce_message(ch["voting_window_id"], nonce, npub))
+    bus.publish_nonce_response({
+        "voting_window_id": ch["voting_window_id"], "nonce": nonce,
+        "winning_node_or_pool": npub, "signature": sig,
+        "block_hash_candidato": "x",
+    })
+    assert store.chain_length() == 1

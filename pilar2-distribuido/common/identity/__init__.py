@@ -8,8 +8,10 @@ frontend (Web Crypto) o ``scripts/propose_law.py`` con la privkey local.
 """
 
 from .signing import (
+    generate_private_key,
     load_private_key,
     nonce_message,
+    private_key_pem,
     proposal_message,
     public_key_b64,
     sign,
@@ -19,4 +21,5 @@ from .signing import (
 __all__ = [
     "proposal_message", "nonce_message", "verify", "sign",
     "public_key_b64", "load_private_key",
+    "generate_private_key", "private_key_pem",
 ]

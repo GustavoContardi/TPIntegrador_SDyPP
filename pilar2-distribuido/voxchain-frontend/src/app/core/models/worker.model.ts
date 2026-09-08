@@ -81,7 +81,8 @@ export interface WorkerRegistration {
   pubkey: string;
   timestamp: string;
   signature: string;
-  private_key?: string;
+  /** Si el alta además levanta el pod del minero en el clúster. */
+  deploy?: boolean;
 }
 
 /**
@@ -89,11 +90,11 @@ export interface WorkerRegistration {
  *
  * La firma prueba la posesión de la clave privada sobre
  * `${workerId}|register|${timestamp}`, y el timestamp acota la ventana de
- * replay. La clave privada viaja **sólo** en este alta y con un único destino:
- * el Secret de Kubernetes que monta el pod del minero, para que el minero pueda
- * firmar los nonces que encuentra con la identidad de su dueño. Es el único
- * punto del sistema donde la privada sale del navegador, y es una decisión del
- * usuario al desplegar su propio nodo.
+ * replay. **La clave privada no viaja**: el minero genera la suya al arrancar
+ * dentro de su propio proceso y la vincula a este dueño con un token de un solo
+ * uso. Antes el alta subía la privada del ciudadano al backend para que el pod
+ * firmara con ella, lo que le daba a cualquiera con acceso al clúster la
+ * capacidad de votar como esa persona indefinidamente.
  */
 export async function buildRegistration(
   identityService: IdentityService,
@@ -106,20 +107,11 @@ export async function buildRegistration(
   const timestamp = new Date().toISOString();
   const signature = await identityService.sign(`${workerId}|register|${timestamp}`);
 
-  let privateKey: string | undefined;
-  if (identity.exportedPrivkey) {
-    const lines: string[] = [];
-    for (let i = 0; i < identity.exportedPrivkey.length; i += 64) {
-      lines.push(identity.exportedPrivkey.slice(i, i + 64));
-    }
-    privateKey = `-----BEGIN PRIVATE KEY-----\n${lines.join('\n')}\n-----END PRIVATE KEY-----`;
-  }
-
   return {
     worker_id: workerId,
     pubkey: identity.pubkey,
     timestamp,
     signature,
-    ...(privateKey ? { private_key: privateKey } : {}),
+    deploy: true,
   };
 }

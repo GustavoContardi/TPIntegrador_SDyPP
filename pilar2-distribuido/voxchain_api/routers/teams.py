@@ -23,6 +23,7 @@ y sigue minando todo.
 from __future__ import annotations
 
 import logging
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -98,8 +99,24 @@ def _roster(store: TeamsStore, redis_client, team: dict) -> list[TeamMember]:
             mode=status.get("mode", "unknown"),
             running=bool(status.get("running", False)),
             pubkey=status.get("pubkey"),
+            node_pubkey=_node_pubkey(redis_client, worker_id),
         ))
     return roster
+
+
+def _node_pubkey(redis_client, worker_id: str) -> Optional[str]:
+    """Identidad **de nodo** del minero, si ya se enroló (AGENT.md 3.1).
+
+    Es distinta de la del dueño a propósito: sirve para mostrar con qué clave
+    firma realmente este minero, y `None` significa que todavía no enroló.
+    """
+    try:
+        value = redis_client.get(f"worker:node_pubkey:{worker_id}")
+    except Exception:  # noqa: BLE001
+        return None
+    if not value:
+        return None
+    return value.decode("utf-8") if isinstance(value, bytes) else value
 
 
 def _hydrate(store: TeamsStore, redis_client, team: dict) -> Team:
@@ -195,6 +212,7 @@ async def create_team(
 
     agenda = _valid_agenda(request.categories)
     redis_client = redis.store.r
+    enrollment_token = ""
     try:
         if request.new_worker:
             if request.new_worker.worker_id.strip() != worker_id:
@@ -203,8 +221,13 @@ async def create_team(
                     detail="El minero a registrar no coincide con el del equipo",
                 )
             # Reusa el alta de la página de mineros: verifica firma, frescura del
-            # timestamp y despliega el pod si vino la clave privada.
-            persist_worker_registration(request.new_worker, redis_client)
+            # timestamp y despliega el pod si el alta lo pidió.
+            alta = persist_worker_registration(request.new_worker, redis_client)
+            # Sin despliegue el minero lo levanta el usuario a mano, y necesita
+            # el token para vincular la identidad que genere su proceso con la
+            # suya. Sin esto el minero mina como anónimo y sus bloques no se le
+            # imputan a nadie.
+            enrollment_token = alta.get("enrollment_token", "")
         else:
             verify_worker_ownership(worker_id, owner_id, redis_client)
 
@@ -231,7 +254,10 @@ async def create_team(
 
     log.info("equipo %s creado por %s (coordinador %s, agenda %s)",
              team["team_id"], owner_id, worker_id, agenda or "todas")
-    return _hydrate(store, redis_client, store.get_team(team["team_id"]))
+    hidratado = _hydrate(store, redis_client, store.get_team(team["team_id"]))
+    if enrollment_token:
+        hidratado = {**hidratado, "enrollment_token": enrollment_token}
+    return hidratado
 
 
 @router.post("/{team_id}/join", response_model=Team)
@@ -346,6 +372,7 @@ async def set_team_categories(
 
     agenda = _valid_agenda(request.categories)
     redis_client = redis.store.r
+    enrollment_token = ""
     try:
         store.set_categories(team_id, agenda)
     except TeamError as exc:

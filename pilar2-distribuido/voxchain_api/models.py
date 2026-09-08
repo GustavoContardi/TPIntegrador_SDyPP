@@ -81,7 +81,12 @@ class WorkerStatus(BaseModel):
     mode: str
     pool_url: str = ""
     running: bool
+    # Pubkey del **ciudadano dueño**: quien registró el minero y responde por él.
     pubkey: Optional[str] = None
+    # Pubkey del **nodo**: la identidad propia con la que este minero firma los
+    # nonces que encuentra. Distinta de `pubkey` a propósito (3.1). Vacía hasta
+    # que el worker completa su enrolamiento.
+    node_pubkey: Optional[str] = None
     # Dirección HTTP con la que el worker es alcanzable si actúa de coordinador.
     # La reporta el propio worker; el backend la usa para armar los equipos.
     address: Optional[str] = None
@@ -96,7 +101,25 @@ class RegisterWorkerRequest(BaseModel):
     pubkey: str
     timestamp: str
     signature: str
-    private_key: Optional[str] = None
+    # Si el alta además levanta el pod del minero en el clúster. Antes esto se
+    # deducía de venir o no una `private_key` en el request; el campo ya no
+    # existe (3.1: ninguna clave privada de individuo viaja por la red), así que
+    # la intención de desplegar se declara explícitamente.
+    deploy: bool = False
+
+
+class EnrollNodeRequest(BaseModel):
+    """Alta de la identidad **propia** de un minero ya registrado.
+
+    La envía el worker desde adentro de su proceso, con la pubkey que él mismo
+    generó y el token de un solo uso que el API le dejó en su Secret al
+    desplegarlo. El token no autoriza a firmar como el ciudadano: lo único que
+    permite es reclamar el slot de nodo de ese `worker_id`.
+    """
+
+    worker_id: str
+    node_pubkey: str
+    enrollment_token: str
 
 
 class WorkerSwitchRequest(BaseModel):
@@ -127,7 +150,12 @@ class TeamMember(BaseModel):
     role: str  # 'coordinator' | 'member'
     mode: str
     running: bool
+    # Pubkey del **ciudadano dueño**: quien registró el minero y responde por él.
     pubkey: Optional[str] = None
+    # Pubkey del **nodo**: la identidad propia con la que este minero firma los
+    # nonces que encuentra. Distinta de `pubkey` a propósito (3.1). Vacía hasta
+    # que el worker completa su enrolamiento.
+    node_pubkey: Optional[str] = None
 
 
 class Team(BaseModel):
@@ -149,6 +177,11 @@ class Team(BaseModel):
     # al equipo) y aquél la realidad (quién está mandando keep-alive).
     miners_connected: Optional[int] = None
     coordinator_online: bool = False
+    # Sólo en la respuesta de crear un equipo que además dio de alta un minero
+    # sin desplegarlo (el compose local): es el token con el que ese minero, al
+    # levantarlo a mano, vincula la identidad que genera con la de su dueño.
+    # Nunca se persiste en el equipo ni se devuelve al listarlo.
+    enrollment_token: Optional[str] = None
 
 
 class CreateTeamRequest(BaseModel):

@@ -524,9 +524,12 @@ Implementación: `voxchain_api/services/teams_store.py`.
 | `DELETE` | `/api/teams/{id}` | Disuelve | `standalone` a **todo** el plantel |
 
 `POST /api/teams` acepta un `new_worker` opcional con el alta firmada del minero
-(`worker_id`, `pubkey`, `timestamp`, `signature`, `private_key`), para el usuario
+(`worker_id`, `pubkey`, `timestamp`, `signature`, `deploy`), para el usuario
 que se registró recién y todavía no tiene ninguno: se da de alta, se despliega y
 se promueve en un solo paso. Sin eso el formulario sería un callejón sin salida.
+El alta **no lleva ninguna clave privada** (AGENT.md 3.1): si no hubo despliegue,
+la respuesta trae el `enrollment_token` con el que ese minero, levantado a mano,
+vincula la identidad que genera con la de su dueño.
 
 ### Una identidad, un minero y un equipo
 
@@ -547,7 +550,10 @@ debilidad.
 Detalles que importan al implementar:
 
 - **Re-registrar el mismo `worker_id` no consume cupo.** Es el camino para
-  volver a subir la clave privada o recrear el despliegue, y devuelve 200.
+  recrear el despliegue o reemitir el token de enrolamiento, y devuelve 200. Un
+  re-registro **desvincula la identidad de nodo anterior**: el pod viejo se
+  reemplaza y su clave se va con él, así que dejar el vínculo colgado le imputaría
+  al dueño un minero que ya no controla.
 - **El cupo se calcula recorriendo `registered_workers`**, no con un índice
   inverso. El conjunto ya es la fuente de verdad del alta y la baja lo limpia,
   así que no puede desincronizarse ni hace falta migrar el estado existente. Un
@@ -648,6 +654,39 @@ que nadie va a crear. Para encenderlo en local:
 Ese contenedor arranca **sin** `WORKER_MODE`: lee su modo de
 `worker:desired_mode:<id>`, así que si ya lo habías metido en un equipo arranca
 directamente como minero de ese equipo.
+
+### La identidad del minero no es la del ciudadano
+
+El alta **no transporta ninguna clave privada** (AGENT.md 3.1). Antes sí: el
+frontend armaba el PEM del ciudadano y el backend lo escribía en un Secret de
+Kubernetes, con lo que cualquiera con acceso al clúster podía proponer y votar
+como esa persona indefinidamente.
+
+Ahora el minero genera su propio par EC P-256 al arrancar, en el path que indica
+`WORKER_PRIVKEY_PEM` (un `emptyDir` en tmpfs para los pods que crea el API: la
+clave no toca disco y muere con el pod). El vínculo con el dueño se arma con un
+**token de un solo uso**:
+
+| Paso | Quién | Qué |
+|---|---|---|
+| 1 | Ciudadano | Firma `worker_id\|register\|timestamp` y llama a `POST /api/workers/register`. Su clave no sale del navegador. |
+| 2 | API | Anota `worker:owner:<id>`, emite el token (en Redis queda su SHA-256, TTL `ENROLL_TOKEN_TTL`) y lo pone en el Secret del pod — o lo devuelve en la respuesta si no hubo despliegue. |
+| 3 | Minero | Genera su par y llama a `POST /api/workers/enroll` con su pubkey y el token. |
+| 4 | API | Valida, **quema** el token y guarda `node:owner:<node_pubkey>`. |
+
+Un token filtrado permite como máximo ocupar el slot de nodo de ese minero
+durante su TTL; no permite firmar como el ciudadano.
+
+El enrolamiento es **best-effort**: si falla, el minero mina igual y firma con su
+identidad, pero sus bloques no se le imputan a ningún ciudadano — y la regla 3.4
+(el autor no gana su propia ventana) no lo alcanza. Prefiere eso a que un minero
+no arranque por un problema de red con el API.
+
+En local, el token lo muestra la UI al registrar:
+
+```bash
+WORKER_ENROLL_TOKEN=<token> ./run.sh worker <id-del-minero>
+```
 
 ### Dónde vive en la UI
 
@@ -903,4 +942,5 @@ El fallback a CPU es automático en los cuatro modos, porque vive dentro de
 | `STANDALONE_REJECTED_ACTIONS` | ✅ voto propio (por acción) | — | — | — |
 | `STANDALONE_CATEGORIES` | ✅ voto propio (por área) | — | — | — |
 | `WORKER_PRIVKEY_PEM` | ✅ firma nonces | ✅ firma nonces | — (firma el coord.) | ✅ |
+| `WORKER_ENROLL_TOKEN` | ✅ vincula al dueño | ✅ | ⚪ | ✅ |
 | `MINER_GPU_BIN` / `MINER_CPU_SCRIPT` | ✅ | ✅ | ✅ | ✅ |

@@ -57,8 +57,8 @@ tfplan
 *.log
 logs/
 
-gustavo.yaml
 gpu-check.yaml
+gustavo.yaml
 
 # Notas personales de seguimiento (fuera de git)
 RESUMEN-PILARES.md
