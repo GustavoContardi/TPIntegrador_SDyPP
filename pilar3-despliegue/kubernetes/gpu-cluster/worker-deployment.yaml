@@ -85,6 +85,11 @@ spec:
               value: ""
             - name: WORKER_MODE
               value: "pool-auto"
+            # Dificultad del mini-PoW de elección de coordinador. Es el nombre
+            # que leen bully.py y pool_coordinator/coordinator.py; NO es
+            # N_ZEROS (la dificultad de gobierno, que fija el NCT).
+            - name: POOL_ELECTION_N_ZEROS
+              value: "2"
             - name: POOL_ID
               value: "default"
             - name: WORKER_ADDRESS

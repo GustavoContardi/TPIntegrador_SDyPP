@@ -11,6 +11,12 @@ import pytest
 from common.messaging import InMemoryBus, Messaging
 
 from worker_pkg.pool_coordinator.coordinator import PoolCoordinator, fragment_range
+from worker_pkg.pool_coordinator.election import (
+    LEASE_RANK_DESIGNATED,
+    LEASE_RANK_ELECTED,
+    encode_lease,
+    lease_holder,
+)
 
 
 class FakePipeline:
@@ -131,7 +137,7 @@ class TestPoolCoordinator:
     def test_leadership(self, coordinator):
         assert coordinator.is_leader
         # El lease va namespaceado por pool, no en una clave global.
-        assert coordinator.redis.get("pool:leader:test-pool") == "test-pool"
+        assert lease_holder(coordinator.redis.get("pool:leader:test-pool")) == "test-pool"
         assert coordinator.redis.get("pool:leader") is None
 
     def test_register_miner(self, coordinator):
@@ -370,7 +376,7 @@ class TestPoolElection:
         r = FakeRedis()
         won = run_pool_election(r, "pool-A", n_zeros=1, lease_ttl=10)
         assert won is True
-        assert r.get("pool:leader:pool-A") == "pool-A"
+        assert lease_holder(r.get("pool:leader:pool-A")) == "pool-A"
 
     def test_run_pool_election_pierde_si_election_key_ya_existe(self):
         from worker_pkg.pool_coordinator.election import run_pool_election, ELECTION_EPOCH_SECONDS
@@ -472,7 +478,7 @@ class TestPoolElection:
 
         c.tick()  # recoger resultado
         assert c.is_leader is True
-        assert r.get("pool:leader:pool-A") == "pool-A"
+        assert lease_holder(r.get("pool:leader:pool-A")) == "pool-A"
 
 
 class TestAgendaTematica:
@@ -600,8 +606,8 @@ class TestAislamientoEntrePools:
         assert a.try_acquire_leadership() is True
         assert b.try_acquire_leadership() is True   # antes devolvía False
         assert a.is_leader and b.is_leader
-        assert r.get("pool:leader:equipo-a") == "equipo-a"
-        assert r.get("pool:leader:equipo-b") == "equipo-b"
+        assert lease_holder(r.get("pool:leader:equipo-a")) == "equipo-a"
+        assert lease_holder(r.get("pool:leader:equipo-b")) == "equipo-b"
 
     def test_el_lease_ajeno_no_desaloja(self):
         # Renovar mira sólo la clave propia: que otro equipo tenga la suya no
@@ -631,8 +637,8 @@ class TestAislamientoEntrePools:
         # El claim de A no bloquea la elección de B: están en épocas del mismo
         # instante pero en namespaces distintos.
         assert run_pool_election(r, "equipo-b", n_zeros=1, lease_ttl=10) is True
-        assert r.get("pool:leader:equipo-a") == "equipo-a"
-        assert r.get("pool:leader:equipo-b") == "equipo-b"
+        assert lease_holder(r.get("pool:leader:equipo-a")) == "equipo-a"
+        assert lease_holder(r.get("pool:leader:equipo-b")) == "equipo-b"
 
     def test_cada_equipo_lee_su_propia_agenda(self):
         """Cierra el lazo con las categorías: lease propio ⇒ política propia."""
@@ -696,7 +702,7 @@ class TestArbitrajeExterno:
         c.tick()
         # El lease se toma en nombre del pool; la identidad del nodo (pool_id) es
         # el valor, no la clave.
-        assert r.get("pool:leader:mi-pool") == "nodo-1"
+        assert lease_holder(r.get("pool:leader:mi-pool")) == "nodo-1"
         assert r.get("pool:leader:nodo-1") is None
 
     def test_nunca_arranca_una_eleccion_propia(self):
@@ -730,6 +736,119 @@ class TestArbitrajeExterno:
         assert c.is_leader is True
 
 
+class TestRangoDelLease:
+    """El designado desplaza al electo; el electo nunca al designado.
+
+    Los dos coordinadores comparten el lease a propósito (así no coordinan en
+    paralelo sin enterarse), pero no son intercambiables: a uno lo eligió una
+    persona desde la pantalla de Equipos y al otro una elección entre nodos
+    anónimos. Sin rango, quién se quedaba con el pool lo decidía el orden de
+    arranque.
+    """
+
+    LEASE = "pool:leader:mi-pool"
+
+    def _designado(self, redis, pool_id="coordinador-del-equipo"):
+        # El del modo `pool-coordinator`: rango por default.
+        c = PoolCoordinator(FakeMessaging(), pool_id=pool_id, redis=redis,
+                            mine=lambda *a: (None, None), lease_key=self.LEASE)
+        c._running = True
+        return c
+
+    def _electo(self, redis, pool_id="nodo-anonimo"):
+        # El que arranca el bully: `elect_leader=False` y rango `elected`.
+        c = PoolCoordinator(FakeMessaging(), pool_id=pool_id, redis=redis,
+                            mine=lambda *a: (None, None), lease_key=self.LEASE,
+                            lease_rank=LEASE_RANK_ELECTED, elect_leader=False)
+        c._running = True
+        return c
+
+    def test_el_designado_le_saca_el_lease_al_electo(self):
+        r = FakeRedis()
+        electo = self._electo(r)
+        electo._last_lease_renew = 0
+        electo.tick()
+        assert lease_holder(r.get(self.LEASE)) == "nodo-anonimo"
+
+        # Llega el coordinador que el dueño del equipo eligió a dedo.
+        designado = self._designado(r)
+        assert designado.try_acquire_leadership() is True
+        assert lease_holder(r.get(self.LEASE)) == "coordinador-del-equipo"
+
+        # Y el electo se entera en su próxima renovación: cede y avisa.
+        avisos = []
+        electo._on_lost_leadership = lambda: avisos.append(1)
+        assert electo.renew_leadership() is False
+        assert electo.is_leader is False
+        assert avisos == [1]
+
+    def test_el_electo_no_le_saca_el_lease_al_designado(self):
+        r = FakeRedis()
+        designado = self._designado(r)
+        assert designado.try_acquire_leadership() is True
+
+        electo = self._electo(r)
+        assert electo.try_acquire_leadership() is False
+        assert lease_holder(r.get(self.LEASE)) == "coordinador-del-equipo"
+        # Y tampoco se lo lleva por renovación, que es el camino del bully.
+        electo.is_leader = True
+        assert electo.renew_leadership() is False
+        assert lease_holder(r.get(self.LEASE)) == "coordinador-del-equipo"
+
+    def test_el_empate_no_desplaza(self):
+        """Dos del mismo rango en un pool son HA, no un conflicto de modos.
+
+        Si el empate desplazara, se robarían el lease en cada tick en bucle en
+        vez de que el segundo espere su turno.
+        """
+        r = FakeRedis()
+        primero = self._designado(r, "coord-a")
+        suplente = self._designado(r, "coord-b")
+        assert primero.try_acquire_leadership() is True
+        assert suplente.try_acquire_leadership() is False
+
+        r2 = FakeRedis()
+        uno = self._electo(r2, "nodo-1")
+        otro = self._electo(r2, "nodo-2")
+        assert uno.try_acquire_leadership() is True
+        assert otro.try_acquire_leadership() is False
+
+    def test_un_lease_sin_rango_no_se_desplaza(self):
+        """Compatibilidad durante un rollout: si no sabemos clasificarlo, no lo tocamos."""
+        r = FakeRedis()
+        r._data[self.LEASE] = "coordinador-viejo"   # formato previo al rango
+
+        electo = self._electo(r)
+        assert electo.try_acquire_leadership() is False
+        assert lease_holder(r.get(self.LEASE)) == "coordinador-viejo"
+
+    def test_el_designado_compite_por_un_pool_que_tiene_un_electo(self):
+        """`_maybe_start_election` no puede frenarse ante un dueño de rango menor.
+
+        Es el camino real por el que un coordinador de equipo recupera su pool:
+        si el lease ocupado lo frenara siempre, nunca llegaría a elegirse.
+        """
+        r = FakeRedis()
+        r._data[self.LEASE] = encode_lease("nodo-anonimo", LEASE_RANK_ELECTED)
+
+        designado = self._designado(r)
+        designado._election_n_zeros = 1        # PoW trivial: no es lo que se prueba
+        designado._maybe_start_election()
+        assert designado._election_thread is not None
+        designado._election_thread.join(timeout=5)
+        assert designado._election_result is True
+        assert lease_holder(r.get(self.LEASE)) == "coordinador-del-equipo"
+
+    def test_el_designado_no_compite_contra_otro_designado(self):
+        r = FakeRedis()
+        r._data[self.LEASE] = encode_lease("otro-equipo", LEASE_RANK_DESIGNATED)
+
+        designado = self._designado(r)
+        designado._maybe_start_election()
+        assert designado._election_thread is None
+        assert lease_holder(r.get(self.LEASE)) == "otro-equipo"
+
+
 class TestSoltarElLease:
     def _coordinator(self, redis, pool_id="equipo-a"):
         c = PoolCoordinator(FakeMessaging(), pool_id=pool_id, redis=redis,
@@ -742,7 +861,7 @@ class TestSoltarElLease:
         r = FakeRedis()
         c = self._coordinator(r)
         c.try_acquire_leadership()
-        assert r.get("pool:leader:equipo-a") == "equipo-a"
+        assert lease_holder(r.get("pool:leader:equipo-a")) == "equipo-a"
 
         c.stop()
         assert r.get("pool:leader:equipo-a") is None
@@ -756,4 +875,4 @@ class TestSoltarElLease:
         r._data["pool:leader:equipo-a"] = "otro"
 
         c.stop()
-        assert r.get("pool:leader:equipo-a") == "otro"
+        assert lease_holder(r.get("pool:leader:equipo-a")) == "otro"

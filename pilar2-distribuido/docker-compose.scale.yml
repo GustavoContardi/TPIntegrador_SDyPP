@@ -79,7 +79,6 @@ services:
       WINDOW_SECONDS_DEROGACION: "600"
       NCT_MODE: "primary"
       NCT_ID: "nct-primary"
-      ELECTION_N_ZEROS: "2"
       HEARTBEAT_INTERVAL: "3"
       HEARTBEAT_TIMEOUT: "12"
       LEADER_LEASE_TTL: "15"
@@ -117,6 +116,10 @@ services:
       <<: [*app-env, *miner-env]
       WORKER_MODE: "pool-coordinator"
       WORKER_ID: "pool-coordinator-1"
+      # Dificultad del mini-PoW de elección de coordinador. Es el nombre que
+      # leen bully.py y pool_coordinator/coordinator.py; NO es N_ZEROS (la
+      # dificultad de gobierno), que sale del ConfigMap/env compartido.
+      POOL_ELECTION_N_ZEROS: "2"
       WORKER_CAPACITY: "1"
       POOL_HTTP_PORT: "9001"
     cpus: 1.0

@@ -835,6 +835,17 @@ Qué cambió:
 - `PoolCoordinator.stop()` **suelta** el lease en vez de dejarlo expirar, así el
   sucesor no espera el TTL entero.
 - `ELECTION_N_ZEROS` sale ahora de `POOL_ELECTION_N_ZEROS` en las dos ramas.
+  (Y llega de verdad: la variable estaba puesta con ese nombre en el NCT y en
+  el ConfigMap `voxchain-config`, que no la lee nadie, y ausente en los
+  deployments de worker, que son los únicos que la leen.)
+- El lease lleva **rango**: `<designated|elected>|<dueño>`. Compartir el árbitro
+  resolvía que no hubiera dos coordinadores a la vez, pero dejaba que cualquiera
+  de los dos ganara según el orden de arranque —y uno de los dos lo eligió una
+  persona—. Ahora el designado (modo `pool-coordinator`, el de los equipos)
+  desplaza al electo (modo `pool-auto`), nunca al revés, y el empate no desplaza
+  para que dos nodos del mismo rango no se roben el lease en bucle. Un valor sin
+  rango —de antes de este campo— se lee como designado: ante un dueño que no
+  sabemos clasificar, la opción segura es no desalojarlo.
 - Sin Redis el bully arbitra solo, exactamente como antes.
 
 **Lo que queda abierto** (no se tocó): los *seeds* siguen siendo distintos —
@@ -964,6 +975,7 @@ El fallback a CPU es automático en los cuatro modos, porque vive dentro de
 | `MY_POD_IP` | ⚪ respaldo de address | ⚪ respaldo | ⚪ respaldo | ⚪ respaldo |
 | `POOL_COORDINATOR_URL` | — | — | ✅ a quién pedirle | ⚪ default |
 | `POOL_ID` | — | — | — | ✅ ámbito de la elección |
+| `POOL_ELECTION_N_ZEROS` | — | ✅ mini-PoW de la elección por Redis | — | ✅ mini-PoW del bully |
 | `WORKER_CAPACITY` | — | ✅ propia + agregada | ✅ se reporta | ✅ |
 | `STANDALONE_REJECTED_ACTIONS` | ✅ voto propio (por acción) | — | — | — |
 | `STANDALONE_CATEGORIES` | ✅ voto propio (por área) | — | — | — |

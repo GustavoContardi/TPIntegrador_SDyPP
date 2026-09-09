@@ -30,7 +30,10 @@ from common.metrics import worker_busy, worker_has_gpu, worker_nonces_found_tota
 from worker_pkg.miner import run_miner
 from worker_pkg.pool_worker import PoolWorker
 from worker_pkg.pool_coordinator import PoolCoordinator
-from worker_pkg.pool_coordinator.election import lease_key_for
+from worker_pkg.pool_coordinator.election import (
+    LEASE_RANK_ELECTED,
+    lease_key_for,
+)
 from worker_pkg.pool_coordinator.server import start_pool_http_server
 
 log = logging.getLogger("voxchain.worker.bully")
@@ -232,6 +235,11 @@ class PoolBully:
             # recurso del que hay uno solo. Así lo ve —y compite por él— un
             # coordinador de la otra rama que sirva al mismo pool.
             lease_key=lease_key_for(self.pool_id),
+            # Rango del lease: a este coordinador lo eligió una elección
+            # entre nodos anónimos, no una persona. Si el mismo pool tiene
+            # además un coordinador designado desde la pantalla de Equipos,
+            # ése manda y a nosotros nos toca retirarnos (`_on_lease_lost`).
+            lease_rank=LEASE_RANK_ELECTED,
             # El bully ya arbitró por RabbitMQ: acá no se elige nada.
             elect_leader=False,
             on_lost_leadership=self._on_lease_lost,

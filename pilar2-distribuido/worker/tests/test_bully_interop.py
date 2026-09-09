@@ -22,6 +22,7 @@ from unittest import mock
 import pytest
 
 from worker_pkg.bully import PoolBully
+from worker_pkg.pool_coordinator.election import lease_holder
 
 
 class FakeMessaging:
@@ -114,7 +115,7 @@ class TestElLeaseSeComparte:
             b._coordinator._last_lease_renew = 0
             b._coordinator.tick()
             # Visible para la otra rama y para las métricas, que antes no lo veían.
-            assert r.get("pool:leader:mi-pool") == "nodo-1"
+            assert lease_holder(r.get("pool:leader:mi-pool")) == "nodo-1"
         finally:
             b.stop()
 
@@ -145,7 +146,7 @@ class TestElLeaseSeComparte:
             assert b.state == PoolBully.CANDIDATE
             assert b._coordinator is None      # dejó de servir HTTP y de fragmentar
             # y no le robó el lease al otro
-            assert r.get("pool:leader:mi-pool") == "coordinador-de-la-otra-rama"
+            assert lease_holder(r.get("pool:leader:mi-pool")) == "coordinador-de-la-otra-rama"
         finally:
             b.stop()
 

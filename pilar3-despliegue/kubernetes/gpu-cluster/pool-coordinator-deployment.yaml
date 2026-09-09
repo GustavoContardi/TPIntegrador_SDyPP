@@ -74,6 +74,11 @@ spec:
               value: "redis://:$(REDIS_PASSWORD)@redis.voxchain.svc.cluster.local:6379/0"
             - name: WORKER_MODE
               value: "pool-coordinator"
+            # Dificultad del mini-PoW de elección de coordinador. Es el nombre
+            # que leen bully.py y pool_coordinator/coordinator.py; NO es
+            # N_ZEROS (la dificultad de gobierno, que fija el NCT).
+            - name: POOL_ELECTION_N_ZEROS
+              value: "2"
             - name: POOL_HTTP_PORT
               value: "9001"
           livenessProbe:

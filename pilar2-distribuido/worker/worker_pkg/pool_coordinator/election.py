@@ -45,6 +45,66 @@ def election_key_for(pool_id: str, epoch: int) -> str:
     return f"pool:election:{pool_id}:{epoch}"
 
 
+# -- rango del lease -------------------------------------------------------
+#
+# Dos coordinadores de modos distintos pueden terminar sirviendo al mismo pool:
+# basta con que el `POOL_ID` de un pod en `pool-auto` coincida con el
+# `worker_id` del coordinador de un equipo, y ambos derivan el mismo
+# `pool:leader:<id>`. Compartir ese lease es deliberado —es lo que evita que
+# coordinen en paralelo sin enterarse—, pero los dos coordinadores **no son
+# intercambiables**: a uno lo designó una persona desde la pantalla de Equipos
+# y el otro salió de una elección entre nodos anónimos. Sin rango, quién se
+# queda con el pool lo decidía el orden de arranque, y un nodo cualquiera podía
+# desalojar al coordinador que el dueño del equipo había elegido a dedo.
+#
+# El rango hace explícita esa asimetría: el designado desplaza al electo, nunca
+# al revés. No es un namespace aparte a propósito —separarlos devolvería el
+# problema de los dos coordinadores simultáneos que este lease vino a resolver.
+LEASE_RANK_DESIGNATED = "designated"
+LEASE_RANK_ELECTED = "elected"
+
+_RANK_ORDER = {LEASE_RANK_ELECTED: 0, LEASE_RANK_DESIGNATED: 1}
+_LEASE_SEP = "|"
+
+
+def encode_lease(holder: str, rank: str) -> str:
+    """Valor a guardar en el lease: ``<rango>|<dueño>``."""
+    return f"{rank}{_LEASE_SEP}{holder}"
+
+
+def decode_lease(raw) -> tuple[str, str]:
+    """``(rango, dueño)`` de un valor de lease; acepta ``bytes`` y ``None``.
+
+    Un valor sin rango viene de una versión anterior a este campo (o de un
+    coordinador todavía sin actualizar, durante un rollout). Se lee como
+    ``designated`` a propósito: ante un dueño que no sabemos clasificar, la
+    opción segura es no desplazarlo.
+    """
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8")
+    if raw is None:
+        return LEASE_RANK_DESIGNATED, ""
+    rank, sep, holder = raw.partition(_LEASE_SEP)
+    if not sep or rank not in _RANK_ORDER:
+        return LEASE_RANK_DESIGNATED, raw
+    return rank, holder
+
+
+def lease_holder(raw) -> str:
+    """Sólo el dueño; azúcar para los sitios que no miran el rango."""
+    return decode_lease(raw)[1]
+
+
+def outranks(rank: str, other: str) -> bool:
+    """¿``rank`` puede desplazar a ``other``? Sólo si es **estrictamente** mayor.
+
+    El empate no desplaza, y es la parte que importa: dos nodos del mismo rango
+    sirviendo al mismo pool se robarían el lease en cada tick, en bucle, en vez
+    de que uno se retire.
+    """
+    return _RANK_ORDER.get(rank, 1) > _RANK_ORDER.get(other, 1)
+
+
 def run_pool_election(
     redis,
     pool_id: str,
@@ -52,6 +112,7 @@ def run_pool_election(
     n_zeros: int = 2,
     lease_key: str | None = None,
     lease_ttl: int = 10,
+    lease_rank: str = LEASE_RANK_DESIGNATED,
     epoch_duration: int = ELECTION_EPOCH_SECONDS,
     clock=time.time,
 ) -> bool:
@@ -94,6 +155,6 @@ def run_pool_election(
         log.info("pool %s: perdió el claim atómico (otro candidato más rápido)", pool_id)
         return False
 
-    redis.set(lease_key, pool_id, ex=lease_ttl)
+    redis.set(lease_key, encode_lease(pool_id, lease_rank), ex=lease_ttl)
     log.info("pool %s: ¡GANÓ la elección! (nonce=%d, epoch=%d)", pool_id, nonce, epoch)
     return True

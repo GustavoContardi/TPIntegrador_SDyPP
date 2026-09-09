@@ -28,7 +28,14 @@ from common.blockchain.categories import (
     parse_categories,
 )
 from common.blockchain.challenge import prefix_for_zeros
-from worker_pkg.pool_coordinator.election import lease_key_for
+from worker_pkg.pool_coordinator.election import (
+    LEASE_RANK_DESIGNATED,
+    decode_lease,
+    encode_lease,
+    lease_holder,
+    lease_key_for,
+    outranks,
+)
 from common.metrics import (
     observe_challenge_latency,
     pool_is_leader,
@@ -67,6 +74,7 @@ class PoolCoordinator:
                  capacity: int = 1, clock=time.time,
                  keepalive_interval: float = 5.0,
                  lease_ttl: int = 10, lease_key: str | None = None,
+                 lease_rank: str = LEASE_RANK_DESIGNATED,
                  election_n_zeros: int | None = None,
                  elect_leader: bool = True, on_lost_leadership=None,
                  signer=None):
@@ -85,6 +93,12 @@ class PoolCoordinator:
         # los coordinadores de los demás equipos nunca lograban tomar la suya —
         # se quedaban sin emitir keepalive y sin aparecer en las métricas.
         self.lease_key = lease_key or lease_key_for(pool_id)
+        # Quién puede desplazar a quién cuando dos coordinadores de modos
+        # distintos sirven al mismo pool (ver `election.py`). El default es
+        # `designated` porque el constructor sin este argumento es el del modo
+        # `pool-coordinator`: ahí al coordinador lo eligió una persona.
+        self.lease_rank = lease_rank
+        self._lease_value = encode_lease(pool_id, lease_rank)
         self._miners: dict[str, dict] = {}
         self._pending_fragments: deque[dict] = deque()
         self._lock = Lock()
@@ -129,13 +143,30 @@ class PoolCoordinator:
             self.is_leader = True
             pool_is_leader.set(1)
             return True
-        acquired = self.redis.set(self.lease_key, self.pool_id,
+        acquired = self.redis.set(self.lease_key, self._lease_value,
                                   nx=True, ex=self.lease_ttl)
+        if not acquired:
+            acquired = self._try_outrank_holder()
         if acquired:
             self.is_leader = True
             pool_is_leader.set(1)
             log.info("pool coordinator %s adquirió liderazgo", self.pool_id)
         return bool(acquired)
+
+    def _try_outrank_holder(self) -> bool:
+        """Toma un lease ocupado si su dueño es de rango menor que el nuestro.
+
+        Sólo se llega acá con el SET NX ya fallado. El empate no desplaza (ver
+        `election.outranks`): dos coordinadores del mismo rango en un pool son
+        el caso de HA que el lease tiene que arbitrar, y ahí el segundo espera.
+        """
+        rank, holder = decode_lease(self.redis.get(self.lease_key))
+        if holder == self.pool_id or not outranks(self.lease_rank, rank):
+            return False
+        log.warning("pool coordinator %s (%s) desplaza a %s (%s) del lease %s",
+                    self.pool_id, self.lease_rank, holder, rank, self.lease_key)
+        self.redis.set(self.lease_key, self._lease_value, ex=self.lease_ttl)
+        return True
 
     def renew_leadership(self) -> bool:
         if self.redis is None:
@@ -145,14 +176,20 @@ class PoolCoordinator:
         pipe.pttl(self.lease_key)
         current, _ttl = pipe.execute()
         if current is None:
-            self.redis.setex(self.lease_key, self.lease_ttl, self.pool_id)
+            self.redis.setex(self.lease_key, self.lease_ttl, self._lease_value)
             return True
-        if isinstance(current, str):
-            same = (current == self.pool_id)
-        else:
-            same = (current == self.pool_id.encode())
-        if same:
-            self.redis.setex(self.lease_key, self.lease_ttl, self.pool_id)
+        rank, holder = decode_lease(current)
+        if holder == self.pool_id:
+            self.redis.setex(self.lease_key, self.lease_ttl, self._lease_value)
+            return True
+        if outranks(self.lease_rank, rank):
+            # No es nuestro, pero lo tiene alguien de rango menor: un coordinador
+            # designado retomando su pool de manos de uno electo. Renovar acá (en
+            # vez de ceder) es lo que impide que un nodo anónimo se quede con el
+            # pool de un equipo sólo por haber arrancado primero.
+            log.warning("pool coordinator %s (%s) desplaza a %s (%s) del lease %s",
+                        self.pool_id, self.lease_rank, holder, rank, self.lease_key)
+            self.redis.setex(self.lease_key, self.lease_ttl, self._lease_value)
             return True
         self.is_leader = False
         pool_is_leader.set(0)
@@ -424,10 +461,7 @@ class PoolCoordinator:
         if self.redis is None or not self.is_leader:
             return
         try:
-            current = self.redis.get(self.lease_key)
-            if isinstance(current, bytes):
-                current = current.decode("utf-8")
-            if current == self.pool_id:
+            if lease_holder(self.redis.get(self.lease_key)) == self.pool_id:
                 self.redis.delete(self.lease_key)
                 log.info("pool %s soltó el lease %s", self.pool_id, self.lease_key)
         except Exception:  # noqa: BLE001
@@ -452,6 +486,7 @@ class PoolCoordinator:
                 n_zeros=self._election_n_zeros,
                 lease_key=self.lease_key,
                 lease_ttl=self.lease_ttl,
+                lease_rank=self.lease_rank,
                 clock=self.now,
             )
             self._election_result = won
@@ -466,8 +501,11 @@ class PoolCoordinator:
             return
         if self._election_in_progress:
             return
-        current_leader = self.redis.get(self.lease_key)
-        if current_leader is not None and current_leader != self.pool_id:
+        rank, holder = decode_lease(self.redis.get(self.lease_key))
+        # Que el lease esté ocupado sólo nos frena si su dueño no es de rango
+        # menor: contra uno menor sí competimos, porque ganar la elección es el
+        # camino por el que un coordinador designado recupera su pool.
+        if holder and holder != self.pool_id and not outranks(self.lease_rank, rank):
             return
         self._election_in_progress = True
         self._election_result = False
