@@ -2,8 +2,9 @@
 
 Aislada de Redis y RabbitMQ para poder testearla de forma unitaria:
 
-- ``select_next_law`` (reesportada desde ``common.queue``): round-robin entre
-  autores distintos (no FIFO estricto).
+- ``select_next_law`` (reexportada desde ``common.queue``): round-robin entre
+  autores distintos (no FIFO estricto) más la cuota de turnos por identidad.
+- ``authors_over_quota`` (reexportada): qué identidades excedieron su cuota.
 - ``cooldown_until``: cálculo del cooldown según la razón (nuevo vs reproposición).
 - ``classify_proposal``: distingue propuesta nueva de reproposición idéntica por
   hash exacto del texto.
@@ -11,7 +12,12 @@ Aislada de Redis y RabbitMQ para poder testearla de forma unitaria:
 
 from __future__ import annotations
 
-from common.queue import select_next_law  # noqa: F401  reexportada
+from common.queue import (  # noqa: F401  reexportadas
+    TURN_QUOTA_MAX_SHARE,
+    TURN_QUOTA_WINDOWS,
+    authors_over_quota,
+    select_next_law,
+)
 from common.storage import CooldownReason
 
 

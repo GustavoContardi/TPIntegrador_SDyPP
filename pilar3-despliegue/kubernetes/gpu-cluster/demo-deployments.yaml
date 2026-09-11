@@ -65,6 +65,13 @@ spec:
               value: "worker-standalone"
             - name: WORKER_MODE
               value: "standalone"
+            # El espacio de nonces tiene que cubrir la derogación (n+1=7) o las
+            # ventanas vencen sin sellar. Estos pods no leen el ConfigMap
+            # `voxchain-config` (vive en otro namespace), así que va explícito.
+            - name: NONCE_SPACE
+              value: "1250000000"
+            - name: FRAGMENT_SIZE
+              value: "25000000"
             - name: RABBITMQ_USER
               valueFrom:
                 secretKeyRef:
@@ -194,6 +201,13 @@ spec:
               value: "worker-pool-coordinator"
             - name: WORKER_MODE
               value: "pool-coordinator"
+            # El espacio de nonces tiene que cubrir la derogación (n+1=7) o las
+            # ventanas vencen sin sellar. Estos pods no leen el ConfigMap
+            # `voxchain-config` (vive en otro namespace), así que va explícito.
+            - name: NONCE_SPACE
+              value: "1250000000"
+            - name: FRAGMENT_SIZE
+              value: "25000000"
             # Dificultad del mini-PoW de elección de coordinador. Es el nombre
             # que leen bully.py y pool_coordinator/coordinator.py; NO es
             # N_ZEROS (la dificultad de gobierno, que fija el NCT).
@@ -334,6 +348,13 @@ spec:
               value: "worker-pool-miner-1"
             - name: WORKER_MODE
               value: "pool-worker"
+            # El espacio de nonces tiene que cubrir la derogación (n+1=7) o las
+            # ventanas vencen sin sellar. Estos pods no leen el ConfigMap
+            # `voxchain-config` (vive en otro namespace), así que va explícito.
+            - name: NONCE_SPACE
+              value: "1250000000"
+            - name: FRAGMENT_SIZE
+              value: "25000000"
             - name: POOL_COORDINATOR_URL
               value: "http://worker-pool-coordinator:9001"
             - name: RABBITMQ_USER
@@ -452,6 +473,13 @@ spec:
               value: "worker-pool-miner-2"
             - name: WORKER_MODE
               value: "pool-worker"
+            # El espacio de nonces tiene que cubrir la derogación (n+1=7) o las
+            # ventanas vencen sin sellar. Estos pods no leen el ConfigMap
+            # `voxchain-config` (vive en otro namespace), así que va explícito.
+            - name: NONCE_SPACE
+              value: "1250000000"
+            - name: FRAGMENT_SIZE
+              value: "25000000"
             - name: POOL_COORDINATOR_URL
               value: "http://worker-pool-coordinator:9001"
             - name: RABBITMQ_USER
@@ -570,6 +598,13 @@ spec:
               value: "worker-pool-miner-3"
             - name: WORKER_MODE
               value: "pool-worker"
+            # El espacio de nonces tiene que cubrir la derogación (n+1=7) o las
+            # ventanas vencen sin sellar. Estos pods no leen el ConfigMap
+            # `voxchain-config` (vive en otro namespace), así que va explícito.
+            - name: NONCE_SPACE
+              value: "1250000000"
+            - name: FRAGMENT_SIZE
+              value: "25000000"
             - name: POOL_COORDINATOR_URL
               value: "http://worker-pool-coordinator:9001"
             - name: RABBITMQ_USER

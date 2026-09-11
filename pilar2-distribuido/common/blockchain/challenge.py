@@ -17,6 +17,7 @@ las de ``pilar1-minero/cpu/src/brute_force.py`` para que el puente sea exacto.
 from __future__ import annotations
 
 import hashlib
+import math
 
 ACTION_PROMULGACION = "promulgacion"
 ACTION_DEROGACION = "derogacion"
@@ -71,6 +72,36 @@ def verify_nonce(partial_hash_base: str, nonce: int, n_zeros_required: int):
     hash_hex = compute_hash(partial_hash_base, nonce)
     ok = hash_hex.startswith(prefix_for_zeros(n_zeros_required))
     return ok, hash_hex
+
+
+def espacio_insuficiente(n_zeros: int, nonce_space: int,
+                         cobertura: float = 0.95) -> str | None:
+    """Avisa si ``nonce_space`` es chico para la dificultad; ``None`` si está bien.
+
+    ``n`` no es una perilla suelta: el espacio de nonces tiene que alcanzar para
+    que exista solución dentro del rango que el minero barre. Se dimensiona sobre
+    la **derogación** (``n+1``), que es el caso caro; si sólo cubriera la
+    promulgación, derogar vencería siempre.
+
+    El número de intentos hasta el primer acierto es geométrico, así que con un
+    espacio de ``k`` veces los intentos esperados la probabilidad de encontrarlo
+    es ``1 - e^-k``.
+
+    Existe porque el modo de fallo es mudo: con ``N_ZEROS`` alto y el espacio
+    viejo, el sistema arranca sin quejarse, las ventanas vencen sin sellar, y en
+    los logs parece falta de mineros. El NCT lo consulta al arrancar y antes de
+    abrir cada ventana, porque la config puede cambiar con el sistema andando.
+    """
+    esperados = 16 ** (n_zeros + 1)
+    prob = 1.0 - math.exp(-nonce_space / esperados) if esperados else 1.0
+    if prob >= cobertura:
+        return None
+    k = -math.log(1.0 - cobertura)
+    return (f"NONCE_SPACE={nonce_space:,} es chico para n={n_zeros}: una derogación "
+            f"(n+1={n_zeros + 1}) espera {esperados:,} intentos y sólo se encontraría "
+            f"el {prob:.1%} de las veces. Hace falta {math.ceil(k * esperados):,} "
+            f"para {cobertura:.0%}. Recalculalo con "
+            f"Ver la tabla de calibración en pilar3-despliegue/README.md")
 
 
 def solve_mini_challenge(seed: str, n_zeros: int, max_iter: int = 10_000_000) -> int | None:

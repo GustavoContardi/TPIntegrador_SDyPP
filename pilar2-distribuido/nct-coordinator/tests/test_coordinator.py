@@ -326,3 +326,213 @@ class TestCategorias:
                               "action": "derogacion", "category": "economia"})
         assert challenges[-1]["action"] == "derogacion"
         assert challenges[-1]["category"] == "salud"
+
+
+class TestCuotaDeTurnos:
+    """La cuota vista desde el NCT: historial en el store + selección real.
+
+    `common/tests/test_turn_quota.py` cubre la regla pura; acá se prueba que el
+    NCT efectivamente la alimenta (anota cada turno) y la consulta al elegir.
+    """
+
+    def test_el_nct_anota_cada_turno_en_el_historial(self, bus, store):
+        clock = Clock()
+        make_nct(bus, store, clock)
+        bus.publish_proposal({"law_id": "L1", "author_pubkey": "A",
+                              "text_hash": "h1", "created_at": "t0"})
+        assert store.recent_window_authors(10) == ["A"]
+
+    def test_una_identidad_monopolizadora_cede_el_turno(self, bus, store):
+        clock = Clock()
+        nct = make_nct(bus, store, clock, turn_quota_windows=4,
+                       turn_quota_max_share=0.5)
+        # "A" ya se llevó las últimas 4 ventanas (100% > 50%).
+        for _ in range(4):
+            store.push_window_author("A")
+
+        # Con dos leyes en cola, la más antigua es de A: sin cuota le tocaría a él.
+        store.save_law(law_id="LA", author_pubkey="A", text_hash="ha",
+                       created_at="t0")
+        store.enqueue_law("LA")
+        store.save_law(law_id="LB", author_pubkey="B", text_hash="hb",
+                       created_at="t1")
+        store.enqueue_law("LB")
+
+        challenges = capture_challenges(bus)
+        nct._last_author = None
+        nct.maybe_open_window()
+
+        assert len(challenges) == 1
+        assert challenges[0]["law_id"] == "LB"
+
+    def test_la_cola_no_se_bloquea_si_el_unico_autor_excedio(self, bus, store):
+        clock = Clock()
+        nct = make_nct(bus, store, clock, turn_quota_windows=4,
+                       turn_quota_max_share=0.5)
+        for _ in range(4):
+            store.push_window_author("A")
+        store.save_law(law_id="LA", author_pubkey="A", text_hash="ha",
+                       created_at="t0")
+        store.enqueue_law("LA")
+
+        challenges = capture_challenges(bus)
+        nct._last_author = None
+        nct.maybe_open_window()
+
+        # Excedido y todo, abre: una cuota que frene el sistema entero sería un
+        # DoS más barato que el ataque que intenta evitar.
+        assert len(challenges) == 1
+        assert challenges[0]["law_id"] == "LA"
+
+
+class TestDificultadDinamica:
+    """`n` recalculado por ventana según el cómputo vivo (AGENT.md 3.6).
+
+    Lo que se prueba acá es el cableado: que el NCT mida la población real del
+    store, que el `n` resultante llegue al desafío, y que el espacio de nonces
+    viaje con él. La matemática está en `common/tests/test_difficulty.py`.
+    """
+
+    def _con_mineros(self, store, cuantos, equipo=False, gpu=False):
+        import json
+        for i in range(cuantos):
+            store.r.set(f"worker:status:w{i}", json.dumps(
+                {"worker_id": f"w{i}", "has_gpu": gpu, "capacity": 1}))
+        if equipo:
+            store.r.sadd("teams", "faccion")
+            store.r.hset("team:faccion", mapping={
+                "coordinator_worker_id": "w0", "name": "F"})
+            for i in range(1, cuantos):
+                store.r.sadd("team:members:faccion", f"w{i}")
+
+    def _nct(self, bus, store, clock, **kw):
+        params = dict(dynamic_difficulty=True, difficulty_target_seconds=30.0,
+                      hps_cpu=1_000_000.0, hps_gpu=1e8)
+        params.update(kw)
+        return make_nct(bus, store, clock, **params)
+
+    def test_registrar_standalone_no_abarata_la_ley(self, bus, store):
+        """El pedido original: 1 minero o 1000, la misma dificultad."""
+        clock = Clock()
+        self._con_mineros(store, 1)
+        challenges = capture_challenges(bus)
+        self._nct(bus, store, clock)
+        bus.publish_proposal({"law_id": "L1", "author_pubkey": "A",
+                              "text_hash": "h1", "created_at": "t0"})
+        con_uno = challenges[0]["n_zeros_required"]
+
+        store.r.flushdb()
+        self._con_mineros(store, 1000)
+        challenges2 = capture_challenges(bus)
+        self._nct(bus, store, Clock())
+        bus.publish_proposal({"law_id": "L2", "author_pubkey": "B",
+                              "text_hash": "h2", "created_at": "t0"})
+        assert challenges2[0]["n_zeros_required"] == con_uno
+
+    def test_un_equipo_grande_si_sube_la_dificultad(self, bus, store):
+        clock = Clock()
+        self._con_mineros(store, 40, equipo=True)
+        challenges = capture_challenges(bus)
+        self._nct(bus, store, clock)
+        bus.publish_proposal({"law_id": "L1", "author_pubkey": "A",
+                              "text_hash": "h1", "created_at": "t0"})
+        # 40 mineros fragmentando ⇒ 40x el cómputo de uno solo ⇒ n más alto.
+        assert challenges[0]["n_zeros_required"] > 4
+
+    def test_el_espacio_de_nonces_viaja_con_la_dificultad(self, bus, store):
+        """Sin esto el minero barre un rango donde la solución no está."""
+        from common.blockchain.difficulty import nonce_space_for
+        clock = Clock()
+        self._con_mineros(store, 30, equipo=True)
+        challenges = capture_challenges(bus)
+        self._nct(bus, store, clock)
+        bus.publish_proposal({"law_id": "L1", "author_pubkey": "A",
+                              "text_hash": "h1", "created_at": "t0"})
+        ch = challenges[0]
+        assert ch["nonce_space"] == nonce_space_for(ch["n_zeros_required"])
+
+    def test_la_derogacion_sigue_costando_n_mas_uno(self, bus, store):
+        """La regla del enunciado no cambia porque `n` sea dinámico."""
+        clock = Clock()
+        self._con_mineros(store, 1)
+        challenges = capture_challenges(bus)
+        nct = self._nct(bus, store, clock)
+        bus.publish_proposal({"law_id": "L1", "author_pubkey": "A",
+                              "text_hash": "h1", "created_at": "t0"})
+        n_promulgacion = challenges[0]["n_zeros_required"]
+        nonce = solve(challenges[0]["partial_hash_base"], n_promulgacion)
+        bus.publish_nonce_response({"voting_window_id": challenges[0]["voting_window_id"],
+                                    "nonce": nonce, "winning_node_or_pool": "w0"})
+        bus.publish_proposal({"law_id": "L1", "author_pubkey": "B",
+                              "text_hash": "h1", "created_at": "t1",
+                              "action": "derogacion"})
+        assert challenges[-1]["n_zeros_required"] == n_promulgacion + 1
+
+    def test_con_dificultad_fija_n_no_se_mueve(self, bus, store):
+        """El modo por defecto sigue siendo el del enunciado original."""
+        clock = Clock()
+        self._con_mineros(store, 500, equipo=True, gpu=True)
+        challenges = capture_challenges(bus)
+        make_nct(bus, store, clock)          # dynamic_difficulty=False
+        bus.publish_proposal({"law_id": "L1", "author_pubkey": "A",
+                              "text_hash": "h1", "created_at": "t0"})
+        assert challenges[0]["n_zeros_required"] == 2   # el n_zeros del helper
+
+    def test_si_falla_la_medicion_sigue_con_el_n_anterior(self, bus, store):
+        """No abrir la ventana porque no se pudo medir sería peor."""
+        clock = Clock()
+        challenges = capture_challenges(bus)
+        nct = self._nct(bus, store, clock)
+        nct.store = type("Roto", (), {
+            "live_workers": lambda self: (_ for _ in ()).throw(RuntimeError("redis")),
+        })()
+        assert nct._n_zeros_para_esta_ventana() == nct.n_zeros
+
+
+class TestTrinqueteConFailover:
+    """El trinquete persistido, visto desde el NCT: un sucesor lo hereda."""
+
+    def _pob(self, store, cuantos, equipo=True):
+        import json
+        for i in range(cuantos):
+            store.r.set(f"worker:status:w{i}", json.dumps(
+                {"worker_id": f"w{i}", "has_gpu": False, "capacity": 1}))
+        if equipo and cuantos > 1:
+            store.r.sadd("teams", "t")
+            store.r.hset("team:t", mapping={"coordinator_worker_id": "w0"})
+            for i in range(1, cuantos):
+                store.r.sadd("team:members:t", f"w{i}")
+
+    def _nct(self, bus, store, clock):
+        return make_nct(bus, store, clock, dynamic_difficulty=True,
+                        difficulty_target_seconds=30.0,
+                        difficulty_decay_windows=3,
+                        hps_cpu=1_000_000.0, hps_gpu=1e8)
+
+    def test_el_estado_queda_en_redis(self, bus, store):
+        self._pob(store, 40)
+        nct = self._nct(bus, store, Clock())
+        n = nct._n_zeros_para_esta_ventana()
+        assert store.get_difficulty_state().get("current") == str(n)
+
+    def test_un_nct_nuevo_hereda_la_dificultad_alta(self, bus, store):
+        """El ataque que esto cierra: apagar cómputo y forzar un failover."""
+        self._pob(store, 40)
+        primero = self._nct(bus, store, Clock())
+        alto = primero._n_zeros_para_esta_ventana()
+
+        # Se apaga toda la población y cae el NCT.
+        store.r.flushdb()
+        self._pob(store, 1, equipo=False)
+        store.save_difficulty_state({"current": alto, "low_streak": 0})
+
+        sucesor = self._nct(bus, store, Clock())
+        # Arranca de cero en memoria, pero lee el estado: no adopta el valor bajo.
+        assert sucesor._n_zeros_para_esta_ventana() == alto
+
+    def test_la_racha_continua_tras_el_failover(self, bus, store):
+        self._pob(store, 1, equipo=False)
+        store.save_difficulty_state({"current": 8, "low_streak": 2})
+        nct = self._nct(bus, store, Clock())
+        # Tercera medición baja consecutiva (2 heredadas + ésta) ⇒ baja un cero.
+        assert nct._n_zeros_para_esta_ventana() == 7

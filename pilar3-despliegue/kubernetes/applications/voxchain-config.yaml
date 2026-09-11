@@ -4,7 +4,27 @@ metadata:
   name: voxchain-config
   namespace: voxchain
 data:
-  N_ZEROS: "4"
+  # Dificultad de gobierno. NO es una perilla suelta: se mueve junto con
+  # NONCE_SPACE (el espacio tiene que cubrir la derogación, n+1) y con
+  # WINDOW_SECONDS_DEROGACION. Ver la tabla del README de Pilar 3 antes de
+  # tocarla; el NCT avisa por log si la combinación es incoherente.
+  # n=6 ⇒ ~18 s de CPU para promulgar, ~280 s para derogar (a 954 kH/s).
+  N_ZEROS: "6"
+  # Dificultad DINÁMICA (AGENT.md 3.6 / 11): `n` se recalcula en cada ventana
+  # según el cómputo vivo, para que promulgar cueste siempre ~TARGET_SECONDS sin
+  # importar cuántos mineros se registren. N_ZEROS pasa a ser sólo el valor
+  # inicial. Con "false" vuelve al `n` fijo del enunciado original.
+  DYNAMIC_DIFFICULTY: "true"
+  DIFFICULTY_TARGET_SECONDS: "30"
+  # Ventanas seguidas midiendo una red más chica antes de bajar `n`. Sube en el
+  # acto; baja despacio, porque bajar es lo único que le sirve a un atacante
+  # (conectar cómputo, dejar subir n, apagarlo y promulgar barato). El estado del
+  # trinquete vive en Redis (`nct:difficulty`) y sobrevive al failover del NCT:
+  # sin eso, forzar una caída era la forma de saltearse la histéresis.
+  DIFFICULTY_DECAY_WINDOWS: "3"
+  # H/s a suponerle a un minero que todavía no reportó medición propia.
+  HPS_CPU: "954180"
+  HPS_GPU: "500000000"
   # Firma de propuestas (A-01 / AGENT.md 3.1). Migración: arrancar en "false"
   # (acepta no firmadas y loguea; una firma inválida siempre se rechaza) y pasar
   # a "true" cuando todos los productores firman. Debe quedar igual en NCT y API.
@@ -12,13 +32,24 @@ data:
   # Anti-replay: antigüedad máxima de created_at en una propuesta firmada (segundos).
   PROPOSAL_MAX_AGE_SECONDS: "300"
   WINDOW_SECONDS_PROMULGACION: "120"
-  WINDOW_SECONDS_DEROGACION: "180"
+  # 280 s esperados para derogar con n=7 no entran en 180 s.
+  WINDOW_SECONDS_DEROGACION: "600"
   COOLDOWN_WINDOWS_NEW: "4"
+  # Cuota de turnos por identidad (AGENT.md 3.3): una identidad que se llevó
+  # más de MAX_SHARE de las últimas WINDOWS ventanas cede el turno. Acota el
+  # monopolio sostenido; no cierra Sybil (AGENT.md 9).
+  TURN_QUOTA_WINDOWS: "10"
+  TURN_QUOTA_MAX_SHARE: "0.5"
   HEARTBEAT_INTERVAL: "3"
   HEARTBEAT_TIMEOUT: "12"
   LEADER_LEASE_TTL: "15"
-  NONCE_SPACE: "50000000"
-  FRAGMENT_SIZE: "1000000"
+  # 99% de probabilidad de que exista solución para una derogación (n+1=7).
+  NONCE_SPACE: "1250000000"
+  # Techo de paralelismo de un pool: NONCE_SPACE/FRAGMENT_SIZE = 50 fragmentos.
+  # Un equipo con más miembros que fragmentos NO va más rápido, así que este
+  # cociente es la ventaja máxima que puede sacarle el pool más grande a un
+  # minero solo. Subirlo ensancha la concentración de poder (AGENT.md 9).
+  FRAGMENT_SIZE: "25000000"
   HEALTH_PORT: "8080"
   WORKER_CAPACITY: "1"
   PORT: "8000"

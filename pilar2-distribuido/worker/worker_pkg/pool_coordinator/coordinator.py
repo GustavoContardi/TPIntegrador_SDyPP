@@ -371,9 +371,13 @@ class PoolCoordinator:
         observe_challenge_latency(challenge, self.now())
         worker_tasks_received_total.inc()
         worker_busy.set(1)
-        chunks = fragment_range(0, self.nonce_space, self.fragment_size)
-        log.info("pool %s desafío %s fragmentado en %d tareas",
-                 self.pool_id, wid, len(chunks))
+        # Ídem standalone: el espacio de esta ventana lo fija el NCT junto con
+        # la dificultad. Fragmentar sobre el valor de entorno dejaría al pool
+        # barriendo un rango donde la solución no está.
+        espacio = int(challenge.get("nonce_space") or self.nonce_space)
+        chunks = fragment_range(0, espacio, self.fragment_size)
+        log.info("pool %s desafío %s fragmentado en %d tareas (espacio %d)",
+                 self.pool_id, wid, len(chunks), espacio)
         # El NCT tiene una sola ventana activa por vez, así que lo que haya
         # quedado de otra ventana ya no sirve. Cubre el caso de una ventana que
         # venció sin ganador (ahí no pasa por submit_result).

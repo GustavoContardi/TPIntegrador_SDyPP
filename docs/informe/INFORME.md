@@ -82,7 +82,7 @@ Implementación: `pilar2-distribuido/worker/worker_pkg/identity.py` y
          ▼                                                │
  ┌───────────────┐                         ┌──────────────┴───────────────┐
  │   RabbitMQ    │   desafio_activo        │       NCT primary            │
- │               │   (exchange topic)      │  - cola round-robin por autor│
+ │               │   (exchange topic)      │  - cola round-robin + cuota  │
  │  colas +      │────────────────┐        │  - abre/cierra ventana       │
  │  exchanges    │                │        │  - verifica nonce, sella     │
  │               │◄───────────────┼────────│  - publica heartbeats        │
@@ -134,7 +134,7 @@ de SNI (`ssl_server_hostname` en `common/messaging/rabbitmq.py`).
 
 | Componente | Rol |
 |---|---|
-| `nct-coordinator/` | NCT: cola round-robin por autor, cooldown, apertura/cierre de ventana, verificación de nonce, sellado del bloque, heartbeats |
+| `nct-coordinator/` | NCT: cola round-robin por autor con cuota de turnos, cooldown, apertura/cierre de ventana, verificación de nonce, sellado del bloque, heartbeats |
 | `worker/` (modo `pool-coordinator`) | Fragmenta el espacio de nonces, reparte tareas por HTTP, auto-mina, arbitra el ganador |
 | `worker/` (modo `pool-worker`) | Pide rangos al coordinator y los mina |
 | `worker/` (modo `standalone`) | Mina el espacio completo por su cuenta (modo competitivo) |
@@ -614,6 +614,66 @@ más leyes). Para un sistema de gobierno real esto es un problema serio: el
 consenso por esfuerzo computacional favorece a quien tiene más plata para
 comprar hardware, que es exactamente lo que un mecanismo de gobierno debería
 evitar. Es una tensión inherente al modelo, no un defecto de la implementación.
+
+El ajuste **dinámico** de `n` (7.2) mantiene constante el costo de promulgar
+*para la red*, pero no lo reparte: la dificultad es un único número global, y el
+valor que encarece la ley para el pool grande deja al minero individual fuera.
+
+Se agregaron además dos acotamientos parciales, con el cuidado de no venderlos
+como soluciones. El primero es una **cuota de turnos por identidad** (AGENT.md 3.3):
+el round-robin evitaba turnos consecutivos pero no el monopolio sostenido —
+alcanzaba con alternar con un cómplice—, así que una identidad que se llevó más
+de la mitad de las últimas diez ventanas cede el turno. Contra Sybil **degrada
+por construcción**: quien firma cada ley con una clave nueva nunca acumula cuota,
+y cerrarlo exigiría verificación de identidad real, explícitamente fuera de
+alcance. Frena el ataque barato, no el determinado.
+
+El segundo es más interesante porque salió de medir. La ventaja de un pool sobre
+un minero individual **no es ilimitada**: el coordinador reparte el espacio de
+nonces en `NONCE_SPACE / FRAGMENT_SIZE` fragmentos y entrega uno por minero, de
+modo que un equipo con más miembros que fragmentos no va más rápido. Con la
+configuración desplegada son 50 fragmentos, así que el pool más grande le saca a
+lo sumo 50x a un minero solo — tenga 50 miembros o un millón. Ese cociente, y no
+`n`, es la perilla real de la desigualdad: la dificultad es un único número
+global, y el valor que encarece la ley para el pool grande deja al minero
+individual fuera del sistema (con `n=8` un equipo de 50 tarda medio minuto y un
+minero solo, más de una hora). No hay `n` que empareje una brecha de 50x.
+
+### 7.1.bis Dificultad dinámica: por qué se cambió de opinión
+
+El diseño original fijaba `n` por configuración y prohibía el ajuste autónomo,
+con un argumento sólido: una regla basada en el *comportamiento* de los actores
+—tiempos de resolución— es manipulable haciendo vencer ventanas a propósito.
+
+Lo que se pasó por alto es que ése no es el único observable. Medir el **cómputo
+declarado y vivo** (`worker:status:*` con TTL, más la composición de equipos) es
+un hecho, no una conducta: no hay forma de "portarse mal" para moverlo. Con esa
+variable, el trilema de 11.1 se relaja — se recupera autonomía sin la
+gameabilidad del mecanismo descartado.
+
+El hallazgo que lo hizo viable fue medir **cómo agrega cada modo**. La intuición
+de sumar todos los mineros está mal: los standalone son redundantes entre sí
+(todos barren `[0, espacio)` desde 0 con el mismo `partial_hash_base`, así que
+calculan el mismo nonce), mientras que un pool sí agrega porque fragmenta. La
+red vale lo que su **buscador independiente más rápido**, no la suma. De ahí sale
+la propiedad que se buscaba: registrar mil mineros sueltos no mueve la dificultad
+ni abarata una ley.
+
+Quedan dos vectores, y los dos están cerrados. Inflar el padrón no sirve porque
+se mide lo vivo, no lo registrado. Y bajar `n` apagando cómputo en bloque exige
+sostener la red chica tres ventanas seguidas: `n` sube en el acto y baja con
+histéresis, de a un cero por vez, y una sola medición alta reinicia la racha. El
+estado del trinquete se persiste en Redis en vez de vivir en memoria del NCT,
+porque si no quedaba un atajo: apagar el cómputo y forzar un failover: el sucesor
+arrancaba sin memoria y adoptaba la medición baja de una.
+
+El costo es un acoplamiento que hubo que resolver: `n` no se mueve solo. El
+espacio de nonces tiene que contener la solución y se dimensiona sobre la
+derogación (`n+1`), así que el NCT lo calcula junto con `n` y **lo publica en el
+desafío**, en vez de que cada minero use el valor que leyó del entorno al
+arrancar. Sin eso, subir `n` hacía vencer todas las derogaciones — un modo de
+falla mudo que se confunde con falta de mineros, y que efectivamente apareció al
+probarlo.
 
 **De la escala medida.** Los tres puntos de la curva de escalado caen en la zona
 lineal. Sabemos que escala bien hasta 4 mineros; **no sabemos dónde deja de

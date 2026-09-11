@@ -197,8 +197,23 @@ pytest -m integration  # sólo el flujo extremo a extremo
   por hash, no por el blob); MinIO queda como opción para textos grandes.
 - **Orden round-robin por autor**, no FIFO (3.3): un autor no encadena turnos
   consecutivos si hay leyes de otros.
-- **Dificultad fija n / n+1** (3.6, 10): `n` es configuración; **prohibido** el
-  ajuste dinámico por carga de red. Si no hay workers GPU, el pool coordinator **loguea** la
+- **Cuota de turnos por identidad** (3.3): una identidad que se llevó más de la
+  mitad de las últimas 10 ventanas cede el turno. Acota el monopolio sostenido,
+  que el round-robin solo no frena (alcanza con alternar con un cómplice). **No
+  cierra Sybil** —identidades gratis, AGENT.md 9— y la cola nunca se bloquea: si
+  nadie cumple las reglas, entra igual la ley más antigua.
+- **Dificultad n / n+1** (3.6, 11.3): la relación promulgar/derogar es
+  invariante. `n` en cambio es **dinámico** con `DYNAMIC_DIFFICULTY=true`: el NCT
+  lo recalcula al abrir cada ventana según el cómputo **vivo**, para que
+  promulgar cueste siempre ~`DIFFICULTY_TARGET_SECONDS`. Mide cómputo declarado,
+  no comportamiento (por eso no es el mecanismo gameable que descarta 11.2), sube
+  en el acto y baja con histéresis (3 ventanas), con el estado del trinquete
+  persistido en Redis para que sobreviva al failover del NCT. `NONCE_SPACE` se deriva de `n` y **viaja en
+  el desafío**, porque mover uno sin el otro hace vencer las derogaciones en
+  silencio. Con `false` vuelve al `n` fijo del enunciado original.
+- **Registrar mineros no abarata leyes**: los standalone son redundantes entre sí
+  (todos barren desde 0 el mismo rango), así que la red vale lo que su buscador
+  independiente más rápido. Un equipo grande sí agrega, y ahí `n` sube. Si no hay workers GPU, el pool coordinator **loguea** la
   necesidad de escalar CPU pero **no** reduce el prefijo (se documenta como
   pregunta abierta porque P5 lo sugería; reducirlo rompería el consenso).
 - **Ley pendiente → `discarded`** (3.2): si la ventana vence sin nonce, la ley se

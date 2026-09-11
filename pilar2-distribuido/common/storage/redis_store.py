@@ -232,6 +232,100 @@ class VoxChainStore:
     def get_last_author(self) -> Optional[str]:
         return self.r.get("nct:last_author")
 
+    def set_law_requested_by(self, law_id: str, author_pubkey: str) -> None:
+        """Quién pidió la próxima ventana de esta ley (ver `queue.turn_holder`).
+
+        Se escribe en cada encolado, también en el de promulgación, para que una
+        ley derogada y luego repropuesta no arrastre al que la derogó.
+        """
+        self.r.hset(f"law:{law_id}", "requested_by", author_pubkey or "")
+
+    # ---- estado del trinquete de dificultad -------------------------------
+    def get_difficulty_state(self) -> dict:
+        """Estado del trinquete (`DifficultyRatchet`), o `{}` si no hay.
+
+        Vive en Redis y no en memoria del NCT para que **sobreviva al failover**.
+        Sin esto, provocar una caída del NCT después de apagar cómputo saltaba la
+        histéresis: el sucesor arrancaba sin memoria y adoptaba la medición baja
+        de una.
+        """
+        return self.r.hgetall("nct:difficulty") or {}
+
+    def save_difficulty_state(self, state: dict) -> None:
+        """Persiste el trinquete. Sólo lo escribe el líder, que es quien abre ventanas.
+
+        Durante el solapamiento de un split-brain (AGENT.md 11.4) dos NCT podrían
+        escribir; el daño está acotado porque el trinquete sólo sostiene o se
+        mueve de a un cero, nunca salta.
+        """
+        self.r.hset("nct:difficulty", mapping={
+            "current": "" if state.get("current") is None else str(state["current"]),
+            "low_streak": str(state.get("low_streak", 0)),
+        })
+
+    # ---- población viva (dificultad dinámica) -----------------------------
+    def live_workers(self) -> list[dict]:
+        """Mineros que reportaron estado hace poco (`worker:status:*`, TTL 15 s).
+
+        Se lee lo **vivo**, no lo registrado: un minero dado de alta y apagado no
+        aporta cómputo, y contar registros en vez de latidos dejaría que inflar
+        el padrón moviera la dificultad sin poner una sola CPU.
+        """
+        import json as _json
+        vivos = []
+        for key in self.r.scan_iter(match="worker:status:*", count=100):
+            crudo = self.r.get(key)
+            if not crudo:
+                continue
+            try:
+                estado = _json.loads(crudo)
+            except (ValueError, TypeError):
+                continue
+            estado.setdefault("worker_id", str(key).split("worker:status:")[-1])
+            vivos.append(estado)
+        return vivos
+
+    def teams_composition(self) -> list[dict]:
+        """Equipos y sus miembros, para saber qué mineros fragmentan juntos.
+
+        Los escribe el API Gateway (`teams_store`); acá sólo se leen. Un pool
+        agrega cómputo y un conjunto de standalone no, así que sin este dato la
+        dificultad no se puede calcular bien.
+        """
+        equipos = []
+        for team_id in (self.r.smembers("teams") or []):
+            datos = self.r.hgetall(f"team:{team_id}")
+            if not datos:
+                continue
+            equipos.append({
+                "team_id": team_id,
+                "coordinator_worker_id": datos.get("coordinator_worker_id", ""),
+                "members": sorted(self.r.smembers(f"team:members:{team_id}") or []),
+            })
+        return equipos
+
+    # ---- historial de turnos (cuota por identidad) ------------------------
+    def push_window_author(self, author_pubkey: str, keep: int = 64) -> None:
+        """Anota quién se llevó esta ventana, para la cuota de `select_next_law`.
+
+        Lista acotada: sólo interesa el pasado reciente, y una lista que crece
+        sin techo en un sistema que abre ventanas indefinidamente es una fuga de
+        memoria lenta. `keep` es holgado respecto de `TURN_QUOTA_WINDOWS` para
+        poder subir la muestra por config sin migrar el dato.
+        """
+        if not author_pubkey:
+            return
+        pipe = self.r.pipeline()
+        pipe.lpush("nct:window_authors", author_pubkey)
+        pipe.ltrim("nct:window_authors", 0, keep - 1)
+        pipe.execute()
+
+    def recent_window_authors(self, count: int) -> list[str]:
+        """Autores de las últimas ventanas, de la más reciente a la más vieja."""
+        if count <= 0:
+            return []
+        return list(self.r.lrange("nct:window_authors", 0, count - 1) or [])
+
     # ---- cooldowns (7.4) --------------------------------------------------
     def set_cooldown(self, author_pubkey: str, cooldown_until_window: int,
                      reason: str) -> None:

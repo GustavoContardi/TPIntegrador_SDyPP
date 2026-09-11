@@ -109,7 +109,7 @@ Un token filtrado permite, como máximo, ocupar el slot de nodo de ese minero du
 
 1. Cualquier nodo propone una ley. **Proponer no tiene costo de PoW**, solo de cooldown (ver 3.4).
 2. El NCT encola la propuesta.
-3. Cuando le toca turno (round-robin entre autores distintos, ver 3.3), el NCT abre una ventana de votación con dificultad **n ceros** (promulgación).
+3. Cuando le toca turno (round-robin + cuota, ver 3.3), el NCT abre una ventana de votación con dificultad **n ceros** (promulgación). Con `DYNAMIC_DIFFICULTY=true`, `n` se recalcula en ese momento según el cómputo vivo de la red (ver 11.3).
 4. Si algún nodo o pool encuentra el nonce válido antes de que cierre la ventana → la ley se promulga y se adhiere a la cadena.
 5. Si nadie lo logra antes del cierre → la ley queda **pendiente** y se descarta. No vuelve a la cola automáticamente; alguien debe reproponerla (ver 3.5).
 
@@ -117,6 +117,9 @@ Un token filtrado permite, como máximo, ocupar el slot de nodo de ese minero du
 
 - **Una sola ventana de votación activa en todo momento** (cola secuencial). No hay ventanas paralelas ni fragmentación de cómputo entre leyes distintas.
 - El NCT decide qué ley entra a la siguiente ventana mediante **round-robin entre autores distintos** (no FIFO estricto, para evitar que un autor monopolice turnos consecutivos).
+- Además del round-robin, rige una **cuota de turnos por identidad**: una identidad que ya se llevó más de `TURN_QUOTA_MAX_SHARE` (default 0,5) de las últimas `TURN_QUOTA_WINDOWS` ventanas (default 10) cede el turno a otra. El round-robin evita turnos *consecutivos*; la cuota evita el monopolio *sostenido* alternando con un cómplice o con leyes propias intercaladas.
+- **La cola nunca se bloquea.** Si ninguna ley pendiente cumple las dos reglas, se relaja primero la cuota y después el round-robin, y en última instancia entra la más antigua. Una cuota capaz de dejar al sistema sin abrir ventanas sería una denegación de servicio más barata que el ataque que intenta evitar.
+- La cuota **no cierra Sybil** y no pretende hacerlo: un atacante que firma cada ley con una identidad nueva nunca la acumula. Ver 9.
 
 ### 3.4 Costo de proponer y cooldown
 
@@ -387,11 +390,11 @@ Responde directamente al requisito de seguridad del TP ("Zero static keys", cred
 
 ## 9. Limitaciones conocidas
 
-- **Sybil:** el sistema no verifica identidad real. Un individuo puede generar múltiples claves y proponer/votar como si fuera varios. Mitigación futura (DNI) fuera de alcance.
+- **Sybil:** el sistema no verifica identidad real. Un individuo puede generar múltiples claves y proponer/votar como si fuera varios. La cuota de turnos (3.3) acota el monopolio de *una* identidad, que es el caso barato, pero por construcción no frena a quien rota identidades: la cuota es por identidad y generarlas es gratis. Mitigación futura (DNI) fuera de alcance.
 - **Pérdida de estado en falla del NCT:** la ventana en curso se pierde íntegramente al caer el NCT; el cómputo invertido por la red hasta ese momento no se aprovecha.
 - **Split-brain del NCT:** si una partición de red separa al NCT primario de los standbys sin que el primario falle realmente, ambos pueden operar como líderes simultáneamente. El primario verifica en cada tick que su liderazgo en Redis sigue vigente (`renew_leadership`), y si descubre que otro NCT adquirió el liderazgo, ejecuta `step_down()`. Esta detección no es instantánea; hay una ventana de solapamiento.
 - **Leyes sin electorado:** con agendas temáticas (3.10), una ley de un área que ningún equipo vota no reúne cómputo y expira. Está buscado —es la abstención hecha mecanismo— pero significa que la promulgación ya no depende sólo del esfuerzo total de la red sino de **cómo está repartido por área**. Un área desierta es, en la práctica, un veto silencioso.
-- **Concentración de poder:** el diseño favorece estructuralmente a pools grandes sobre mineros individuales, igual que las blockchains reales de PoW. No se mitiga — se documenta como observación de diseño y se discute cualitativamente en el informe, sin pretender un estudio estadístico riguroso de la distribución de poder computacional en la población (fuera de alcance del TP).
+- **Concentración de poder:** el diseño favorece estructuralmente a pools grandes sobre mineros individuales, igual que las blockchains reales de PoW. La ventaja está **acotada por la cantidad de fragmentos** (`NONCE_SPACE / FRAGMENT_SIZE`): un pool reparte tareas de a un fragmento por minero, así que un equipo con más miembros que fragmentos no va más rápido — con la config desplegada son 50, de modo que el pool más grande le saca a lo sumo 50x a un minero solo, tenga 50 miembros o un millón. Ese cociente es la perilla de la desigualdad, no `n`: ningún valor de `n` la corrige, porque el que encarece la ley para el pool grande deja al minero solo fuera del sistema. No se mitiga más allá de eso — se documenta como observación de diseño y se discute cualitativamente en el informe, sin pretender un estudio estadístico riguroso de la distribución de poder computacional en la población (fuera de alcance del TP).
 
 ---
 
@@ -400,8 +403,9 @@ Responde directamente al requisito de seguridad del TP ("Zero static keys", cred
 - Usar esta terminología exacta en código y commits: `law` (no "proposal" ni "bill" salvo en comentarios aclaratorios), `voting_window`, `n_zeros_required`, `NCT`, `pool`, `cooldown`, `category` (el área de una ley) y `categories` / "agenda" (la selección de un equipo).
 - Las categorías son un conjunto cerrado definido en `common/blockchain/categories.py`. Agregar una implica tocar ese módulo y nada más: el API sirve la lista en `GET /api/laws/categories` y el frontend la consume desde ahí. No duplicar la lista en otro lado.
 - La categoría va **en el mensaje firmado** de la propuesta y **fuera** del `partial_hash_base`. Cambiar cualquiera de las dos cosas rompe compatibilidad con los clientes existentes (frontend, `scripts/propose_law.py`, generador de estrés); si hace falta, cambiarlos en el mismo commit.
-- La dificultad es fija: `n` para promulgar, `n+1` para derogar. Está demostrado (ver sección 11) que cualquier intento de ajuste dinámico autónomo es gameable o requiere una complejidad excesiva. El ajuste se realiza externamente (operador humano o Pilar 3) con conocimiento de la población de mineros.
+- La relación `n` / `n+1` (promulgar / derogar) es **invariante**. Lo que cambia es `n`: con `DYNAMIC_DIFFICULTY=true` el NCT lo recalcula por ventana según el cómputo vivo, para sostener constante el tiempo de promulgación (ver sección 11.3). Ese ajuste mide *cómputo declarado*, no comportamiento — no confundirlo con el mecanismo gameable descartado en 11.2 —, sube en el acto y baja con histéresis. `NONCE_SPACE` se deriva de `n` y viaja en el desafío: nunca tocar uno sin el otro.
 - No implementar verificación de identidad real (DNI, OAuth, etc.) sin discusión explícita — está documentado como fuera de alcance.
+- `N_ZEROS` **no es una perilla suelta**: se mueve junto con `NONCE_SPACE` (que debe cubrir la derogación, `n+1`) y con `WINDOW_SECONDS_*`. Cambiar uno solo hace fallar el sistema en silencio: las ventanas vencen sin sellar y en los logs parece falta de mineros. El NCT verifica la coherencia al arrancar y antes de abrir cada ventana (`espacio_insuficiente`), y la tabla de referencia está en `pilar3-despliegue/README.md`.
 - Cualquier nuevo tipo de mensaje en RabbitMQ debe respetar los flujos descritos en la sección 5 (Pilar 2 / P2). Si se necesita un nuevo flujo, documentarlo acá antes de implementarlo.
 - Las claves privadas de los individuos nunca deben persistirse en Redis, Vault, ni en ningún servicio de backend, **ni transmitirse a él**. Si código nuevo intenta hacer esto, es un error de diseño y debe rechazarse. Un componente que necesita firmar genera su propia identidad y se vincula a su dueño por enrolamiento (ver 3.1); no recibe la clave de nadie.
 
@@ -419,11 +423,12 @@ Todo sistema PoW enfrenta tres propiedades deseables y mutuamente excluyentes:
 | **Autónomo** | Se ajusta sin intervención externa ante cambios en la red |
 | **No gameable** | Ningún actor puede manipular la dificultad en su beneficio |
 
-Se pueden elegir **dos**:
+Se pueden elegir **dos**… salvo que se cambie la variable que se mide: medir *cómputo declarado* en vez de *comportamiento* recupera autonomía sin la gameabilidad de 11.2, a cambio de necesitar histéresis (ver 11.3).
 
 | Opción | Simple | Autónomo | No gameable |
 |---|---|---|---|
-| **Fijo + operador externo** (VoxChain) | ✅ | ❌ | ✅ |
+| **Fijo + operador externo** | ✅ | ❌ | ✅ |
+| **Autónomo sobre cómputo declarado** (VoxChain, 11.3) | ✅ | ✅ | ⚠️ acotado |
 | **Autónomo + simple** (basado en comportamiento) | ✅ | ✅ | ❌ |
 | **Autónomo + no gameable** (basado en tiempo real contra reloj de pared) | ❌ | ✅ | ✅ |
 
@@ -445,11 +450,22 @@ Sin embargo, se identificó que incluso esta regla es gameable:
 
 Se exploró una válvula de escape para bootstrap y contracción de red (N expiraciones consecutivas → bajar `n`), pero se concluyó que cualquier regla basada en el comportamiento de los actores es potencialmente explotable por coordinación externa.
 
-### 11.3 Decisión final
+### 11.3 Decisión final: ajuste autónomo sobre cómputo declarado
 
-**Dificultad fija configurable externamente.** El valor de `n` se define al desplegar el sistema (variable de entorno `N_ZEROS`) en función del conocimiento que el operador tiene de la población de mineros. Si la población cambia significativamente, el operador (o un pipeline de Pilar 3) actualiza el valor. El algoritmo de consenso no negocia su dificultad.
+**`n` es dinámico y lo recalcula el NCT al abrir cada ventana**, para sostener constante el *tiempo* de promulgación (`DIFFICULTY_TARGET_SECONDS`, default 30 s) ante una población de mineros que cambia. Se activa con `DYNAMIC_DIFFICULTY=true`; con `false` el sistema vuelve al `n` fijo descrito arriba, que sigue siendo un modo soportado.
 
-Esto es consistente con la filosofía del sistema: VoxChain no pretende ser justo ni auto-regulado. Es una herramienta de gobierno donde las reglas son explícitas y no cambian solas.
+**Por qué esto no reabre el problema de 11.2.** Aquel mecanismo medía el *comportamiento* de los actores —tiempos de resolución de ventanas—, y por eso se podía manipular haciendo vencer ventanas a propósito. Éste mide el **cómputo declarado y vivo**: `worker:status:*` con TTL de 15 s más la composición de equipos. Es un hecho observable, no una conducta, y no hay forma de "portarse mal" para moverlo.
+
+**Cómo se mide la red.** No es la suma de los mineros, y esto importa más que la fórmula. Los standalone son **redundantes entre sí** —todos barren `[0, espacio)` desde 0 con el mismo `partial_hash_base`, así que encuentran el mismo nonce—; los pools **sí agregan**, porque el coordinador fragmenta; y dos pools distintos vuelven a ser redundantes. La velocidad de la red es entonces el **máximo entre buscadores independientes**, no la suma. Consecuencia directa: registrar mil mineros sueltos **no** mueve la dificultad ni abarata una ley; armar un equipo grande sí.
+
+**Los dos vectores de ataque, y cómo se cierran.**
+
+1. *Bajar `n` apagando mineros.* Una coalición podría conectar cómputo, dejar que `n` suba, apagarlo en bloque y promulgar barato con su hardware intacto. Por eso `n` **sube en el acto y baja con histéresis** (`DIFFICULTY_DECAY_WINDOWS`, default 3): hay que sostener la red chica durante tres ventanas seguidas, y baja de a un cero por vez. Una sola medición alta reinicia la racha. El estado del trinquete se persiste en Redis (`nct:difficulty`) y **sobrevive al failover**: si viviera en memoria del NCT, provocar una caída después de apagar el cómputo saltearía la histéresis, porque el sucesor adoptaría la medición baja de una.
+2. *Inflar el padrón.* Se mide lo **vivo**, no lo registrado: un minero dado de alta y apagado no aporta. Registrar identidades sin poner cómputo no mueve nada.
+
+**El acoplamiento con el espacio de nonces.** `n` no se puede mover solo: el espacio tiene que contener la solución, y se dimensiona sobre la **derogación** (`n+1`), que es el caso caro. Por eso el NCT calcula `NONCE_SPACE` junto con `n` y **lo publica en el desafío** (`nonce_space`), en vez de dejar que cada minero use el valor que leyó del entorno al arrancar. Sin esto, subir `n` haría vencer todas las derogaciones y el síntoma se confundiría con falta de mineros.
+
+**Lo que esto no resuelve.** La dificultad es un único número global y la brecha entre el pool más grande y un minero solo está acotada por la cantidad de fragmentos (ver 9). Ningún `n` empareja esa brecha: el valor que encarece la ley para el pool grande deja al minero individual fuera del sistema. El ajuste dinámico mantiene constante el costo *para la red*, no lo reparte.
 
 ### 11.4 Split-brain del NCT
 

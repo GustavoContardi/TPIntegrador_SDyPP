@@ -82,6 +82,17 @@ def gpu_usable(gpu_bin: str) -> bool:
     return _gpu_available(gpu_bin) and gpu_selftest(gpu_bin)
 
 
+# Último hashrate medido, para reportarlo en `worker:status:*`. El gauge de
+# Prometheus ya lo tiene, pero leerlo del registry desde otro módulo es frágil y
+# el NCT necesita el dato por Redis, no por scrapeo.
+_ultimo_hashrate = 0.0
+
+
+def ultimo_hashrate() -> float:
+    """H/s del último intento de minería de este proceso; 0 si todavía no minó."""
+    return _ultimo_hashrate
+
+
 def _record_attempt(resource: str, prefix: str, started: float,
                     nonce, range_min: int, range_max: int) -> None:
     """Registra métricas de un intento de minería (checklist §1).
@@ -96,6 +107,8 @@ def _record_attempt(resource: str, prefix: str, started: float,
         resource=resource, prefix_len=str(len(prefix))).observe(duration)
     if attempts > 0:
         worker_hashrate_hps.labels(resource=resource).set(attempts / duration)
+        global _ultimo_hashrate
+        _ultimo_hashrate = attempts / duration
     if nonce is not None:
         worker_mining_success_total.labels(resource=resource).inc()
 

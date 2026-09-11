@@ -74,6 +74,13 @@ spec:
               value: "redis://:$(REDIS_PASSWORD)@redis.voxchain.svc.cluster.local:6379/0"
             - name: WORKER_MODE
               value: "pool-coordinator"
+            # El espacio de nonces tiene que cubrir la derogación (n+1=7) o las
+            # ventanas vencen sin sellar. Estos pods no leen el ConfigMap
+            # `voxchain-config` (vive en otro namespace), así que va explícito.
+            - name: NONCE_SPACE
+              value: "1250000000"
+            - name: FRAGMENT_SIZE
+              value: "25000000"
             # Dificultad del mini-PoW de elección de coordinador. Es el nombre
             # que leen bully.py y pool_coordinator/coordinator.py; NO es
             # N_ZEROS (la dificultad de gobierno, que fija el NCT).

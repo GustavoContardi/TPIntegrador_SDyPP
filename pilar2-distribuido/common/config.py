@@ -46,6 +46,23 @@ COOLDOWN_WINDOWS_NEW = get_int("COOLDOWN_WINDOWS_NEW", N_ZEROS)
 # Reproposición idéntica: estrictamente mayor que el normal.
 COOLDOWN_WINDOWS_REPROPOSED = get_int("COOLDOWN_WINDOWS_REPROPOSED", 2 * N_ZEROS)
 
+# Dificultad dinámica: `n` se recalcula en cada ventana según el cómputo vivo,
+# para que promulgar cueste siempre ~DIFFICULTY_TARGET_SECONDS sin importar
+# cuántos mineros haya. Con False, `n` es la constante N_ZEROS de siempre.
+DYNAMIC_DIFFICULTY = get("DYNAMIC_DIFFICULTY", "false").lower() in ("1", "true", "yes")
+DIFFICULTY_TARGET_SECONDS = float(get("DIFFICULTY_TARGET_SECONDS", "30"))
+# Ventanas seguidas midiendo una red más chica antes de bajar `n`. Sube en el
+# acto; baja despacio, porque bajar es lo único que le sirve a un atacante.
+DIFFICULTY_DECAY_WINDOWS = get_int("DIFFICULTY_DECAY_WINDOWS", 3)
+# H/s a suponerle a un minero que todavía no reportó medición propia.
+HPS_CPU = float(get("HPS_CPU", "954180"))
+HPS_GPU = float(get("HPS_GPU", "500000000"))
+
+# Cuota de turnos por identidad (ver `common/queue.py`). Acota cuánto puede
+# monopolizar una identidad las ventanas; no cierra Sybil (AGENT.md 9).
+TURN_QUOTA_WINDOWS = get_int("TURN_QUOTA_WINDOWS", 10)
+TURN_QUOTA_MAX_SHARE = float(get("TURN_QUOTA_MAX_SHARE", "0.5"))
+
 # Fragmentación del espacio de nonces (Pool Coordinator / Standalone).
 NONCE_SPACE = get_int("NONCE_SPACE", 50_000_000)
 FRAGMENT_SIZE = get_int("FRAGMENT_SIZE", 1_000_000)

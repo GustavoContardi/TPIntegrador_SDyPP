@@ -145,6 +145,30 @@ cd pilar3-despliegue/load-tests/scenarios
 ./run_all.sh http://<FRONTEND_INGRESS_IP> ../resultados
 ```
 
+### Paso 9.bis: Revisar la calibración de la dificultad
+
+`N_ZEROS` es fijo por diseño (AGENT.md 10 y 11): el consenso no negocia su
+dificultad porque toda regla autónoma es gameable por Sybil (11.2). El valor se
+fija al desplegar, según el hardware de la población de mineros, y sólo lo cambia
+una persona (11.3).
+
+**No es una perilla suelta.** `N_ZEROS`, `NONCE_SPACE` y `WINDOW_SECONDS_*` se
+mueven juntos: el espacio tiene que cubrir la derogación (`n+1`) o las ventanas
+vencen sin sellar y en los logs parece falta de mineros. El NCT avisa por log si
+la combinación es incoherente, al arrancar y antes de abrir cada ventana.
+
+Referencia con el minero CPU a ~954 kH/s (`load-tests/scenarios/bench_hardware.py`):
+
+| `n` | promulgar | derogar (`n+1`) | `NONCE_SPACE` necesario |
+|-----|-----------|-----------------|-------------------------|
+| 4   | 0,1 s     | 1,1 s           | 5 M                     |
+| 5   | 1,1 s     | 17,6 s          | 78 M                    |
+| 6   | 17,6 s    | 281 s           | 1.240 M  ← desplegado    |
+| 7   | 281 s     | 4.501 s         | 19.800 M                |
+
+Con GPU en la población estos tiempos caen por órdenes de magnitud: medir con
+`bench_hardware.py` en el nodo GPU antes de fijar `n`.
+
 ### Paso 10: Disparar CI/CD (ya configurado)
 
 Los workflows de GitHub Actions están listos en `.github/workflows/`:

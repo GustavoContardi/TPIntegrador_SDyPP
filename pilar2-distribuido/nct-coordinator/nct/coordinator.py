@@ -21,11 +21,18 @@ from common.blockchain import (
     ACTION_DEROGACION,
     ACTION_PROMULGACION,
     build_partial_hash_base,
+    espacio_insuficiente,
     n_zeros_for_action,
     seal_block,
     verify_nonce,
 )
 from common.blockchain.categories import normalize_category, validate_category
+from common.blockchain.difficulty import (
+    DifficultyRatchet,
+    difficulty_for,
+    effective_hashrate,
+    nonce_space_for,
+)
 from common.blockchain.challenge import VALID_ACTIONS
 from common.identity import nonce_message, proposal_message, verify
 from common.messaging import QUEUE_PROPUESTAS, QUEUE_RESPUESTA_NONCE
@@ -37,6 +44,7 @@ from common.metrics import (
     nct_proposals_total,
     nct_windows_opened_total,
 )
+from common.queue import TURN_QUOTA_MAX_SHARE, TURN_QUOTA_WINDOWS, turn_holder
 from .queue_logic import classify_proposal, cooldown_until, select_next_law
 
 log = logging.getLogger("voxchain.nct")
@@ -52,7 +60,14 @@ class NCTCoordinator:
                  cooldown_new: int, cooldown_reproposed: int, clock=time.time,
                  nct_id: str = "nct", is_leader: bool = True,
                  heartbeat_interval: float = 0.0, on_stepdown=None,
-                 require_signatures: bool = False, proposal_max_age: int = 0):
+                 require_signatures: bool = False, proposal_max_age: int = 0,
+                 nonce_space: int = 0,
+                 dynamic_difficulty: bool = False,
+                 difficulty_target_seconds: float = 30.0,
+                 difficulty_decay_windows: int = 3,
+                 hps_cpu: float = 954_180.0, hps_gpu: float = 5e8,
+                 turn_quota_windows: int = TURN_QUOTA_WINDOWS,
+                 turn_quota_max_share: float = TURN_QUOTA_MAX_SHARE):
         self.m = messaging
         self.store = store
         self.n_zeros = n_zeros
@@ -70,6 +85,25 @@ class NCTCoordinator:
         # migración gradual: verifica si hay firma pero acepta no firmadas.
         self.require_signatures = require_signatures
         self.proposal_max_age = proposal_max_age
+        # Cuota de turnos por identidad (ver `common/queue.py`). Acota el
+        # monopolio de una identidad sobre las ventanas; no cierra Sybil, que
+        # AGENT.md 9 deja explícitamente como limitación aceptada.
+        self.turn_quota_windows = turn_quota_windows
+        self.turn_quota_max_share = turn_quota_max_share
+        # Espacio de nonces base. Con dificultad dinámica lo recalcula cada
+        # ventana a partir de `n`; con `n` fijo es el de config y sólo sirve para
+        # la verificación de coherencia. 0 = no verificar (los tests construyen
+        # el NCT sin config de despliegue).
+        self.nonce_space = nonce_space
+        self._aviso_dificultad_emitido = False
+        # Dificultad dinámica: `n` deja de ser constante y pasa a ser la variable
+        # que mantiene constante el *tiempo* de promulgación ante una población
+        # de mineros que cambia. Ver `common/blockchain/difficulty.py`.
+        self.dynamic_difficulty = dynamic_difficulty
+        self.difficulty_target_seconds = difficulty_target_seconds
+        self.hps_cpu = hps_cpu
+        self.hps_gpu = hps_gpu
+        self._ratchet = DifficultyRatchet(difficulty_decay_windows)
         # Callback invocado al ceder el liderazgo: lo usa el monitor para
         # activarse y empezar a observar heartbeats del nuevo líder.
         self._on_stepdown = on_stepdown
@@ -236,6 +270,7 @@ class NCTCoordinator:
                             category=category,
                             text_compressed=text_compressed,
                             text_original_len=text_original_len)
+        self.store.set_law_requested_by(law_id, author)
         self.store.enqueue_law(law_id)
         until = cooldown_until(self.store.current_window_number(), reason,
                                cooldown_new=self.cooldown_new,
@@ -257,6 +292,9 @@ class NCTCoordinator:
         # si el que deroga pudiera reetiquetar, elegiría el área donde su facción
         # es fuerte y la ajena no mina.
         self.store.set_law_action(law_id, ACTION_DEROGACION)
+        # El turno es de quien pide derogar, no del autor original: la ley se
+        # reutiliza pero la ventana la pidió otro (ver `queue.turn_holder`).
+        self.store.set_law_requested_by(law_id, author)
         self.store.enqueue_law(law_id)
         until = cooldown_until(self.store.current_window_number(),
                                classify_proposal(False),
@@ -271,10 +309,87 @@ class NCTCoordinator:
             return  # sólo el líder abre ventanas (el follower no toca la cola)
         if self._active is not None:
             return
-        law = select_next_law(self.store.queued_laws(), self._last_author)
+        # La cuota mira el pasado reciente: sin este dato `select_next_law`
+        # degrada al round-robin de siempre (ver `common/queue.py`).
+        recientes = self.store.recent_window_authors(self.turn_quota_windows)
+        law = select_next_law(self.store.queued_laws(), self._last_author,
+                              recientes,
+                              max_share=self.turn_quota_max_share,
+                              sample=self.turn_quota_windows)
         if law is None:
             return
         self.open_window(law)
+
+    def _n_zeros_para_esta_ventana(self) -> int:
+        """`n` a usar ahora: fijo por config, o medido si la dificultad es dinámica.
+
+        El cómputo se mide sobre la población **viva** y con el modelo de
+        buscadores independientes (los standalone no se suman entre sí; los pools
+        sí agregan internamente). El trinquete se encarga de que `n` suba en el
+        acto y baje con histéresis.
+
+        Si medir falla —Redis caído, datos corruptos— se sigue con el `n` de
+        config en vez de propagar la excepción: la dificultad es un parámetro de
+        la ventana, y no abrirla porque no se pudo medir sería peor que abrirla
+        con el valor anterior.
+        """
+        if not self.dynamic_difficulty:
+            return self.n_zeros
+        try:
+            hashrate = effective_hashrate(self.store.live_workers(),
+                                          self.store.teams_composition(),
+                                          self.hps_cpu, self.hps_gpu)
+            medido = difficulty_for(hashrate,
+                                    target_seconds=self.difficulty_target_seconds)
+            # Se relee en cada ventana en vez de sólo al arrancar: así un NCT
+            # recién promovido toma el estado sin necesitar un hook de promoción,
+            # y dos réplicas no divergen. Es un HGETALL por ventana, y las
+            # ventanas duran minutos.
+            self._ratchet.restore(self.store.get_difficulty_state())
+            # El `n` anterior es el del trinquete, no `self.n_zeros`: tras un
+            # reinicio este último vuelve al valor de config y loguearlo como
+            # "anterior" haría parecer que la dificultad bajó cuando no lo hizo.
+            anterior = self._ratchet.current if self._ratchet.current is not None \
+                else self.n_zeros
+            n = self._ratchet.update(medido)
+            self.store.save_difficulty_state(self._ratchet.state())
+            if n != anterior:
+                log.info("dificultad dinámica: %.0f H/s efectivos ⇒ n=%d "
+                         "(medido %d, anterior %d)", hashrate, n, medido, anterior)
+            elif medido < n:
+                # El trinquete sosteniendo: la red se achicó pero `n` no cede
+                # todavía. Es el momento que hay que poder ver en el log, porque
+                # es la defensa contra apagar mineros para promulgar barato.
+                log.info("dificultad dinámica: %.0f H/s efectivos ⇒ medido n=%d, "
+                         "sostengo n=%d (%d/%d ventanas para bajar)",
+                         hashrate, medido, n, self._ratchet._low_streak,
+                         self._ratchet.decay_windows)
+            self.n_zeros = n
+            # El espacio de nonces acompaña a `n` o las derogaciones vencen sin
+            # solución. Viaja en el desafío para que ningún minero pueda quedar
+            # con un rango que no alcanza.
+            self.nonce_space = nonce_space_for(n)
+            return n
+        except Exception:  # noqa: BLE001
+            log.exception("no se pudo medir la red; sigo con n=%d", self.n_zeros)
+            return self.n_zeros
+
+    def _avisar_si_dificultad_incoherente(self) -> None:
+        """Avisa una sola vez si `n` y el espacio de nonces no se corresponden.
+
+        Una vez y no por ventana: con el sistema mal configurado el aviso se
+        repetiría en cada ley y ahogaría el log justo cuando hay que leerlo. Se
+        rearma si la config vuelve a estar bien, para que un segundo desajuste
+        vuelva a avisar.
+        """
+        if not self.nonce_space:
+            return
+        aviso = espacio_insuficiente(self.n_zeros, self.nonce_space)
+        if aviso and not self._aviso_dificultad_emitido:
+            log.warning("dificultad mal calibrada: %s", aviso)
+            self._aviso_dificultad_emitido = True
+        elif not aviso:
+            self._aviso_dificultad_emitido = False
 
     def open_window(self, law: dict) -> None:
         action = law.get("action", ACTION_PROMULGACION)
@@ -282,7 +397,8 @@ class NCTCoordinator:
         law_id = law["law_id"]
         window_num = self.store.next_window_number()
         voting_window_id = f"W{window_num}-{law_id}"
-        n_zeros_required = n_zeros_for_action(self.n_zeros, action)
+        n_zeros_required = n_zeros_for_action(self._n_zeros_para_esta_ventana(),
+                                              action)
         opened = self.now()
         deadline = opened + self.window_seconds[action]
         base = build_partial_hash_base(law_id, law["text_hash"],
@@ -303,8 +419,16 @@ class NCTCoordinator:
             "author_pubkey": law.get("author_pubkey"),
             "category": category,
         }
-        self._last_author = law.get("author_pubkey")
+        self._last_author = turn_holder(law)
         self.store.set_last_author(self._last_author)
+        self.store.push_window_author(self._last_author)
+
+        # Verificación previa a publicar el desafío: `n` y el espacio de nonces
+        # se mueven juntos o el sistema falla mudo (las ventanas vencen y parece
+        # falta de mineros). Se chequea acá además de al arrancar porque la
+        # config puede cambiar con el sistema andando —un ConfigMap parcheado— y
+        # el NCT no se entera hasta el próximo reinicio.
+        self._avisar_si_dificultad_incoherente()
 
         nct_windows_opened_total.inc()
 
@@ -318,6 +442,10 @@ class NCTCoordinator:
             "category": category,
             # Epoch de publicación: los workers miden con esto la latencia
             # RabbitMQ → worker (métrica voxchain_worker_challenge_latency_seconds).
+            # Espacio de nonces de ESTA ventana. Con dificultad dinámica cambia
+            # con `n`: el minero tiene que barrer un rango que contenga la
+            # solución, y su variable de entorno quedó fijada al arrancar.
+            "nonce_space": self.nonce_space,
             "published_at": opened,
         })
         log.info("ventana %s abierta (%s de %s, %d ceros, deadline %s)",

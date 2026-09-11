@@ -23,6 +23,7 @@ from common.health import start_health_server
 from common.logging_setup import setup_logging
 from common.messaging import build_rabbitmq
 from common.storage import VoxChainStore, connect_redis
+from common.blockchain import espacio_insuficiente
 from nct.coordinator import NCTCoordinator
 from nct.monitor import NCTHeartbeatMonitor
 
@@ -32,6 +33,18 @@ def main() -> None:
     mode = config.get("NCT_MODE", "primary")
     log.info("iniciando NCT (n_zeros=%d, mode=%s, nct_id=%s)",
              config.N_ZEROS, mode, config.NCT_ID)
+
+    # `n` y el espacio de nonces se mueven juntos o el sistema falla mudo: las
+    # ventanas vencen sin sellar y parece un problema de mineros (AGENT.md 11.3).
+    if config.DYNAMIC_DIFFICULTY:
+        log.info("dificultad DINÁMICA: n se recalcula por ventana para sostener "
+                 "%.0fs de promulgación (N_ZEROS=%d es sólo el valor inicial)",
+                 config.DIFFICULTY_TARGET_SECONDS, config.N_ZEROS)
+    else:
+        # Con `n` fijo, `n` y el espacio se mueven juntos o el sistema falla mudo.
+        aviso = espacio_insuficiente(config.N_ZEROS, config.NONCE_SPACE)
+        if aviso:
+            log.warning("dificultad mal calibrada: %s", aviso)
 
     store = VoxChainStore(connect_redis(config.REDIS_URL))
     messaging = build_rabbitmq(config.RABBITMQ_URL)
@@ -67,6 +80,14 @@ def main() -> None:
         heartbeat_interval=config.HEARTBEAT_INTERVAL,
         require_signatures=config.REQUIRE_SIGNATURES,
         proposal_max_age=config.PROPOSAL_MAX_AGE_SECONDS,
+        # Verificación de coherencia n ↔ espacio antes de abrir cada ventana.
+        nonce_space=config.NONCE_SPACE,
+        turn_quota_windows=config.TURN_QUOTA_WINDOWS,
+        turn_quota_max_share=config.TURN_QUOTA_MAX_SHARE,
+        dynamic_difficulty=config.DYNAMIC_DIFFICULTY,
+        difficulty_target_seconds=config.DIFFICULTY_TARGET_SECONDS,
+        difficulty_decay_windows=config.DIFFICULTY_DECAY_WINDOWS,
+        hps_cpu=config.HPS_CPU, hps_gpu=config.HPS_GPU,
         # on_stepdown se conecta después de crear el monitor (ver abajo).
     )
 

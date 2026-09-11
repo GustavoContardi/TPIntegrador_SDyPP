@@ -15,6 +15,7 @@ import os
 import time
 from datetime import datetime, timezone
 
+from common import config
 from common.blockchain.categories import normalize_category, parse_categories
 from common.blockchain.challenge import prefix_for_zeros
 from common.metrics import (
@@ -37,7 +38,13 @@ class StandaloneWorker:
         self.signer = signer
         self._solved: set[str] = set()
         self._running = True
-        self.nonce_space = int(os.getenv("STANDALONE_NONCE_SPACE", "50000000"))
+        # El default es `NONCE_SPACE`, no una constante propia: el espacio que
+        # barre un standalone tiene que crecer junto con `n`, igual que el de
+        # los pools. Con una constante aparte, subir la dificultad dejaba a los
+        # standalone barriendo un rango donde la solución ya no cabía, y las
+        # derogaciones les vencían siempre sin que nada lo dijera.
+        self.nonce_space = int(os.getenv("STANDALONE_NONCE_SPACE",
+                                         str(config.NONCE_SPACE)))
         rejected = os.getenv("STANDALONE_REJECTED_ACTIONS", "")
         self._rejected_actions = set(a.strip() for a in rejected.split(",") if a)
         if self._rejected_actions:
@@ -82,10 +89,15 @@ class StandaloneWorker:
 
         base = challenge["partial_hash_base"]
         prefix = prefix_for_zeros(int(challenge["n_zeros_required"]))
+        # El espacio lo manda el NCT junto con la dificultad: con `n` dinámico el
+        # rango cambia por ventana, y el valor que este proceso leyó del entorno
+        # al arrancar puede no contener la solución. Si el desafío no lo trae
+        # (NCT viejo), se usa el propio.
+        espacio = int(challenge.get("nonce_space") or self.nonce_space)
         log.info("%s minando ventana %s rango [0, %d) prefijo %r",
-                 self.worker_id, wid, self.nonce_space, prefix)
+                 self.worker_id, wid, espacio, prefix)
         worker_busy.set(1)
-        nonce, hash_hex = self.mine(base, prefix, 0, self.nonce_space)
+        nonce, hash_hex = self.mine(base, prefix, 0, espacio)
         worker_busy.set(0)
         if nonce is None:
             log.info("%s sin solución para ventana %s", self.worker_id, wid)

@@ -25,7 +25,7 @@ from common.messaging import build_rabbitmq
 from common.redis import create_redis
 from worker_pkg.admin_server import start_admin_server
 from worker_pkg.identity import WorkerSigner, enroll
-from worker_pkg.miner import gpu_usable, run_miner
+from worker_pkg.miner import gpu_usable, run_miner, ultimo_hashrate
 from worker_pkg.pool_worker import PoolWorker
 from worker_pkg.pool_coordinator import PoolCoordinator
 from worker_pkg.standalone_worker import StandaloneWorker
@@ -101,6 +101,16 @@ class WorkerManager:
             "running": any(t is not None and t.is_alive()
                            for t in (self._thread, self._worker_thread)),
             "pubkey": self.signer.pubkey if (self.signer and self.signer.enabled) else None,
+            # Con qué recurso mina y cuántos fragmentos atiende a la vez. Es lo
+            # que hace falta para estimar el cómputo de la red desde Redis, sin
+            # scrapear Prometheus, cuando hay que revisar si `n` sigue siendo
+            # adecuado para la población de mineros (AGENT.md 11.3).
+            "has_gpu": self.has_gpu,
+            "capacity": config.get_int("WORKER_CAPACITY", 1),
+            # H/s medidos: es lo que el NCT usa para calcular la dificultad
+            # dinámica. 0 mientras el minero no haya minado todavía; ahí el NCT
+            # le estima el cómputo por su recurso (CPU/GPU).
+            "hashrate_hps": ultimo_hashrate(),
         }
 
     def switch_mode(self, target: str, pool_url: str = "") -> dict:

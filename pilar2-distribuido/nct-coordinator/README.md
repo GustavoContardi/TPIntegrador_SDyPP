@@ -7,13 +7,23 @@ por carga de red.
 ## Responsabilidades
 
 - Consume `propuestas` (flujo 1) y mantiene la cola de leyes con **round-robin por
-  autor** (no FIFO).
+  autor** (no FIFO) más una **cuota de turnos por identidad** (AGENT.md 3.3):
+  quien se llevó más de `TURN_QUOTA_MAX_SHARE` de las últimas
+  `TURN_QUOTA_WINDOWS` ventanas cede el turno. El historial vive en
+  `nct:window_authors` (lista acotada en Redis). Si ninguna ley cumple las dos
+  reglas se relaja primero la cuota y después el round-robin: la cola **nunca**
+  se bloquea.
 - Aplica **cooldown** al encolar: rechaza al autor en cooldown y distingue
   reproposición idéntica (mayor cooldown) de propuesta nueva, por `text_hash`.
 - Abre la **ventana siguiente**: genera `voting_window_id`, fija
   `n_zeros_required` = `n` (promulgar) o `n+1` (derogar), `deadline` según el tipo,
   `partial_hash_base = law_id + text_hash + voting_window_id + action`; persiste en
-  Redis y publica a `desafio_activo` (flujo 2).
+  Redis y publica a `desafio_activo` (flujo 2). Con `DYNAMIC_DIFFICULTY=true`
+  **calcula `n` en ese momento** midiendo el cómputo vivo (`worker:status:*` +
+  equipos) y deriva `NONCE_SPACE` de `n`, publicando ambos en el desafío. Con `n`
+  fijo, verifica que `n` y `NONCE_SPACE` sean coherentes
+  (`espacio_insuficiente`) y avisa por log si no: con el espacio corto las
+  derogaciones vencen sin sellar y el síntoma se confunde con falta de mineros.
 - Consume `respuesta_nonce` (flujo 3): **verifica** el nonce (recalcula el hash,
   chequea prefijo y deadline), **descarta tardíos/duplicados**, sella el bloque,
   actualiza el `status` de la ley y avanza a la siguiente ventana.
@@ -31,7 +41,8 @@ por carga de red.
 | Archivo                | Contenido |
 |------------------------|-----------|
 | `nct/coordinator.py`   | Núcleo (cola, ventanas, verificación, sellado). Agnóstico de transporte/backend. Incluye publicación de heartbeats y conciencia de líder/seguidor. |
-| `nct/queue_logic.py`   | Lógica pura: round-robin y cálculo de cooldown. |
+| `nct/queue_logic.py`   | Lógica pura: round-robin, cuota de turnos (reexportados de `common/queue.py`) y cálculo de cooldown. |
+| `common/blockchain/difficulty.py` | Cálculo de `n` según el cómputo vivo, trinquete e histéresis. Lógica pura; el NCT persiste su estado en `nct:difficulty` para que sobreviva al failover. |
 | `nct/monitor.py`       | Monitor de heartbeats del líder; si detecta timeout, adquiere el lease `nct:leader` en Redis. Es todo el mecanismo de sucesión: no hay un `nct/bully.py`. |
 | `main.py`              | Cablea RabbitMQ + Redis + health endpoint + loop. Soporta modo `primary` y `standby`. |
 

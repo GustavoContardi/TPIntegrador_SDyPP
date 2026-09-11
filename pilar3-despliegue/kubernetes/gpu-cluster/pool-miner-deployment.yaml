@@ -41,6 +41,13 @@ spec:
           env:
             - name: WORKER_MODE
               value: "pool-worker"
+            # El espacio de nonces tiene que cubrir la derogación (n+1=7) o las
+            # ventanas vencen sin sellar. Estos pods no leen el ConfigMap
+            # `voxchain-config` (vive en otro namespace), así que va explícito.
+            - name: NONCE_SPACE
+              value: "1250000000"
+            - name: FRAGMENT_SIZE
+              value: "25000000"
             - name: POOL_COORDINATOR_URL
               value: "http://pool-coordinator:9001"
             # El worker conecta messaging en todos los modos (recibe comandos
