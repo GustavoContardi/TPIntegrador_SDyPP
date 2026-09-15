@@ -7,7 +7,6 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatInputModule } from '@angular/material/input';
 import { MatSelectModule } from '@angular/material/select';
 import { MatFormFieldModule } from '@angular/material/form-field';
-import { MatIconModule } from '@angular/material/icon';
 import { RouterModule } from '@angular/router';
 import { ApiService } from '../../core/services/api.service';
 import { IdentityService } from '../../core/services/identity.service';
@@ -18,6 +17,7 @@ import {
   LawCategory,
   categoryLabel,
 } from '../../core/models/law.model';
+import { SystemAvailability } from '../../core/models/system.model';
 
 @Component({
   selector: 'app-propose-law',
@@ -25,7 +25,7 @@ import {
   imports: [
     CommonModule, FormsModule, RouterModule,
     MatCardModule, MatButtonModule, MatInputModule,
-    MatSelectModule, MatFormFieldModule, MatIconModule,
+    MatSelectModule, MatFormFieldModule,
   ],
   template: `
     <div class="propose-container">
@@ -44,7 +44,7 @@ import {
           <div class="form">
             <mat-form-field appearance="outline" class="full-width">
               <mat-label>Acción</mat-label>
-              <mat-select [(ngModel)]="action">
+              <mat-select [(ngModel)]="action" (ngModelChange)="refreshAvailability()">
                 <mat-option value="promulgacion">Promulgar</mat-option>
                 <mat-option value="derogacion">Derogar</mat-option>
               </mat-select>
@@ -53,7 +53,8 @@ import {
             <div *ngIf="action === 'derogacion'">
               <mat-form-field appearance="outline" class="full-width">
                 <mat-label>ID de la ley a derogar</mat-label>
-                <mat-select [(ngModel)]="lawIdToRepeal" placeholder="Elegí una ley promulgada">
+                <mat-select [(ngModel)]="lawIdToRepeal" (ngModelChange)="refreshAvailability()"
+                            placeholder="Elegí una ley promulgada">
                   <mat-option *ngFor="let law of promulgatedLaws()" [value]="law.law_id">
                     {{ law.law_id }}
                   </mat-option>
@@ -70,7 +71,7 @@ import {
             <div *ngIf="action !== 'derogacion'">
               <mat-form-field appearance="outline" class="full-width">
                 <mat-label>Área de gobierno</mat-label>
-                <mat-select [(ngModel)]="category">
+                <mat-select [(ngModel)]="category" (ngModelChange)="refreshAvailability()">
                   <mat-option *ngFor="let c of categories()" [value]="c.value">
                     {{ c.label }}
                   </mat-option>
@@ -92,9 +93,24 @@ import {
               </div>
             </div>
 
+            <div *ngIf="unavailable() as av" class="warning-msg">
+              <!-- Marcador dibujado con CSS y no un <mat-icon>: este proyecto
+                   nunca declara la fuente de Material Icons, así que un mat-icon
+                   renderiza la ligadura como texto crudo ("sc" en vez del
+                   reloj). Verificado en el navegador. -->
+              <span class="warning-mark" aria-hidden="true">!</span>
+              <div>
+                <strong>Sistema no disponible en este momento.</strong>
+                <p>{{ av.message }}</p>
+              </div>
+            </div>
+
             <div *ngIf="error()" class="error-msg">{{ error() }}</div>
             <div *ngIf="success()" class="success-msg">
-              {{ action === 'derogacion' ? 'Repeal proposed successfully! Law ID:' : 'Law proposed successfully! ID:' }} {{ success() }}
+              {{ action === 'derogacion' ? 'Derogación propuesta. ID de la ley:' : 'Ley propuesta. ID:' }} {{ success() }}
+              <p *ngIf="postponed() as av" class="postponed">
+                Queda <strong>pospuesta</strong>: {{ av.message }}
+              </p>
             </div>
 
             <div class="actions">
@@ -139,6 +155,38 @@ import {
       background-color: #1b2d1b;
       border-radius: 4px;
     }
+    .success-msg .postponed {
+      color: #ffb74d;
+      margin: 8px 0 0;
+      font-size: 0.9rem;
+    }
+    .warning-msg {
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+      color: #ffb74d;
+      padding: 12px;
+      margin: 8px 0 16px;
+      background-color: #2d2616;
+      border-left: 3px solid #ffb74d;
+      border-radius: 4px;
+    }
+    .warning-msg p {
+      margin: 4px 0 0;
+      color: #d7c9ae;
+      font-size: 0.9rem;
+    }
+    .warning-mark {
+      flex: 0 0 auto;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      border: 1.5px solid #ffb74d;
+      font-size: 0.85rem;
+      font-weight: 700;
+      line-height: 17px;
+      text-align: center;
+    }
     .no-identity p {
       color: #888;
     }
@@ -157,6 +205,10 @@ export class ProposeLawComponent {
   error = signal('');
   success = signal('');
   promulgatedLaws = signal<Law[]>([]);
+  /** Estado del sistema para el área elegida; null mientras no se consultó. */
+  availability = signal<SystemAvailability | null>(null);
+  /** El que devolvió el alta: es el que explica en qué quedó ESTA ley. */
+  postponed = signal<SystemAvailability | null>(null);
   /** Arranca con la lista local para no pintar un select vacío; el backend la pisa. */
   categories = signal<LawCategory[]>(LAW_CATEGORIES);
 
@@ -164,6 +216,7 @@ export class ProposeLawComponent {
     this.apiService.getLaws('promulgated').subscribe((laws: Law[]) => {
       this.promulgatedLaws.set(laws);
     });
+    this.refreshAvailability();
     this.apiService.getLawCategories().subscribe({
       next: (cats) => { if (cats?.length) this.categories.set(cats); },
       // Sin conexión nos quedamos con la lista local: peor sería no dejar
@@ -174,6 +227,38 @@ export class ProposeLawComponent {
 
   label(category: string): string {
     return categoryLabel(category, this.categories());
+  }
+
+  /** Área efectiva de lo que se está por proponer. */
+  effectiveCategory(): string {
+    return this.repealCategory() ?? this.category;
+  }
+
+  /**
+   * Consulta si hay mineros dispuestos a minar lo que se está por proponer.
+   *
+   * Se pregunta por área **y por acción**, y no una sola vez: un equipo que sólo
+   * vota 'economia' deja el sistema disponible para esa área e indisponible para
+   * el resto, y uno que rechaza derogaciones lo deja disponible para promulgar
+   * en su área e indisponible para derogar en la misma. La respuesta cambia con
+   * cada select, y por eso los tres los disparan.
+   */
+  refreshAvailability() {
+    this.apiService.getSystemAvailability(
+      this.effectiveCategory(), this.action,
+      this.action === 'derogacion' ? this.lawIdToRepeal : '').subscribe({
+      next: (av) => this.availability.set(av),
+      // Sin respuesta no se afirma nada: mostrar "no disponible" porque no se
+      // pudo consultar sería peor que no mostrar el aviso — el sistema podría
+      // estar perfectamente operativo.
+      error: () => this.availability.set(null),
+    });
+  }
+
+  /** El aviso a mostrar antes de proponer, o null si el sistema está operativo. */
+  unavailable(): SystemAvailability | null {
+    const av = this.availability();
+    return av && !av.available ? av : null;
   }
 
   /**
@@ -212,6 +297,7 @@ export class ProposeLawComponent {
     this.submitting.set(true);
     this.error.set('');
     this.success.set('');
+    this.postponed.set(null);
 
     try {
       const text = this.action === 'derogacion' ? '' : this.text();
@@ -247,6 +333,12 @@ export class ProposeLawComponent {
 
       const result = await firstValueFrom(this.apiService.proposeLaw(payload));
       this.success.set(result?.law_id ?? 'unknown');
+      // La ley se aceptó igual: si no hay red, queda encolada y hay que decirlo
+      // acá mismo, junto al "propuesta con éxito", o el autor se queda esperando
+      // una ventana que no va a abrirse todavía.
+      const av = result?.availability ?? null;
+      this.postponed.set(av && !av.available ? av : null);
+      this.availability.set(av);
       if (this.action !== 'derogacion') {
         this.text.set('');
       } else {

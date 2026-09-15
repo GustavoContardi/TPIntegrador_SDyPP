@@ -3,6 +3,7 @@
 - ``challenge``: serialización del desafío de gobierno y verificación de nonce.
 - ``categories``: áreas temáticas de las leyes (sobre las que los equipos deciden
   a qué ventanas aportan cómputo).
+- ``availability``: quórum de mineros elegibles para abrir una ventana.
 - ``block``: modelo de bloque y cálculo de su hash.
 - ``chain``: validación de la cadena de punta a punta.
 """
@@ -27,6 +28,12 @@ from .categories import (
     parse_categories,
     validate_category,
 )
+from .availability import (
+    MIN_WORKERS_FOR_WINDOW,
+    Availability,
+    assess,
+    eligible_workers,
+)
 from .block import Block, seal_block
 from .chain import validate_chain, validate_chain_links, ChainValidationError
 from .compression import compress_text, decompress_text
@@ -48,6 +55,10 @@ __all__ = [
     "normalize_category",
     "parse_categories",
     "validate_category",
+    "MIN_WORKERS_FOR_WINDOW",
+    "Availability",
+    "assess",
+    "eligible_workers",
     "Block",
     "seal_block",
     "validate_chain",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from common.blockchain.availability import Availability, assess
 from common.queue import select_next_law
 from common.storage.redis_store import VoxChainStore, connect_redis
 from voxchain_api.config import config
@@ -57,6 +58,30 @@ class RedisReader:
     def get_queued_laws(self) -> list[dict]:
         """Get all queued laws in order (oldest first)."""
         return self.store.queued_laws()
+
+    def assess_availability(self, category: str, action: str = "",
+                            law_id: str = "") -> Availability:
+        """Quórum de mineros para la ventana que se abriría, medido ahora.
+
+        Se calcula acá y no se lee el veredicto que dejó el NCT
+        (``nct:availability``) porque son preguntas distintas: el NCT publica el
+        estado de **la ley que está a la cabeza de la cola**, y el ciudadano
+        pregunta por **lo que está por proponer**. Con la misma función pura de
+        dominio las dos respuestas no pueden divergir.
+
+        ``action`` no es opcional en la práctica para una derogación: un equipo
+        puede votar el área y aun así rechazar todas las derogaciones, así que
+        preguntar sólo por la categoría le prometería al ciudadano una ventana
+        que no se va a abrir.
+        """
+        return assess(self.store.live_workers(), self.store.teams_composition(),
+                      {"category": category, "action": action, "law_id": law_id},
+                      minimum=config.MIN_WORKERS_FOR_WINDOW,
+                      by_category=config.QUORUM_BY_CATEGORY)
+
+    def get_availability_state(self) -> dict:
+        """Último veredicto publicado por el NCT (para `since` y leyes en cola)."""
+        return self.store.get_availability_state()
 
     def get_next_law(self) -> Optional[dict]:
         """Get the next law that will enter a voting window (round-robin)."""

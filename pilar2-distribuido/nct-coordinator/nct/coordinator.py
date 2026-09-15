@@ -26,7 +26,12 @@ from common.blockchain import (
     seal_block,
     verify_nonce,
 )
-from common.blockchain.categories import normalize_category, validate_category
+from common.blockchain.availability import Availability, assess
+from common.blockchain.categories import (
+    DEFAULT_CATEGORY,
+    normalize_category,
+    validate_category,
+)
 from common.blockchain.difficulty import (
     DifficultyRatchet,
     difficulty_for,
@@ -49,6 +54,11 @@ from .queue_logic import classify_proposal, cooldown_until, select_next_law
 
 log = logging.getLogger("voxchain.nct")
 
+# Cuánto vale una medición de quórum antes de volver a leer Redis. El tick corre
+# a 1 Hz y medir cuesta un scan de `worker:status:*`; los workers reportan cada
+# 5 s con TTL de 15 s, así que refrescar más seguido no aporta dato nuevo.
+AVAILABILITY_CACHE_SECONDS = 5.0
+
 
 def _iso(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
@@ -67,7 +77,9 @@ class NCTCoordinator:
                  difficulty_decay_windows: int = 3,
                  hps_cpu: float = 954_180.0, hps_gpu: float = 5e8,
                  turn_quota_windows: int = TURN_QUOTA_WINDOWS,
-                 turn_quota_max_share: float = TURN_QUOTA_MAX_SHARE):
+                 turn_quota_max_share: float = TURN_QUOTA_MAX_SHARE,
+                 min_workers_for_window: int = 0,
+                 quorum_by_category: bool = True):
         self.m = messaging
         self.store = store
         self.n_zeros = n_zeros
@@ -104,6 +116,23 @@ class NCTCoordinator:
         self.hps_cpu = hps_cpu
         self.hps_gpu = hps_gpu
         self._ratchet = DifficultyRatchet(difficulty_decay_windows)
+        # Quórum de mineros para abrir una ventana (ver
+        # `common/blockchain/availability.py`). 0 = desactivado, que es el
+        # comportamiento histórico y el default de los tests: sin este gate la
+        # ventana se abre aunque no haya nadie del otro lado y la ley termina
+        # descartada por una ausencia de infraestructura, no por falta de apoyo.
+        self.min_workers_for_window = min_workers_for_window
+        # Si el quórum mira la agenda de los equipos. En False sólo protege
+        # contra la red vacía y un área que nadie vota vuelve a expirar como
+        # veto político (AGENT.md 3.10); ver el docstring de `availability.py`.
+        self.quorum_by_category = quorum_by_category
+        # Se cachea la **población** (el scan de Redis, que es lo caro) y no el
+        # veredicto: el veredicto depende de la ley concreta —área, acción y
+        # hasta el law_id, porque un equipo puede vetar una ley puntual— así que
+        # cachearlo por área daría la respuesta de otra ley.
+        self._poblacion_cache: tuple[float, list, list] | None = None
+        self._availability_publicada: tuple | None = None
+        self._postergacion_avisada: tuple | None = None
         # Callback invocado al ceder el liderazgo: lo usa el monitor para
         # activarse y empezar a observar heartbeats del nuevo líder.
         self._on_stepdown = on_stepdown
@@ -312,13 +341,163 @@ class NCTCoordinator:
         # La cuota mira el pasado reciente: sin este dato `select_next_law`
         # degrada al round-robin de siempre (ver `common/queue.py`).
         recientes = self.store.recent_window_authors(self.turn_quota_windows)
-        law = select_next_law(self.store.queued_laws(), self._last_author,
-                              recientes,
+        pendientes = self.store.queued_laws()
+        # Las leyes sin red que las mine se saltean, no bloquean la cola: una
+        # ley de un área que nadie vota congelaría el parlamento entero, y eso
+        # sería una denegación de servicio más barata que la ventana vencida que
+        # este gate viene a evitar.
+        law = select_next_law(pendientes, self._last_author, recientes,
                               max_share=self.turn_quota_max_share,
-                              sample=self.turn_quota_windows)
-        if law is None:
+                              sample=self.turn_quota_windows,
+                              can_open=self._hay_quorum)
+        if law is not None:
+            self._publicar_disponibilidad(self._quorum(self._como_ventana(law)),
+                                          law=law)
+            self.open_window(law)
             return
-        self.open_window(law)
+        # Nada abrible. Se informa sobre la ley postergada más antigua —la que
+        # el ciudadano está esperando— y, con la cola vacía, sobre la red en
+        # general, para que el cliente sepa antes de proponer si su ley va a
+        # salir o a quedarse esperando.
+        postergada = next((ley for ley in pendientes
+                           if not self._hay_quorum(ley)), None)
+        quorum = self._quorum(self._como_ventana(postergada) if postergada
+                              else {"category": DEFAULT_CATEGORY})
+        self._publicar_disponibilidad(quorum, law=postergada)
+        if postergada is not None:
+            self._avisar_postergacion(postergada, quorum)
+
+    # -- quórum de mineros -------------------------------------------------
+    @staticmethod
+    def _como_ventana(law: dict) -> dict:
+        """La ley vista como la ventana que se abriría para ella.
+
+        Es lo que se le muestra a los mineros en el desafío, y por lo tanto lo
+        único con lo que se puede anticipar su decisión. La acción importa tanto
+        como el área: una **derogación** conserva la categoría de la ley original
+        (AGENT.md 3.10) pero puede estar vetada por equipos que sí minan esa
+        área, así que preguntar sólo por la categoría daría un sí falso.
+        """
+        return {"category": law.get("category"),
+                "action": law.get("action", ACTION_PROMULGACION),
+                "law_id": law.get("law_id")}
+
+    def _hay_quorum(self, law: dict) -> bool:
+        """¿Hay hoy mineros dispuestos a minar la ventana de ``law``?"""
+        quorum = self._quorum(self._como_ventana(law))
+        return quorum is None or quorum.ok
+
+    def _poblacion(self):
+        """Mineros vivos y equipos, cacheados unos segundos. None si no se pudo.
+
+        `maybe_open_window` corre en cada tick (1 Hz) y evalúa cada ley de la
+        cola; leer Redis por ley y por tick sería absurdo cuando el dato de fondo
+        —los latidos de los mineros— se refresca cada 5 s. Lo que se cachea es la
+        lectura, no la conclusión: la conclusión depende de la ley.
+        """
+        ahora = self.now()
+        cache = self._poblacion_cache
+        if cache is not None and ahora - cache[0] < AVAILABILITY_CACHE_SECONDS:
+            return cache[1], cache[2]
+        try:
+            workers = self.store.live_workers()
+            teams = self.store.teams_composition()
+        except Exception:  # noqa: BLE001
+            log.exception("no se pudo leer la población de mineros")
+            return None
+        self._poblacion_cache = (ahora, workers, teams)
+        return workers, teams
+
+    def _quorum(self, challenge) -> Availability | None:
+        """Mineros dispuestos a minar esta ventana, o None si no se evalúa.
+
+        ``challenge`` lleva ``category``, ``action`` y ``law_id``: las tres
+        hacen falta porque un equipo puede vetar un área, una acción entera
+        —todas las derogaciones— o una ley puntual, y cualquiera de las tres lo
+        deja fuera. Con ``min_workers_for_window <= 0`` el gate está desactivado.
+
+        Si medir falla se devuelve None, es decir **se abre igual**. Es la misma
+        decisión que toma la dificultad dinámica ante un Redis caído: una falla
+        de observación no puede paralizar el gobierno, porque eso convierte
+        cualquier hipo de la infraestructura en una denegación de servicio.
+        """
+        if self.min_workers_for_window <= 0:
+            return None
+        poblacion = self._poblacion()
+        if poblacion is None:
+            return None
+        workers, teams = poblacion
+        try:
+            return assess(workers, teams, challenge,
+                          minimum=self.min_workers_for_window,
+                          by_category=self.quorum_by_category)
+        except Exception:  # noqa: BLE001
+            log.exception("no se pudo medir el quórum de mineros; abro igual")
+            return None
+
+    def _avisar_postergacion(self, law: dict, quorum: Availability) -> None:
+        """Loguea que la ley queda en cola, una vez por situación y no por tick.
+
+        El aviso se rearma cuando cambia la ley postergada o el recuento de
+        mineros: la transición es lo informativo. A 1 Hz, repetirlo en cada tick
+        ahogaría el log justo cuando hay que leerlo para entender por qué el
+        sistema no avanza.
+        """
+        firma = (law.get("law_id"), quorum.category, quorum.eligible, quorum.live)
+        if firma == self._postergacion_avisada:
+            return
+        self._postergacion_avisada = firma
+        log.warning("ley %s pospuesta: %s — queda en cola hasta que haya red",
+                    law.get("law_id"), quorum.reason())
+
+    def _publicar_disponibilidad(self, quorum: Availability | None,
+                                 *, law: dict | None) -> None:
+        """Deja el veredicto en Redis para que el API se lo explique al ciudadano.
+
+        Escribe sólo cuando el veredicto cambia: a 1 Hz esto sería un hset por
+        segundo para decir lo mismo. ``since`` conserva el momento en que empezó
+        la indisponibilidad actual, que es el dato que la UI necesita para decir
+        hace cuánto está caído el sistema.
+        """
+        if quorum is None:
+            return
+        try:
+            encoladas = len(self.store.queued_law_ids())
+        except Exception:  # noqa: BLE001
+            encoladas = 0
+        firma = (quorum.ok, quorum.category, quorum.live, quorum.eligible,
+                 quorum.required, encoladas,
+                 law.get("law_id") if law else None)
+        if firma == self._availability_publicada:
+            return
+        anterior = self._availability_publicada
+        self._availability_publicada = firma
+        # `since` sólo se renueva al entrar en indisponibilidad; mientras siga
+        # caído conserva el instante original aunque cambie el recuento.
+        seguia_caido = anterior is not None and not anterior[0] and not quorum.ok
+        since = ""
+        if not quorum.ok:
+            previo = self.store.get_availability_state().get("since") if seguia_caido else ""
+            since = previo or _iso(self.now())
+        try:
+            self.store.save_availability_state({
+                "available": quorum.ok,
+                "category": quorum.category,
+                "live_workers": quorum.live,
+                "eligible_workers": quorum.eligible,
+                "required_workers": quorum.required,
+                "queued_laws": encoladas,
+                "reason": quorum.reason(),
+                "since": since,
+                "updated_at": _iso(self.now()),
+            })
+        except Exception:  # noqa: BLE001
+            log.exception("no se pudo publicar el estado de disponibilidad")
+            return
+        if quorum.ok and anterior is not None and not anterior[0]:
+            log.info("quórum restablecido (%d minero(s) elegible(s) para '%s'): "
+                     "reanudo la apertura de ventanas",
+                     quorum.eligible, quorum.category)
 
     def _n_zeros_para_esta_ventana(self) -> int:
         """`n` a usar ahora: fijo por config, o medido si la dificultad es dinámica.
@@ -561,6 +740,22 @@ class NCTCoordinator:
             return
         active = self._active
         law = self.store.get_law(active["law_id"])
+        # Vencer sin quórum no es lo mismo que vencer sin apoyo. Si al expirar la
+        # red está por debajo del mínimo —los mineros se cayeron durante la
+        # ventana—, la ley vuelve a la cola en vez de descartarse: nadie pudo
+        # minarla, así que el vencimiento no dice nada sobre la ley y
+        # descartarla le cobraría al autor el cooldown largo de reproposición
+        # idéntica (3.5) por una falla de infraestructura ajena.
+        # Se evalúa la ventana que venció, con su acción: si lo que expiró fue
+        # una derogación que los equipos del área rechazan, eso es abstención y
+        # no falta de red — pero eso ya lo decidió `_hay_quorum` al abrir, y
+        # llegar acá con la misma respuesta significa que la red se cayó.
+        quorum = self._quorum({"category": active.get("category"),
+                               "action": active.get("action"),
+                               "law_id": active.get("law_id")})
+        if quorum is not None and not quorum.ok:
+            self._expirar_sin_quorum(active, quorum)
+            return
         # Ley pendiente (3.2/3.4): se descarta, NO se reencola automáticamente.
         self.store.set_window_result(active["voting_window_id"],
                                      result=WindowResult.EXPIRED_PENDING)
@@ -571,6 +766,27 @@ class NCTCoordinator:
         self._active = None
         log.info("ventana %s vencida sin solución: ley %s descartada",
                  active["voting_window_id"], active["law_id"])
+        self.maybe_open_window()
+
+    def _expirar_sin_quorum(self, active: dict, quorum: Availability) -> None:
+        """Cierra la ventana vencida devolviendo la ley a la cola.
+
+        No se marca el ``text_hash`` como descartado a propósito: reproponer no
+        es acá una reproposición idéntica sino la misma ley que nunca llegó a
+        ser juzgada. Lo que sí queda gastado es el turno que la ley consumió al
+        abrir (``push_window_author``); revertirlo exigiría deshacer el historial
+        de la cuota y se acepta como costo menor frente a perder la ley.
+        """
+        law_id = active["law_id"]
+        self.store.set_window_result(active["voting_window_id"],
+                                     result=WindowResult.EXPIRED_NO_QUORUM)
+        self.store.set_law_status(law_id, LawStatus.PENDING_QUEUE)
+        self.store.enqueue_law(law_id)
+        self.store.clear_active_window()
+        self._active = None
+        log.warning("ventana %s vencida sin quórum (%s): ley %s reencolada, "
+                    "no descartada", active["voting_window_id"], quorum.reason(),
+                    law_id)
         self.maybe_open_window()
 
     def become_leader(self) -> None:

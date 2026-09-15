@@ -33,6 +33,17 @@ def main() -> None:
     mode = config.get("NCT_MODE", "primary")
     log.info("iniciando NCT (n_zeros=%d, mode=%s, nct_id=%s)",
              config.N_ZEROS, mode, config.NCT_ID)
+    if config.MIN_WORKERS_FOR_WINDOW > 0:
+        log.info("quórum de apertura: %d minero(s) vivo(s)%s; por debajo de eso "
+                 "las leyes esperan en la cola",
+                 config.MIN_WORKERS_FOR_WINDOW,
+                 " con el área de la ley en su agenda"
+                 if config.QUORUM_BY_CATEGORY else
+                 " (sin mirar agendas: un área desierta sigue expirando)")
+    else:
+        log.warning("quórum de apertura DESACTIVADO (MIN_WORKERS_FOR_WINDOW=0): "
+                    "las ventanas se abren aunque no haya mineros y las leyes "
+                    "se descartan al vencer")
 
     # `n` y el espacio de nonces se mueven juntos o el sistema falla mudo: las
     # ventanas vencen sin sellar y parece un problema de mineros (AGENT.md 11.3).
@@ -84,6 +95,10 @@ def main() -> None:
         nonce_space=config.NONCE_SPACE,
         turn_quota_windows=config.TURN_QUOTA_WINDOWS,
         turn_quota_max_share=config.TURN_QUOTA_MAX_SHARE,
+        # Sin mineros capaces de minar el área de la ley no se abre ventana: la
+        # ley espera en la cola en vez de vencer y descartarse.
+        min_workers_for_window=config.MIN_WORKERS_FOR_WINDOW,
+        quorum_by_category=config.QUORUM_BY_CATEGORY,
         dynamic_difficulty=config.DYNAMIC_DIFFICULTY,
         difficulty_target_seconds=config.DIFFICULTY_TARGET_SECONDS,
         difficulty_decay_windows=config.DIFFICULTY_DECAY_WINDOWS,

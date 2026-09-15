@@ -149,6 +149,14 @@ Ver [`docker-compose.scale.yml`](docker-compose.scale.yml) y la sección 4 del
 ### Health endpoints (JSON, sin GUI)
 
 - API: <http://localhost:8000/api/health> → `{"api","nct","redis","workers"}`
+- Disponibilidad para proponer:
+  <http://localhost:8000/api/system/availability?category=salud&action=derogacion>
+  → `{"available","live_workers","eligible_workers","queued_laws","message",…}`.
+  Responde si hay mineros dispuestos a minar **esa ventana**; con
+  `available:false` la ley se acepta igual pero **queda encolada** hasta que los
+  haya (AGENT.md 3.11). `action` importa: un equipo puede votar el área y vetar
+  toda derogación, así que la misma categoría puede estar disponible para
+  promulgar e indisponible para derogar.
 - NCT: <http://localhost:8081/health> → `{"nct":"ok","redis":"ok","rabbitmq":"ok"}`
 - Pool coordinator: <http://localhost:9001/health> → incluye `miners` registrados
 - Frontend: <http://localhost:4200>
@@ -156,13 +164,33 @@ Ver [`docker-compose.scale.yml`](docker-compose.scale.yml) y la sección 4 del
 
 ### Tests
 
+Desde la **raíz del repo**:
+
 ```bash
-cd pilar2-distribuido
-python -m venv .venv && . .venv/bin/activate
-pip install pytest fakeredis redis pika
-pytest                 # unit + integración e2e (fake bus + fakeredis + minero CPU real)
-pytest -m integration  # sólo el flujo extremo a extremo
+./run.sh test          # arma el venv con todo lo necesario y corre la suite
 ```
+
+```bash
+./run.sh test -m integration   # sólo el flujo extremo a extremo
+```
+
+`run.sh` instala también las dependencias del API Gateway (`fastapi`,
+`pydantic`, `httpx`). Sin ellas la suite pierde 63 tests, y no de forma
+evidente: aparecen como errores de import, no como "falta una dependencia".
+
+**Sobre los pines del API.** `pydantic==2.9.2` compila `pydantic-core` contra
+PyO3, que no soporta Python posterior a 3.13. En un intérprete más nuevo el pin
+no instala y `run.sh` cae a versiones sueltas, avisando: la suite corre igual,
+pero no contra las mismas versiones que el contenedor. Para correrla contra las
+exactas, usando la imagen del API (también desde la raíz del repo, con el
+sistema ya levantado por lo menos una vez para que la imagen exista):
+
+```bash
+docker run --rm -v "$PWD:/repo" -w /repo/pilar2-distribuido --entrypoint sh voxchain-pilar2-voxchain-api:latest -c 'pip install -q pytest "fakeredis[lua]" && python -m pytest -q'
+```
+
+Se monta la raíz del repo y no `pilar2-distribuido`: los tests e2e usan el
+minero CPU de Pilar 1, que vive fuera de este directorio.
 
 ---
 
@@ -173,6 +201,13 @@ pytest -m integration  # sólo el flujo extremo a extremo
   en memoria + `fakeredis`. El mismo código de dominio corre en ambos.
 - **Una sola ventana activa** (AGENT.md 3.3): estado único `active_window` en
   Redis; el NCT no abre una nueva hasta cerrar la anterior.
+- **No se abre ventana sin mineros que puedan minarla** (AGENT.md 3.11). Antes la
+  ventana se abría con la red vacía, vencía, y la ley quedaba `discarded` con su
+  texto anotado — así que reproponerla costaba el cooldown largo de reproposición
+  idéntica, por una falla de infraestructura ajena al autor. Ahora la ley espera
+  en la cola, el NCT publica el porqué en `nct:availability` y el cliente muestra
+  *"sistema no disponible, tu ley será pospuesta"*. Una ley postergada **no
+  bloquea la cola**: se saltea y el turno pasa a la siguiente con red.
 - **Cierre atómico al primer nonce válido** (AGENT.md 5 / P2): el primer nonce
   válido **recibido** para una ventana cierra el sello mediante un guard atómico
   en Redis (`SET window_sealed:<voting_window_id> <winner> NX`). Toda solución
@@ -271,3 +306,8 @@ pytest -m integration  # sólo el flujo extremo a extremo
   pero reparte todo el trabajo desde un solo proceso).
 - Sybil y concentración de poder en pools son vulnerabilidades **por diseño**
   documentado (AGENT.md 9), no bugs.
+- **Una ley que ningún equipo quiere minar espera indefinidamente** con el
+  default `QUORUM_BY_CATEGORY=true`: no muere, pero tampoco sale, y nada la
+  caduca. Aplica igual al área y al veto de acción — una derogación que todos los
+  equipos del área rechazan queda en la cola sin fecha. Con `false` vuelve a
+  expirar como veto por abstención (AGENT.md 3.10/3.11).

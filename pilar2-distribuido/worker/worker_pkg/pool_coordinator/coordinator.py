@@ -22,11 +22,8 @@ from collections import deque
 from datetime import datetime, timezone
 from threading import Lock
 
-from common.blockchain.categories import (
-    covers_category,
-    normalize_category,
-    parse_categories,
-)
+from common.blockchain.categories import normalize_category, parse_categories
+from common.blockchain.availability import policy_accepts
 from common.blockchain.challenge import prefix_for_zeros
 from worker_pkg.pool_coordinator.election import (
     LEASE_RANK_DESIGNATED,
@@ -330,22 +327,14 @@ class PoolCoordinator:
         return parse_categories(self._voting_policy.get("categories"))
 
     def _check_voting_policy(self, challenge: dict) -> bool:
-        policy = self._voting_policy
-        # Primero la agenda temática: es la decisión política del equipo y no
-        # depende de `decision`, que sigue siendo el veto puntual de siempre
-        # (rechazar todas las derogaciones, o una ley concreta).
-        if not covers_category(policy.get("categories"),
-                               challenge.get("category")):
-            return False
-        if policy.get("decision", "accept") == "accept":
-            return True
-        if policy.get("action") and challenge.get("action") == policy["action"]:
-            return False
-        if policy.get("law_id") and challenge.get("law_id") == policy["law_id"]:
-            return False
-        if not policy.get("action") and not policy.get("law_id"):
-            return False
-        return True
+        """¿Este pool aporta cómputo a esta ventana?
+
+        La regla vive en `common.blockchain.availability.policy_accepts` y no
+        acá: el NCT la evalúa antes de abrir la ventana, para no abrir una que
+        nadie va a minar (AGENT.md 3.11). Con dos copias de la misma decisión, la
+        predicción del NCT y la conducta del pool se irían separando en silencio.
+        """
+        return policy_accepts(self._voting_policy, challenge)
 
     def handle_challenge(self, challenge: dict) -> None:
         if not self._running:

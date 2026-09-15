@@ -1,3 +1,5 @@
+import { SystemAvailability } from './system.model';
+
 export interface Law {
   law_id: string;
   author_pubkey: string;
@@ -22,6 +24,17 @@ export interface LawProposalRequest {
   text_hash?: string;
   created_at?: string;
   signature?: string;
+}
+
+/**
+ * Respuesta del POST de una propuesta: la ley más el estado del sistema.
+ *
+ * `availability` viene sólo en el alta. Si `available` es false la ley se
+ * aceptó igual —está encolada— pero su ventana no se abre todavía, y hay que
+ * decírselo al autor en ese momento en vez de mostrarle un éxito liso.
+ */
+export interface LawProposalResponse extends Law {
+  availability?: SystemAvailability | null;
 }
 
 export interface LawCategory {

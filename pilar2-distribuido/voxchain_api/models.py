@@ -69,6 +69,43 @@ class LawProposalRequest(BaseModel):
     signature: Optional[str] = None
 
 
+class SystemAvailability(BaseModel):
+    """¿Puede el sistema someter hoy una ley de este área al desafío?
+
+    Es lo que el cliente necesita para no quedarse mirando una cola que no
+    avanza: si `available` es False, la ley se encola y espera — no se pierde,
+    pero tampoco se abre su ventana hasta que haya mineros.
+    """
+
+    available: bool
+    category: str = DEFAULT_CATEGORY
+    #: Acción evaluada, si se evaluó una. La misma área puede estar disponible
+    #: para promulgar e indisponible para derogar (un equipo puede vetar la
+    #: acción entera), así que sin esto la respuesta es ambigua.
+    action: str = ""
+    #: Mineros vivos en toda la red (latido de los últimos 15 s).
+    live_workers: int = 0
+    #: Los que aportarían cómputo a **esta** área: los demás no la minan.
+    eligible_workers: int = 0
+    required_workers: int = 0
+    #: Leyes esperando en la cola (las que quedan pospuestas si no hay quórum).
+    queued_laws: int = 0
+    #: Desde cuándo el sistema está sin quórum, según el NCT. Vacío si está bien.
+    since: Optional[str] = None
+    #: Mensaje listo para mostrar, en castellano.
+    message: str = ""
+
+
+class LawProposalResponse(Law):
+    """La ley aceptada más el estado del sistema que la va a (o no) atender.
+
+    Extiende `Law` en vez de envolverla para no romper a los clientes que ya
+    leen `law_id` de la respuesta del POST.
+    """
+
+    availability: Optional[SystemAvailability] = None
+
+
 class HealthResponse(BaseModel):
     api: str
     nct: str

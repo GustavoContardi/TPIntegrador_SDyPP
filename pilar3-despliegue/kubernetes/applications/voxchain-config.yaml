@@ -40,6 +40,19 @@ data:
   # monopolio sostenido; no cierra Sybil (AGENT.md 9).
   TURN_QUOTA_WINDOWS: "10"
   TURN_QUOTA_MAX_SHARE: "0.5"
+  # Quórum de mineros para abrir una ventana. Si no hay al menos esta cantidad
+  # de mineros vivos capaces de minar el ÁREA de la ley (un equipo que sólo vota
+  # "economia" no cuenta para una ley de "salud"), el NCT no abre la ventana: la
+  # ley se queda en la cola y el sistema se declara no disponible, en vez de
+  # abrir una ventana que va a vencer sí o sí y descartar la ley por falta de
+  # red. Tiene que ser el MISMO valor en NCT y API (el API sólo lo usa para
+  # avisarle al ciudadano). 0 = desactivado (comportamiento previo).
+  MIN_WORKERS_FOR_WINDOW: "1"
+  # Si ese quórum mira la AGENDA de los equipos o sólo cuenta mineros vivos.
+  # "true": una ley de un área que ningún equipo vota también espera en la cola.
+  # "false": el gate cubre sólo la red vacía, y un área desierta vuelve a hacer
+  # expirar la ley, que es el veto político deliberado de AGENT.md 3.10.
+  QUORUM_BY_CATEGORY: "true"
   HEARTBEAT_INTERVAL: "3"
   HEARTBEAT_TIMEOUT: "12"
   LEADER_LEASE_TTL: "15"

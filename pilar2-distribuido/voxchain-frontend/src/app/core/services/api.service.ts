@@ -2,7 +2,8 @@ import { Injectable, inject } from '@angular/core';
 import { HttpClient, HttpHeaders } from '@angular/common/http';
 import { Observable, from, switchMap } from 'rxjs';
 import { Block } from '../models/block.model';
-import { Law, LawCategory, LawProposalRequest } from '../models/law.model';
+import { Law, LawCategory, LawProposalRequest, LawProposalResponse } from '../models/law.model';
+import { SystemAvailability } from '../models/system.model';
 import { Window } from '../models/window.model';
 import { Team, WorkerRegistration, WorkerStatus } from '../models/worker.model';
 import { IdentityService } from './identity.service';
@@ -70,8 +71,30 @@ export class ApiService {
     return this.http.get<Law[]>(`${this.apiUrl}/laws/queue`);
   }
 
-  proposeLaw(proposal: LawProposalRequest): Observable<Law> {
-    return this.http.post<Law>(`${this.apiUrl}/laws`, proposal);
+  proposeLaw(proposal: LawProposalRequest): Observable<LawProposalResponse> {
+    return this.http.post<LawProposalResponse>(`${this.apiUrl}/laws`, proposal);
+  }
+
+  /**
+   * ¿Hay mineros dispuestos a minar la ventana que abriría esta propuesta?
+   *
+   * Se consulta antes de proponer (para avisar) y después (para explicar en qué
+   * quedó la ley). El mensaje lo arma el backend: la regla que decide si una ley
+   * sale o espera vive ahí, y dos redacciones en paralelo terminan diciendo
+   * cosas distintas.
+   *
+   * `action` no es un detalle: un equipo puede votar el área y rechazar toda
+   * derogación, así que la misma categoría puede estar disponible para
+   * promulgar e indisponible para derogar.
+   */
+  getSystemAvailability(category?: string, action?: string,
+                        lawId?: string): Observable<SystemAvailability> {
+    const params: Record<string, string> = {};
+    if (category) params['category'] = category;
+    if (action) params['action'] = action;
+    if (lawId) params['law_id'] = lawId;
+    return this.http.get<SystemAvailability>(`${this.apiUrl}/system/availability`,
+      Object.keys(params).length ? { params } : {});
   }
 
   // Windows endpoints

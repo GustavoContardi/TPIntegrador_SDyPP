@@ -9,6 +9,7 @@ import { ApiService } from '../../core/services/api.service';
 import { IdentityService } from '../../core/services/identity.service';
 import { EventsService } from '../../core/services/events.service';
 import { LAW_CATEGORIES, Law, LawCategory, categoryLabel } from '../../core/models/law.model';
+import { SystemAvailability } from '../../core/models/system.model';
 import { Window } from '../../core/models/window.model';
 import { RouterModule } from '@angular/router';
 
@@ -26,6 +27,19 @@ import { RouterModule } from '@angular/router';
             <p>Necesitás <a routerLink="/identity">crear una identidad</a> para participar.</p>
           </mat-card-content>
         </mat-card>
+      </div>
+
+      <div *ngIf="unavailable() as av" class="system-down">
+        <!-- Ver propose-law: sin la fuente de Material Icons declarada, un
+             <mat-icon> muestra la ligadura como texto. -->
+        <span class="warning-mark" aria-hidden="true">!</span>
+        <div>
+          <strong>Sistema no disponible en este momento</strong>
+          <p>{{ av.message }}</p>
+          <p class="since" *ngIf="av.since">
+            Sin mineros desde {{ av.since | date:'HH:mm:ss' }}.
+          </p>
+        </div>
       </div>
 
       <div *ngIf="(activeWindow() || eventsService.activeWindow()) as window" class="active-window">
@@ -153,6 +167,34 @@ import { RouterModule } from '@angular/router';
       color: #e0e0e0;
       margin-bottom: 16px;
     }
+    .system-down {
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+      color: #ffb74d;
+      padding: 14px;
+      margin-bottom: 16px;
+      background-color: #2d2616;
+      border-left: 3px solid #ffb74d;
+      border-radius: 4px;
+    }
+    .system-down p {
+      margin: 4px 0 0;
+      color: #d7c9ae;
+      font-size: 0.9rem;
+    }
+    .system-down .since { color: #9c8f78; font-size: 0.8rem; }
+    .warning-mark {
+      flex: 0 0 auto;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      border: 1.5px solid #ffb74d;
+      font-size: 0.85rem;
+      font-weight: 700;
+      line-height: 17px;
+      text-align: center;
+    }
     mat-card-title { color: #e0e0e0; }
     .status-badge {
       font-size: 0.75rem;
@@ -253,6 +295,8 @@ export class QueueComponent implements OnInit {
   lawTexts = signal<Record<string, string>>({});
   /** Etiquetas de las áreas; el backend las pisa con la lista autoritativa. */
   categories = signal<LawCategory[]>(LAW_CATEGORIES);
+  /** Estado del sistema: si no hay mineros, la cola no avanza y hay que decirlo. */
+  availability = signal<SystemAvailability | null>(null);
 
   ngOnInit() {
     this.loadData();
@@ -266,12 +310,35 @@ export class QueueComponent implements OnInit {
     return categoryLabel(category, this.categories());
   }
 
+  /**
+   * El aviso de sistema caído, o null si está operativo.
+   *
+   * Sin esto, una cola que no avanza porque no hay mineros se ve idéntica a un
+   * sistema colgado: mismas leyes, misma pantalla, ninguna explicación.
+   */
+  unavailable(): SystemAvailability | null {
+    const av = this.availability();
+    return av && !av.available ? av : null;
+  }
+
   private loadData() {
     this.apiService.getLawQueue().subscribe((laws: Law[]) => {
       this.queue.set(laws);
     });
     this.apiService.getNextLaw().subscribe((law: Law | null) => {
       this.nextLaw.set(law);
+      // Se pregunta por el área y la acción de ESA ley: es la que está a la
+      // cabeza, la que está trabada, y por lo tanto la que explica por qué la
+      // cola no avanza. Encadenado y no en paralelo porque sin la ley no
+      // sabemos qué mirar — y una derogación puede estar vetada donde la
+      // promulgación de la misma área no lo está.
+      this.apiService.getSystemAvailability(law?.category, law?.action,
+                                            law?.law_id).subscribe({
+        next: (av) => this.availability.set(av),
+        // Sin respuesta no se afirma nada: anunciar "sistema caído" porque no se
+        // pudo consultar sería peor que no mostrar el aviso.
+        error: () => this.availability.set(null),
+      });
     });
     this.apiService.getActiveWindow().subscribe({
       next: (w) => this.activeWindow.set(w),

@@ -19,6 +19,7 @@ import socket
 import threading
 
 from common import config
+from common.blockchain.categories import parse_categories
 from common.health import start_health_server
 from common.logging_setup import setup_logging
 from common.messaging import build_rabbitmq
@@ -111,6 +112,21 @@ class WorkerManager:
             # dinámica. 0 mientras el minero no haya minado todavía; ahí el NCT
             # le estima el cómputo por su recurso (CPU/GPU).
             "hashrate_hps": ultimo_hashrate(),
+            # Agenda temática de este minero cuando corre standalone. El NCT la
+            # necesita para el quórum: un standalone que sólo mina 'economia' no
+            # cuenta como red disponible para una ley de 'salud', y sin este
+            # dato el sistema se declararía disponible y la ventana vencería
+            # igual. Los mineros en equipo heredan la agenda del equipo, que el
+            # NCT lee de `team:<id>`, así que acá sólo importa el standalone.
+            "categories": (parse_categories(config.get("STANDALONE_CATEGORIES", ""))
+                           if self._mode == "standalone" else []),
+            # Ídem para el veto por acción: un standalone que no mina
+            # derogaciones no es red disponible para derogar, y contarlo haría
+            # que el NCT abriera una ventana que este proceso va a ignorar.
+            "rejected_actions": (
+                [a.strip() for a in
+                 config.get("STANDALONE_REJECTED_ACTIONS", "").split(",") if a.strip()]
+                if self._mode == "standalone" else []),
         }
 
     def switch_mode(self, target: str, pool_url: str = "") -> dict:

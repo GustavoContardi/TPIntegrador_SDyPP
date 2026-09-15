@@ -42,6 +42,34 @@ necesita_docker() {
   fi
 }
 
+# Dependencias del API Gateway (fastapi/pydantic/httpx). Van aparte de las del
+# NCT y el worker porque son las únicas que no se pueden pinnear a ciegas:
+# `pydantic==2.9.2` compila `pydantic-core` contra PyO3, que no soporta Python
+# posterior a 3.13. En un intérprete más nuevo el pin no instala — y sin fastapi
+# la suite pierde 63 tests del API que aparecen como errores de import, sin
+# decir en ningún lado que faltó una dependencia.
+#
+# Por eso se intenta el pin primero (es lo que corre en el contenedor) y se cae
+# a versiones sueltas sólo si no hay forma. Los pines del API caen dentro de los
+# rangos que piden el NCT y el worker, así que instalarlos no los degrada.
+instala_deps_api() {
+  local req="$RAIZ/pilar2-distribuido/voxchain_api/requirements.txt"
+  if "$VENV/bin/pip" install --quiet -r "$req" 2>/dev/null; then
+    return 0
+  fi
+  echo "  Las versiones pinneadas del API no compilan en $("$VENV/bin/python" -V 2>&1);"
+  echo "  reintento sin pines."
+  if "$VENV/bin/pip" install --quiet "fastapi>=0.115" "pydantic>=2.9" "httpx>=0.27"; then
+    echo "  Listo, pero los tests del API corren contra versiones más nuevas que"
+    echo "  las del contenedor. Para correrlos contra las exactas, ver el README"
+    echo "  de pilar2-distribuido (sección Tests)."
+    return 0
+  fi
+  rojo "No se pudieron instalar fastapi/pydantic/httpx."
+  echo "  Los tests del API Gateway van a fallar por import; el resto corre igual."
+  return 1
+}
+
 # Crea el venv sólo la primera vez. Queda en .venv/ (ignorado por git).
 asegura_venv() {
   if [ ! -x "$VENV/bin/python" ]; then
@@ -52,6 +80,16 @@ asegura_venv() {
       -r "$RAIZ/pilar2-distribuido/nct-coordinator/requirements.txt" \
       -r "$RAIZ/pilar2-distribuido/worker/requirements.txt"
     "$VENV/bin/pip" install --quiet pytest "fakeredis[lua]"
+    info "Instalando dependencias del API Gateway..."
+    instala_deps_api || true
+  fi
+  # Un venv creado antes de que el API entrara a la suite no tiene fastapi. Se
+  # completa en vez de exigir borrarlo a mano: el síntoma de no hacerlo es una
+  # tanda de errores de import que no se parecen en nada a "te falta una
+  # dependencia".
+  if ! "$VENV/bin/python" -c "import fastapi, pydantic, httpx" >/dev/null 2>&1; then
+    info "Completando el venv con las dependencias del API Gateway..."
+    instala_deps_api || true
   fi
 }
 

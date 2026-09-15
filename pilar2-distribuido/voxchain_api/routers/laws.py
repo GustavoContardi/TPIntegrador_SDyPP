@@ -17,7 +17,8 @@ from common.blockchain import (
 )
 from common.identity import proposal_message, verify
 from voxchain_api.config import config
-from voxchain_api.models import Law, LawProposalRequest
+from voxchain_api.models import Law, LawProposalRequest, LawProposalResponse
+from voxchain_api.routers.system import availability_for
 from voxchain_api.services.rabbitmq_publisher import RabbitMQPublisher
 from voxchain_api.services.redis_reader import RedisReader
 
@@ -94,7 +95,7 @@ async def get_law(law_id: str, redis: RedisReader = Depends(get_redis_reader)):
     return law
 
 
-@router.post("", response_model=Law)
+@router.post("", response_model=LawProposalResponse)
 async def propose_law(
     proposal: LawProposalRequest,
     publisher: RabbitMQPublisher = Depends(get_rabbitmq_publisher),
@@ -107,6 +108,12 @@ async def propose_law(
     - Compresses the text
     - Generates law_id if not provided
     - Publishes to the RabbitMQ 'propuestas' queue
+
+    La respuesta lleva además el estado del sistema (``availability``): si no
+    hay mineros que puedan minar el área, la propuesta se acepta igual —viaja a
+    RabbitMQ y el NCT la encola— pero su ventana no se abre hasta que los haya,
+    y el cliente tiene que poder decirlo en ese mismo momento en vez de mostrar
+    un éxito liso y dejar al ciudadano esperando una ventana que no va a llegar.
     """
     category = _resolve_category(proposal, redis)
     _verify_proposal_signature(proposal, category)
@@ -135,7 +142,15 @@ async def propose_law(
         signature=proposal.signature,
     )
     publisher.close()
-    return law
+    # Se mide después de publicar: la propuesta ya es válida y no se rechaza por
+    # falta de mineros —queda encolada, que es justamente lo que hay que
+    # contarle al autor—, así que un fallo midiendo no puede tumbar el alta.
+    try:
+        disponibilidad = availability_for(redis, category, proposal.action,
+                                          proposal.law_id or "")
+    except Exception:  # noqa: BLE001
+        disponibilidad = None
+    return {**law, "availability": disponibilidad}
 
 
 def _resolve_category(proposal: LawProposalRequest, redis: RedisReader) -> str:

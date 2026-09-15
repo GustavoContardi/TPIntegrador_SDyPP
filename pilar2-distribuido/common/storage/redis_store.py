@@ -13,6 +13,7 @@ Esquema de claves (namespaced):
 - ``law_queue``           lista de ``law_id`` en estado ``pending_queue``
 - ``discarded_text_hashes`` set de ``text_hash`` descartados (detección de reproposición)
 - ``node:owner:<node_pubkey>`` ciudadano dueño de un nodo minero/pool (3.1)
+- ``nct:availability``    último veredicto de quórum de mineros del NCT
 
 Se asume un cliente Redis con ``decode_responses=True`` (valores como ``str``).
 Las claves privadas de los individuos **nunca** se persisten (AGENT.md 10):
@@ -25,7 +26,11 @@ import json
 from typing import Optional
 
 from common.blockchain.block import Block, GENESIS_PREVIOUS_HASH
-from common.blockchain.categories import DEFAULT_CATEGORY, normalize_category
+from common.blockchain.categories import (
+    DEFAULT_CATEGORY,
+    normalize_category,
+    parse_categories,
+)
 
 
 class LawStatus:
@@ -39,6 +44,11 @@ class LawStatus:
 class WindowResult:
     SUCCESS = "success"
     EXPIRED_PENDING = "expired_pending"
+    # Venció sin solución pero la red estaba por debajo del quórum de mineros
+    # (ver `common/blockchain/availability.py`). Se distingue de
+    # EXPIRED_PENDING porque la ley NO se descarta: vuelve a la cola. Que nadie
+    # pudiera minarla no es una señal política sobre la ley.
+    EXPIRED_NO_QUORUM = "expired_no_quorum"
 
 
 class CooldownReason:
@@ -301,8 +311,64 @@ class VoxChainStore:
                 "team_id": team_id,
                 "coordinator_worker_id": datos.get("coordinator_worker_id", ""),
                 "members": sorted(self.r.smembers(f"team:members:{team_id}") or []),
+                # Agenda del equipo (AGENT.md 3.10). La dificultad la ignora
+                # —un equipo aporta cómputo igual, a las ventanas que le
+                # importan—, pero el quórum la necesita: para una ley de un área
+                # que el equipo no vota, sus mineros cuentan cero.
+                "categories": parse_categories(datos.get("categories")),
+                # Política completa del coordinador: además de la agenda lleva
+                # los vetos de acción y de ley puntual. Sin esto, un equipo que
+                # vota 'salud' pero rechaza TODAS las derogaciones contaba como
+                # quórum para derogar una ley de salud, y la ventana se abría
+                # para vencer — el mismo modo de falla mudo que el quórum cierra.
+                "policy": self._pool_policy(datos.get("coordinator_worker_id", "")),
             })
         return equipos
+
+    def _pool_policy(self, coordinator_worker_id: str) -> dict:
+        """Política de voto que el API dejó para este coordinador, o ``{}``.
+
+        La escribe el API (`pool:policy:<id>`) y la relee el propio coordinador
+        en cada tick; acá se lee para que el NCT pueda anticipar su decisión. Una
+        política ilegible se lee como ausente: quedarse sin abrir ventanas porque
+        un JSON está roto sería peor que abrir de más.
+        """
+        if not coordinator_worker_id:
+            return {}
+        try:
+            crudo = self.r.get(f"pool:policy:{coordinator_worker_id}")
+            if not crudo:
+                return {}
+            policy = json.loads(crudo)
+            return policy if isinstance(policy, dict) else {}
+        except (ValueError, TypeError):
+            return {}
+
+    # ---- disponibilidad del sistema (quórum de mineros) -------------------
+    def save_availability_state(self, state: dict) -> None:
+        """Publica por qué el NCT no está abriendo ventanas (o que sí lo está).
+
+        Vive en Redis y no sólo en el log porque el destinatario es el
+        ciudadano: el API lo lee para responderle "el sistema no está
+        disponible, tu ley queda pospuesta" en vez de dejarlo mirando una cola
+        que no avanza. Lo escribe únicamente el líder, que es quien abre
+        ventanas.
+        """
+        self.r.hset("nct:availability", mapping={
+            "available": "1" if state.get("available") else "0",
+            "category": str(state.get("category") or ""),
+            "live_workers": str(int(state.get("live_workers") or 0)),
+            "eligible_workers": str(int(state.get("eligible_workers") or 0)),
+            "required_workers": str(int(state.get("required_workers") or 0)),
+            "queued_laws": str(int(state.get("queued_laws") or 0)),
+            "reason": str(state.get("reason") or ""),
+            "since": str(state.get("since") or ""),
+            "updated_at": str(state.get("updated_at") or ""),
+        })
+
+    def get_availability_state(self) -> dict:
+        """Último veredicto del NCT sobre el quórum, o ``{}`` si nunca evaluó."""
+        return self.r.hgetall("nct:availability") or {}
 
     # ---- historial de turnos (cuota por identidad) ------------------------
     def push_window_author(self, author_pubkey: str, keep: int = 64) -> None:

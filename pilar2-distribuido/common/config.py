@@ -58,6 +58,19 @@ DIFFICULTY_DECAY_WINDOWS = get_int("DIFFICULTY_DECAY_WINDOWS", 3)
 HPS_CPU = float(get("HPS_CPU", "954180"))
 HPS_GPU = float(get("HPS_GPU", "500000000"))
 
+# Quórum de mineros para abrir una ventana (ver
+# `common/blockchain/availability.py`). Si no hay al menos esta cantidad de
+# mineros vivos capaces de minar el área de la ley, la ventana NO se abre: la
+# ley queda encolada y el sistema se declara no disponible, en vez de abrir una
+# ventana que va a vencer sí o sí y descartar la ley por falta de red. 0 =
+# desactivado (comportamiento previo).
+MIN_WORKERS_FOR_WINDOW = get_int("MIN_WORKERS_FOR_WINDOW", 1)
+# Si ese quórum se mide sobre los mineros que minarían el ÁREA de la ley o sobre
+# toda la población viva. Con "false" el gate cubre sólo la red vacía y un área
+# que ningún equipo vota vuelve a expirar como veto político (AGENT.md 3.10),
+# que es la semántica original. Con "true" esa ley también espera.
+QUORUM_BY_CATEGORY = get_bool("QUORUM_BY_CATEGORY", True)
+
 # Cuota de turnos por identidad (ver `common/queue.py`). Acota cuánto puede
 # monopolizar una identidad las ventanas; no cierra Sybil (AGENT.md 9).
 TURN_QUOTA_WINDOWS = get_int("TURN_QUOTA_WINDOWS", 10)

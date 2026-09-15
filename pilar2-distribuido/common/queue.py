@@ -1,7 +1,9 @@
 """Lógica de cola de ventanas compartida entre NCT y API Gateway.
 
 - ``select_next_law``: round-robin entre autores distintos (AGENT.md 3.3) más
-  una **cuota de turnos** que acota cuánto puede monopolizar una identidad.
+  una **cuota de turnos** que acota cuánto puede monopolizar una identidad, y un
+  filtro opcional (``can_open``) que saltea las leyes que hoy no tienen mineros
+  capaces de minarlas.
 """
 
 from __future__ import annotations
@@ -50,7 +52,8 @@ def authors_over_quota(recent_authors: list[str], *,
 def select_next_law(pending_laws: list[dict], last_author: Optional[str],
                     recent_authors: Optional[list[str]] = None,
                     *, max_share: float = TURN_QUOTA_MAX_SHARE,
-                    sample: int = TURN_QUOTA_WINDOWS) -> Optional[dict]:
+                    sample: int = TURN_QUOTA_WINDOWS,
+                    can_open=None) -> Optional[dict]:
     """Elige la próxima ley para abrir ventana.
 
     ``pending_laws`` viene ordenada de más antigua a más nueva. Se prefiere la
@@ -70,6 +73,15 @@ def select_next_law(pending_laws: list[dict], last_author: Optional[str],
     reciente a la más vieja. Sin ese dato la cuota no se aplica y el
     comportamiento es el round-robin de siempre.
 
+    ``can_open`` filtra las leyes que **hoy no se pueden minar**: sin mineros
+    vivos que cubran su área, la ventana vencería sí o sí (ver
+    ``common/blockchain/availability.py``). Se aplica antes que todo lo demás, y
+    por eso una ley postergada **no bloquea la cola**: el sistema sigue con la
+    siguiente que sí tenga red. Sin esto, una sola ley de un área que nadie mina
+    congelaría el parlamento entero — una denegación de servicio gratis, del
+    mismo tipo que la que la cuota tiene prohibido causar. Si ninguna ley es
+    abrible se devuelve ``None``: ahí sí no hay nada que hacer más que esperar.
+
     **Lo que esta cuota NO hace.** No cierra Sybil: un atacante que firma cada
     ley con una identidad nueva nunca acumula cuota, porque la cuota es por
     identidad y generar identidades es gratis (AGENT.md 9, limitación aceptada y
@@ -77,6 +89,8 @@ def select_next_law(pending_laws: list[dict], last_author: Optional[str],
     caso barato y el único que se puede frenar sin verificación de identidad
     real —explícitamente fuera de alcance por AGENT.md 10—.
     """
+    if can_open is not None:
+        pending_laws = [law for law in pending_laws if can_open(law)]
     if not pending_laws:
         return None
 
