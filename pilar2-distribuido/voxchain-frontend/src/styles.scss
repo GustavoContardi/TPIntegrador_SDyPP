@@ -1,137 +1,262 @@
-@use '@angular/material' as mat;
+// Hoja global de VoxChain Reborn.
+//
+// Dos capas, en este orden:
+//
+//   1. `styles/nocturne` — el sistema de diseño tal cual vino de Claude Design:
+//      tokens y clases de componente (`.btn`, `.card`, `.tag`, `.input`,
+//      `.table`). No se toca desde acá; si hay que cambiar el look, se cambia
+//      allá.
+//   2. La capa de aplicación, abajo — los patrones que el diseño repite en
+//      varias pantallas (la portada de sección, la grilla de métricas, el
+//      bloque de hash, la regla que se desvanece).
+//
+// La capa 2 es global por una razón concreta y no por gusto: `angular.json`
+// pone un presupuesto de **4 kB de error** por hoja de componente
+// (`anyComponentStyle`), y estas pantallas comparten tanto que, repetidas en
+// cada componente, varias lo pasaban. Acá se pagan una sola vez.
 
-// Define a dark theme
-$dark-theme: mat.define-theme((
+@use '@angular/material' as mat;
+@use 'styles/nocturne';
+
+// Material queda sólo por el snackbar: es lo único que aporta comportamiento
+// (apilado, temporizado, accesibilidad) y no mero aspecto. Todo el resto del
+// chrome — tarjetas, botones, tablas, campos, pestañas — pasó a HTML nativo con
+// las clases de Nocturne, que es la única forma de que coincida con el diseño.
+$vc-theme: mat.define-theme((
   color: (
     theme-type: dark,
-    primary: mat.$azure-palette,
-    tertiary: mat.$blue-palette,
+    primary: mat.$violet-palette,
+    tertiary: mat.$violet-palette,
   ),
-  density: (
-    scale: 0,
-  ),
+  density: (scale: 0),
 ));
 
-html, body {
-  margin: 0;
-  padding: 0;
-  height: 100%;
-  font-family: 'Roboto', sans-serif;
-}
+html, body { height: 100%; }
 
 body {
-  background-color: #121212;
-  color: #e0e0e0;
-
-  // Apply the dark theme to body
-  @include mat.core-theme($dark-theme);
-  @include mat.button-theme($dark-theme);
-  @include mat.card-theme($dark-theme);
-  @include mat.chips-theme($dark-theme);
-  @include mat.table-theme($dark-theme);
-  @include mat.form-field-theme($dark-theme);
-  @include mat.icon-theme($dark-theme);
-  @include mat.badge-theme($dark-theme);
-  @include mat.progress-bar-theme($dark-theme);
-  @include mat.select-theme($dark-theme);
-  @include mat.option-theme($dark-theme);
-  @include mat.tabs-theme($dark-theme);
+  @include mat.core-theme($vc-theme);
+  @include mat.snack-bar-theme($vc-theme);
 }
 
-.mat-app-background {
-  background-color: #121212;
+.mat-mdc-snack-bar-container {
+  --mdc-snackbar-container-color: var(--color-surface);
+  --mdc-snackbar-supporting-text-color: var(--color-text);
+  --mat-snack-bar-button-color: var(--color-accent);
 }
 
-// El panel del mat-select se renderiza en un CDK overlay fuera del body,
-// por eso necesita su propio background explícito.
-.mat-mdc-select-panel {
-  background-color: #2a2a2a !important;
-}
-
-.mat-mdc-option {
-  color: #e0e0e0 !important;
-
-  &:hover:not(.mdc-list-item--disabled),
-  &.mat-mdc-option-active {
-    background-color: #3a3a3a !important;
-  }
-
-  &.mdc-list-item--selected:not(.mdc-list-item--disabled) {
-    background-color: #1e3a5f !important;
-  }
-}
-
-// El área de gobierno de una ley se muestra igual en todos lados (Leyes, Cola,
-// Equipos), así que vive acá y no en cada componente. Está global además por una
-// razón práctica: los estilos de componente tienen presupuesto propio en
-// angular.json (`anyComponentStyle`), y repetir el mismo chip en tres pantallas
-// lo gastaba tres veces.
-.category-chip {
-  display: inline-block;
-  font-size: 0.75rem;
-  color: #90caf9;
-  background: rgba(144, 202, 249, 0.1);
-  border: 1px solid rgba(144, 202, 249, 0.25);
-  border-radius: 12px;
-  padding: 1px 10px;
-  white-space: nowrap;
-
-  // "todas las áreas": es la ausencia de agenda, no un área concreta.
-  &.all {
-    color: #999;
-    background: rgba(255, 255, 255, 0.05);
-    border-color: #383838;
-  }
-}
-
-// Primitivas del tema oscuro compartidas por la pantalla de Minería y su sección
-// de Equipos. Viven acá por la misma razón que `.category-chip`: los estilos de
-// componente tienen presupuesto propio en angular.json (`anyComponentStyle`,
-// 2 kB de aviso y 4 kB de **error**), y tenerlas duplicadas en los dos
-// componentes dejaba a teams.component a 80 bytes de romper el build.
+// ── tokens propios de la app ───────────────────────────────────────────────
 //
-// Los componentes que necesitan otra cosa la pisan con un selector más
-// específico: en encapsulación emulada, la regla del componente lleva su
-// atributo y le gana a estas.
-code {
-  font-family: 'Courier New', monospace;
-  color: #90caf9;
-  background: #0c0c0c;
-  padding: 3px 7px;
-  border-radius: 4px;
-  border: 1px solid #222;
+// El sistema es monocromo a propósito: el acento es el único color. Pero el
+// diseño sí usa dos valores fuera de rampa para el semáforo de "está vivo", y
+// tiene sentido — un minero caído no es una variante del acento, es otra cosa.
+// Son los dos únicos colores de esta hoja que no salen de Nocturne.
+:root {
+  --vc-ok: #81c784;
+  --vc-down: #e57373;
 }
 
-// Etiqueta del modo de un minero (standalone / pool-worker / …).
-.mode-tag {
-  font-size: 0.75rem;
-  color: #b0b0b0;
-  background: rgba(255, 255, 255, 0.06);
-  padding: 2px 8px;
-  border-radius: 4px;
+// ── animaciones ────────────────────────────────────────────────────────────
+@keyframes vc-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+@keyframes vc-sweep { 0% { transform: translateX(-100%); } 100% { transform: translateX(300%); } }
+// El electrocardiograma del Estado del sistema: 120px es exactamente medio
+// ciclo del trazo, así que al reiniciarse el latido no da un salto.
+@keyframes vc-ecg { from { transform: translateX(0); } to { transform: translateX(-120px); } }
+
+// ── caparazón y páginas ────────────────────────────────────────────────────
+
+// El degradado nace arriba a la izquierda, detrás de la marca, y se apaga antes
+// de la mitad: es la "presencia" del sistema a escala de página.
+.vc-shell {
+  min-height: 100vh;
+  background: radial-gradient(120% 80% at 8% -10%, #1f2140 0%, var(--color-bg) 55%);
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.55;
 }
 
-// Semáforo de "está reportando". Rojo por defecto: si no llegó el estado, no
-// está vivo.
+.vc-page { max-width: 1240px; margin: 0 auto; padding: 56px 32px 120px; }
+.vc-page--narrow { max-width: 1080px; }
+.vc-page--home { padding-top: 0; }
+
+// Encabezado de pantalla: kicker + título + bajada, alineado a la izquierda y
+// con el aire a la derecha, como manda el sistema.
+.vc-head { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 28px; }
+.vc-head__text { max-width: 62ch; }
+.vc-kicker { margin: 0 0 14px; font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--color-neutral-500); }
+.vc-title { margin: 0; font-size: 44px; font-weight: 400; letter-spacing: -.025em; color: var(--color-neutral-100); }
+.vc-lead { margin: 14px 0 0; font-size: 14.5px; line-height: 1.7; color: var(--color-neutral-400); }
+
+.vc-section { margin-top: 56px; }
+.vc-section--divided { margin-top: 56px; padding-top: 40px; border-top: 1px solid var(--color-divider); }
+.vc-h3 { margin: 0; font-size: 24px; font-weight: 400; letter-spacing: -.02em; color: var(--color-neutral-100); }
+.vc-h3--sm { font-size: 22px; }
+.vc-h5 { margin: 0 0 10px; font-size: 15px; color: var(--color-neutral-100); }
+
+// Reglas que se desvanecen. La corta (24px) es para adentro de una tarjeta,
+// donde 48px por lado se comerían casi todo el ancho.
+.vc-rule {
+  height: 1px; border: 0; margin: 0;
+  background: linear-gradient(to right, transparent, var(--color-divider) 48px,
+    var(--color-divider) calc(100% - 48px), transparent);
+}
+.vc-rule--short {
+  margin: 18px 0;
+  background: linear-gradient(to right, transparent, var(--color-divider) 24px,
+    var(--color-divider) calc(100% - 24px), transparent);
+}
+.vc-rule--flat { background: var(--color-divider); }
+
+// ── texto y datos ──────────────────────────────────────────────────────────
+
+// Todo lo que calculó la red va en monoespaciada: hashes, nonces, ids, claves.
+.mono { font-family: var(--font-mono); }
+.vc-muted { color: var(--color-neutral-500); }
+.vc-note-sm { margin: 0; font-size: 12.5px; line-height: 1.6; color: var(--color-neutral-500); }
+
+// Fragmento de código dentro de un párrafo.
+.vc-code {
+  font-family: var(--font-mono); font-size: 12.5px;
+  color: var(--color-accent-300); background: var(--color-accent-900);
+  padding: 1px 6px; border-radius: 4px;
+}
+// Bloque de datos crudos: el desafío, una clave pública entera.
+.vc-code-block {
+  display: block; margin: 0; padding: 14px 16px;
+  border-radius: var(--radius-md); background: var(--color-neutral-900);
+  font-family: var(--font-mono); font-size: 12.5px; line-height: 1.7;
+  word-break: break-all; white-space: pre-wrap; color: var(--color-accent-300);
+}
+
+// Aclaración colgada de una marca de acento. El diseño la usa para lo que
+// matiza un estado ("el coordinador todavía no arrancó").
+.vc-note {
+  margin: 18px 0 0; padding-left: 12px;
+  border-left: 2px solid var(--color-accent-700);
+  font-size: 12.5px; line-height: 1.7; color: var(--color-neutral-500);
+}
+// Variantes para lo que el diseño no cubría: el aviso de sistema sin quórum y
+// los resultados de una propuesta. Misma forma, distinto filo.
+.vc-note--warn { border-left-color: var(--color-accent-2-400); color: var(--color-neutral-300); }
+.vc-note--bad { border-left-color: var(--vc-down); color: var(--color-neutral-300); }
+.vc-note--ok { border-left-color: var(--vc-ok); color: var(--color-neutral-300); }
+.vc-note strong { color: var(--color-neutral-100); font-weight: 500; }
+.vc-note p { margin: 6px 0 0; }
+
+.vc-empty { margin: 0; font-size: 13.5px; color: var(--color-neutral-500); }
+
+// ── métricas ───────────────────────────────────────────────────────────────
+.vc-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; }
+.vc-stat { gap: 2px; padding: 18px 20px; background: transparent; }
+.vc-stat__value { margin: 0; font-family: var(--font-mono); font-size: 28px; color: var(--color-neutral-100); }
+.vc-stat__value--accent { color: var(--color-accent-300); }
+.vc-stat__label, .vc-label {
+  margin: 0; font-size: 10.5px; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--color-neutral-500);
+}
+// Par etiqueta/valor de una ficha (Ventana, Acción, Dificultad, Vence).
+.vc-kv { margin: 6px 0 0; font-size: 14px; color: var(--color-neutral-100); }
+.vc-kv--accent { color: var(--color-accent-300); }
+
+// ── la ficha de ventana ────────────────────────────────────────────────────
+// La misma pieza aparece en Portada, Panel y Votar: la ley que la red está
+// minando ahora, o el aviso de que no hay ninguna. Vive acá porque es el
+// patrón más repetido del diseño y porque, copiada en las tres pantallas,
+// Portada pasaba sola el presupuesto de 4 kB de estilos por componente.
+.vc-live__top { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 14px; }
+.vc-live__id { margin: 18px 0 0; font-size: 26px; font-weight: 400; color: var(--color-neutral-100); }
+.vc-live__text, .vc-live__idle {
+  margin: 10px 0 0; font-size: 13.5px; line-height: 1.7;
+  white-space: pre-wrap; color: var(--color-neutral-400);
+}
+.vc-live__grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 20px;
+  margin: 24px 0 0; padding-top: 20px; border-top: 1px solid var(--color-divider);
+}
+.vc-live__cta { margin-top: 22px; gap: 12px; }
+.vc-live__kicker { font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--color-accent); }
+.vc-live__state { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--color-neutral-400); }
+.vc-live__pulse {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--color-accent);
+  animation: vc-pulse 1.8s ease-in-out infinite;
+}
+// La barra barre de izquierda a derecha sin llegar nunca al final: nadie sabe
+// cuánto falta para encontrar el nonce, así que una barra de progreso mentiría.
+.vc-live__bar { position: relative; height: 2px; margin-top: 18px; overflow: hidden; background: var(--color-accent-900); }
+.vc-live__sweep {
+  position: absolute; inset: 0; width: 30%;
+  background: linear-gradient(to right, transparent, var(--color-accent), transparent);
+  animation: vc-sweep 2.4s linear infinite;
+}
+
+.vc-live__btn { min-height: 42px; padding: 0 22px; }
+
+// ── superficies ────────────────────────────────────────────────────────────
+// El sistema pide que los fondos queden desaturados y con profundidad suave:
+// "soft" es la superficie apenas levantada, "plain" es sólo un filo.
+.vc-soft { background: color-mix(in srgb, var(--color-surface) 70%, transparent); }
+.vc-soft--75 { background: color-mix(in srgb, var(--color-surface) 75%, transparent); }
+.vc-plain { background: transparent; }
+// Marca de acento al canto: señala la tarjeta que importa en la pantalla.
+.vc-edge { box-shadow: inset 3px 0 0 var(--color-accent), var(--shadow-sm); }
+// El filo entero, para la tarjeta que además es tuya.
+.vc-owned { box-shadow: inset 0 0 0 1px var(--color-accent-700), var(--shadow-md); }
+
+.vc-grid { display: grid; gap: 16px; }
+.vc-grid--cards { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+.vc-grid--wide { grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); }
+.vc-grid--cols { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 20px; }
+.vc-stack { display: flex; flex-direction: column; gap: 12px; }
+.vc-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.vc-row { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; }
+.vc-push { margin-left: auto; }
+
+// ── etiquetas interactivas ─────────────────────────────────────────────────
+// El selector de áreas: un `.tag` que además es botón.
+.tag-btn {
+  cursor: pointer; padding: 6px 13px; font-size: 12.5px;
+  font-family: var(--font-body); border: 1px solid transparent;
+}
+.tag-btn:hover { border-color: var(--color-accent); }
+.tag-btn.tag-outline:hover { border-color: var(--color-accent-300); }
+
+// ── semáforo de actividad ──────────────────────────────────────────────────
+// Rojo por defecto: si no llegó el estado, el minero no está vivo.
 .dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #e57373;
-  display: inline-block;
+  flex: none; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--vc-down); display: inline-block;
+}
+.dot.online { background: var(--vc-ok); }
+.vc-state { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--color-neutral-400); }
+.vc-state.online { color: var(--color-neutral-200); }
 
-  &.online { background: #81c784; }
+// ── tablas ─────────────────────────────────────────────────────────────────
+.vc-table-wrap { overflow-x: auto; }
+.table th { padding: 10px 12px; }
+.table td { padding: 14px 12px; }
+.table .num { text-align: right; }
+// Un `<code>` dentro de una celda es un identificador, no un bloque: sin fondo
+// ni recuadro, que la columna ya lo encuadra.
+.table code { font-family: var(--font-mono); font-size: 12.5px; color: var(--color-neutral-100); }
+
+// ── listas de mineros ──────────────────────────────────────────────────────
+// El roster de un equipo. La primera fila (el coordinador) lleva tinte y marca
+// de acento porque es quien reparte el trabajo, no un miembro más.
+.vc-roster { list-style: none; display: flex; flex-direction: column; gap: 6px; margin: 18px 0 0; padding: 0; }
+.vc-roster li {
+  display: flex; align-items: center; gap: 11px; min-width: 0;
+  padding: 10px 13px; border-radius: 6px; background: var(--color-neutral-900);
+}
+.vc-roster li.coord {
+  background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+  box-shadow: inset 1px 0 0 var(--color-accent);
+}
+.vc-roster code {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--font-mono); font-size: 12px; color: var(--color-neutral-200);
 }
 
-// Material en tema oscuro. Antes iba con ::ng-deep dentro de cada componente,
-// que igual filtraba a todo el documento: acá hace lo mismo, una sola vez y sin
-// gastar presupuesto de componente.
-.mat-mdc-form-field {
-  --mdc-outlined-text-field-outline-color: #444;
-  --mdc-outlined-text-field-label-text-color: #888;
-}
-
-.mat-mdc-select-value,
-.mat-mdc-input-element {
-  color: #e0e0e0;
+// ── responsive ─────────────────────────────────────────────────────────────
+@media (max-width: 720px) {
+  .vc-page { padding: 40px 20px 80px; }
+  .vc-title { font-size: 34px; }
 }

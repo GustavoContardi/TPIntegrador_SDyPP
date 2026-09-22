@@ -69,3 +69,19 @@ export function categoryLabel(category: string | undefined | null,
   if (!category) return categoryLabel(DEFAULT_CATEGORY, known);
   return known.find((c) => c.value === category)?.label ?? category;
 }
+
+/**
+ * La acción en castellano; el slug crudo si es una que no conocemos.
+ *
+ * El backend guarda `promulgacion` / `derogacion` sin tilde —son identificadores
+ * y viajan en la firma, así que no se tocan— pero mostrarlos tal cual deja
+ * "promulgacion" a la vista en media app. Existe por la misma razón que
+ * `categoryLabel`: el dato es el slug, la etiqueta es cosa de la UI.
+ */
+export function actionLabel(action: string | undefined | null): string {
+  if (!action) return '';
+  return ({
+    promulgacion: 'promulgación',
+    derogacion: 'derogación',
+  } as Record<string, string>)[action] ?? action;
+}

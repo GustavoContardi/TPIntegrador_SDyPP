@@ -1,445 +1,230 @@
-import { Component, computed, inject, signal } from '@angular/core';
+import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { FormsModule } from '@angular/forms';
-import { MatCardModule } from '@angular/material/card';
-import { MatButtonModule } from '@angular/material/button';
-import { MatCheckboxModule } from '@angular/material/checkbox';
-import { MatFormFieldModule } from '@angular/material/form-field';
-import { MatIconModule } from '@angular/material/icon';
-import { MatInputModule } from '@angular/material/input';
 import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
-import { Router, RouterModule } from '@angular/router';
+import { RouterModule } from '@angular/router';
 import { IdentityService } from '../../core/services/identity.service';
-import { AccountsService } from '../../core/services/accounts.service';
+import { AccountsService, DemoAccount } from '../../core/services/accounts.service';
 
+/**
+ * Identidad: quién sos ante la red.
+ *
+ * Las dos formas de entrar viven en la misma pantalla y no en dos, porque son
+ * la misma decisión: una cuenta demo del despliegue (las firmas las resuelve el
+ * backend) o un par de claves propio generado acá (la privada no sale del
+ * navegador). Antes las cuentas demo estaban en `/select-account`, a un clic de
+ * distancia; la ruta sigue existiendo, pero el camino normal es este.
+ */
 @Component({
   selector: 'app-identity',
   standalone: true,
-  imports: [
-    CommonModule,
-    FormsModule,
-    MatCardModule,
-    MatButtonModule,
-    MatCheckboxModule,
-    MatFormFieldModule,
-    MatIconModule,
-    MatInputModule,
-    MatSnackBarModule,
-    RouterModule,
-  ],
+  imports: [CommonModule, RouterModule, MatSnackBarModule],
   template: `
-    <div class="identity-container">
-      <h1>Identidad y registro de nodo</h1>
-
-      <div class="identity-grid" *ngIf="!identityService.identity()">
-        <!-- Demo Accounts Card -->
-        <mat-card class="identity-card demo-card">
-          <mat-card-header>
-            <mat-icon mat-card-avatar class="card-icon">people</mat-icon>
-            <mat-card-title>Usar cuenta demo</mat-card-title>
-            <mat-card-subtitle>Acceso rápido a nodos preconfigurados</mat-card-subtitle>
-          </mat-card-header>
-          <mat-card-content>
-            <p>Entrá a VoxChain con una de las 5 cuentas demo. En este modo las firmas criptográficas las resuelve el backend por vos.</p>
-          </mat-card-content>
-          <mat-card-actions>
-            <button mat-raised-button color="primary" routerLink="/select-account">
-              Elegir cuenta demo
-            </button>
-          </mat-card-actions>
-        </mat-card>
-
-        <!-- Custom Account Card -->
-        <mat-card class="identity-card custom-card">
-          <mat-card-header>
-            <mat-icon mat-card-avatar class="card-icon">vpn_key</mat-icon>
-            <mat-card-title>Crear identidad propia</mat-card-title>
-            <mat-card-subtitle>Tus claves, tu identidad</mat-card-subtitle>
-          </mat-card-header>
-          <mat-card-content>
-            <p>Se genera un par de claves ECDSA P-256 en tu navegador. La clave privada nunca sale de acá: las propuestas se firman localmente.</p>
-
-            <form class="register-form" (ngSubmit)="register()">
-              <mat-form-field appearance="outline" class="name-field">
-                <mat-label>Nombre para mostrar</mat-label>
-                <input
-                  matInput
-                  name="displayName"
-                  [ngModel]="displayName()"
-                  (ngModelChange)="displayName.set($event)"
-                  maxlength="24"
-                  autocomplete="off"
-                  placeholder="Ej: Gustavo"
-                  [disabled]="generating()" />
-                <mat-hint>Se guarda sólo en este navegador; nunca viaja a la red.</mat-hint>
-                <mat-error>Entre 3 y 24 caracteres.</mat-error>
-              </mat-form-field>
-
-              <mat-checkbox
-                class="ack-box"
-                [ngModel]="acknowledged()"
-                (ngModelChange)="acknowledged.set($event)"
-                name="acknowledged"
-                [disabled]="generating()">
-                Entiendo que mi clave privada queda guardada en este navegador de forma
-                no exportable, que sólo voy a poder verla una vez para respaldarla, y que
-                borrar los datos del sitio la elimina para siempre.
-              </mat-checkbox>
-
-              <p class="name-error" *ngIf="nameTouched() && !nameValid()">
-                Elegí un nombre de entre 3 y 24 caracteres.
-              </p>
-            </form>
-          </mat-card-content>
-          <mat-card-actions>
-            <button
-              mat-raised-button
-              color="accent"
-              type="button"
-              (click)="register()"
-              [disabled]="generating() || !canRegister()">
-              {{ generating() ? 'Creando identidad...' : 'Crear identidad' }}
-            </button>
-          </mat-card-actions>
-        </mat-card>
+    <main class="vc-page vc-page--narrow">
+      <div class="vc-head__text">
+        <h6 class="vc-kicker">Identidad</h6>
+        <h1 class="vc-title">Quién sos ante la red</h1>
+        <p class="vc-lead">
+          Ante la red te identifica tu clave pública. Podés entrar con una cuenta demo
+          del despliegue o generar un par de claves propio en este navegador.
+        </p>
       </div>
 
-      <!-- Identity Active Card -->
-      <mat-card class="active-identity-card" *ngIf="identityService.identity() as id">
-        <mat-card-header>
-          <div class="active-header-title">
-            <span class="active-title">Identidad activa</span>
-            <span class="active-subtitle">
-              {{ identityService.isDemoMode() ? 'Modo demo' : 'Identidad criptográfica propia' }}
+      <!-- ── identidad activa ────────────────────────────────────────────── -->
+      <div class="card elev-sm vc-soft--75 active" *ngIf="identityService.identity() as id">
+        <div class="active__top">
+          <span class="card-kicker">
+            Identidad activa · {{ identityService.isDemoMode() ? 'modo demo' : 'claves propias' }}
+          </span>
+          <span class="tag tag-accent">{{ id.username || 'sin nombre' }}</span>
+        </div>
+
+        <p class="vc-label active__label">Clave pública (SPKI en base64)</p>
+        <code class="vc-code-block">{{ id.pubkey }}</code>
+
+        <div class="vc-actions active__cta">
+          <button class="btn btn-secondary active__btn" (click)="copy(id.pubkey, 'Clave pública copiada.')">
+            Copiar clave
+          </button>
+          <button class="btn btn-ghost active__btn" *ngIf="identityService.isDemoMode()"
+                  (click)="releaseCurrent()">Liberar la cuenta</button>
+          <button class="btn btn-ghost active__btn" *ngIf="!identityService.isDemoMode()"
+                  (click)="clear()">Borrar identidad</button>
+        </div>
+
+        <p class="vc-note" *ngIf="identityService.isDemoMode()">
+          En modo demo las firmas las resuelve el worker en el backend: no hay clave
+          privada en este navegador.
+        </p>
+
+        <!-- Respaldo de una sola vez: existe sólo mientras dure esta pantalla,
+             recién creada la identidad, y no se guarda en ningún lado. Es la
+             contracara de que la clave sea no exportable. -->
+        <ng-container *ngIf="pemBackup() as pem">
+          <div class="vc-note vc-note--bad backup">
+            <strong>Guardá esto ahora.</strong>&ngsp;
+            <span>Es la única vez que vas a ver tu clave privada: el navegador la
+              almacena de forma no exportable, así que ni la app ni vos pueden volver a
+              leerla. Copiala a un archivo <code class="vc-code">.pem</code> en un lugar
+              seguro.</span>
+          </div>
+          <pre class="vc-code-block backup__pem">{{ pem }}</pre>
+          <div class="vc-actions active__cta">
+            <button class="btn btn-secondary active__btn" (click)="copy(pem, 'PEM copiado.')">Copiar PEM</button>
+            <button class="btn btn-ghost active__btn" (click)="pemBackup.set(null)">Ya la guardé</button>
+          </div>
+        </ng-container>
+
+        <p class="vc-note" *ngIf="!identityService.isDemoMode() && !pemBackup()">
+          <strong>Tu clave privada no es exportable.</strong>&ngsp;
+          <span>El navegador firma con ella pero no puede entregarla, ni a esta app ni a
+            ningún script. Borrar los datos del sitio la elimina para siempre — y no
+            hace falta dársela a ningún minero: cada uno genera la suya al arrancar y se
+            vincula a la tuya con un token de un solo uso.</span>
+        </p>
+      </div>
+
+      <!-- ── cuentas demo ────────────────────────────────────────────────── -->
+      <section class="vc-section">
+        <h3 class="vc-h3 vc-h3--sm">Cuentas demo</h3>
+        <p class="vc-lead demo__lead">
+          Las cuentas del despliegue de demo, una por worker. Se reservan por sesión.
+        </p>
+
+        <div class="vc-table-wrap" *ngIf="accounts().length; else sinCuentas">
+          <table class="table demo__table">
+            <thead>
+              <tr>
+                <th>Cuenta</th>
+                <th>Minero</th>
+                <th>Modo</th>
+                <th>Estado</th>
+                <th class="num"></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr *ngFor="let a of accounts()">
+                <td class="demo__user">{{ a.username }}</td>
+                <td class="mono demo__worker">{{ a.worker_id }}</td>
+                <td>
+                  <span class="tag" [ngClass]="modeCls(a.mode)">{{ a.mode }}</span>
+                </td>
+                <td class="demo__state" [class.mine]="isMine(a)">{{ stateLabel(a) }}</td>
+                <td class="num">
+                  <button class="btn btn-ghost demo__btn" *ngIf="isMine(a)"
+                          (click)="release(a)">Liberar</button>
+                  <button class="btn btn-ghost demo__btn" *ngIf="!isMine(a)"
+                          [disabled]="a.status === 'occupied' || busy()"
+                          (click)="use(a)">Usar</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <ng-template #sinCuentas>
+          <p class="vc-empty">{{ loadingAccounts() ? 'Cargando cuentas…' : 'No se pudieron leer las cuentas demo.' }}</p>
+        </ng-template>
+      </section>
+
+      <!-- ── identidad propia ────────────────────────────────────────────── -->
+      <section class="vc-section--divided own">
+        <div class="card elev-sm vc-plain own__card">
+          <span class="card-kicker">Identidad propia</span>
+          <h4 class="own__title">Generar un par de claves</h4>
+          <p class="own__body">
+            ECDSA P-256 generado en tu navegador. La privada queda guardada de forma no
+            exportable: vas a poder respaldarla una sola vez, y borrar los datos del
+            sitio la elimina para siempre.
+          </p>
+
+          <div class="field own__field">
+            <label for="vc-name">Nombre para mostrar</label>
+            <input id="vc-name" class="input" placeholder="Ej: Gustavo" maxlength="24"
+                   autocomplete="off" [value]="displayName()" [disabled]="generating()"
+                   (input)="displayName.set($any($event.target).value)"
+                   (blur)="nameTouched.set(true)">
+            <p class="vc-note-sm own__hint">Se guarda sólo en este navegador; nunca viaja a la red.</p>
+          </div>
+
+          <label class="radio own__ack">
+            <input type="checkbox" [checked]="acknowledged()" [disabled]="generating()"
+                   (change)="acknowledged.set($any($event.target).checked)">
+            <span class="dot own__box"></span>
+            <span class="own__ack-text">
+              Entiendo que mi clave privada queda guardada en este navegador de forma no
+              exportable, que sólo voy a poder verla una vez para respaldarla, y que
+              borrar los datos del sitio la elimina para siempre.
             </span>
-          </div>
-        </mat-card-header>
-        <mat-card-content>
-          <div class="account-info" *ngIf="identityService.isDemoMode()">
-            <p><strong>Usuario:</strong> <span class="account-name">{{ identityService.getUsername() }}</span></p>
-            <p class="demo-badge">Las firmas las gestiona el backend</p>
-          </div>
+          </label>
 
-          <div class="account-info" *ngIf="!identityService.isDemoMode() && identityService.getUsername() as name">
-            <p><strong>Nombre:</strong> <span class="account-name">{{ name }}</span></p>
-            <p class="local-badge">Local a este navegador: ante la red te identifica tu clave pública</p>
-          </div>
+          <p class="vc-note vc-note--bad own__error" *ngIf="nameTouched() && !nameValid()">
+            Elegí un nombre de entre 3 y 24 caracteres.
+          </p>
 
-          <div class="key-field">
-            <div class="key-header">
-              <strong class="field-label">Clave pública (SPKI en base64):</strong>
-              <button mat-stroked-button class="action-btn" (click)="copyToClipboard(id.pubkey)" title="Copiar clave pública">
-                <svg class="btn-svg" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
-                </svg>
-                Copiar clave
-              </button>
-            </div>
-            <code class="key-block pubkey-block">{{ id.pubkey }}</code>
-          </div>
-
-          <div class="key-field" *ngIf="!identityService.isDemoMode()">
-            <div class="key-header">
-              <strong class="field-label">Clave privada:</strong>
-            </div>
-
-            <!-- Respaldo de una sola vez: existe sólo en esta pantalla, recién
-                 creada la identidad, y no se guarda en ningún lado. -->
-            <ng-container *ngIf="pemBackup() as pem">
-              <div class="warning-banner backup-banner">
-                <mat-icon class="warning-icon">warning</mat-icon>
-                <div class="warning-text">
-                  <strong>Guardá esto ahora.</strong> Es la única vez que vas a ver tu clave privada:
-                  el navegador la almacena de forma no exportable, así que ni la app ni vos pueden
-                  volver a leerla. Copiala a un archivo <code>.pem</code> en un lugar seguro.
-                </div>
-              </div>
-              <div class="key-actions">
-                <button mat-stroked-button class="action-btn" (click)="copyToClipboard(pem)">
-                  <svg class="btn-svg" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
-                  </svg>
-                  Copiar PEM
-                </button>
-                <button mat-stroked-button class="action-btn" (click)="dismissBackup()">
-                  Ya la guardé
-                </button>
-              </div>
-              <pre class="key-block privkey-block">{{ pem }}</pre>
-            </ng-container>
-
-            <div class="key-placeholder" *ngIf="!pemBackup()">
-              No exportable — vive en este navegador y no se puede leer
-            </div>
-
-            <div class="warning-banner" *ngIf="!pemBackup()">
-              <mat-icon class="warning-icon">shield</mat-icon>
-              <div class="warning-text">
-                Tu clave privada está guardada de forma <strong>no exportable</strong>: el navegador
-                firma con ella pero no puede entregarla, ni a esta app ni a ningún script. Borrar los
-                datos del sitio la elimina para siempre.
-                <br><br>
-                <strong>No hace falta dársela a ningún minero.</strong> Cada minero genera su propia
-                identidad al arrancar y se vincula a la tuya con un token de un solo uso.
-              </div>
-            </div>
-          </div>
-        </mat-card-content>
-        <mat-card-actions class="active-actions">
-          <button mat-raised-button color="warn" (click)="clear()" *ngIf="!identityService.isDemoMode()">
-            Borrar identidad
+          <button class="btn btn-primary own__submit" (click)="register()"
+                  [disabled]="generating() || !canRegister()">
+            {{ generating() ? 'Creando identidad…' : 'Crear identidad' }}
           </button>
-          <button mat-button color="primary" (click)="changeAccount()" *ngIf="identityService.isDemoMode()">
-            Cambiar de cuenta
-          </button>
-        </mat-card-actions>
-      </mat-card>
-    </div>
+        </div>
+
+        <div class="card elev-sm vc-plain own__card">
+          <span class="card-kicker">Tu clave privada nunca viaja</span>
+          <h4 class="own__title">Los mineros no la necesitan</h4>
+          <p class="own__body">
+            Cada minero genera su propia identidad al arrancar y se vincula a la tuya con
+            un token de enrolamiento de un solo uso. Lo que firmás con tu clave son las
+            acciones de administración: registrar, cambiar de modo, fijar política.
+          </p>
+        </div>
+      </section>
+    </main>
   `,
   styles: [`
-    .identity-container {
-      padding: 40px 20px;
-      max-width: 1000px;
-      margin: 0 auto;
+    .active { margin-top: 40px; padding: 26px; }
+    .active__top { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 14px; }
+    .active__label { margin: 18px 0 8px; }
+    .active__cta { margin-top: 18px; gap: 12px; }
+    .active__btn { font-size: 13px; }
+
+    .backup { margin-top: 20px; }
+    .backup__pem { margin-top: 12px; white-space: pre; word-break: normal; overflow-x: auto; }
+
+    .demo__lead { margin: 6px 0 22px; font-size: 13.5px; }
+    .demo__table { min-width: 720px; }
+    .demo__user { font-size: 13.5px; color: var(--color-neutral-100); }
+    .demo__worker { font-size: 12.5px; color: var(--color-neutral-300); }
+    .demo__state { font-size: 13px; color: var(--color-neutral-300); }
+    .demo__state.mine { color: var(--color-accent-300); }
+    .demo__btn { font-size: 12.5px; }
+
+    .own { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+    .own__card { padding: 24px; }
+    .own__title { margin: 12px 0 10px; font-size: 18px; color: var(--color-neutral-100); }
+    .own__body { margin: 0 0 18px; font-size: 13px; line-height: 1.7; color: var(--color-neutral-400); }
+    .own__field { margin-bottom: 14px; }
+    .own__hint { margin-top: 6px; }
+    /* El acuerdo es un párrafo, no una línea: la casilla se alinea con la
+       primera línea del texto en vez de centrarse sobre el bloque entero. */
+    .own__ack { align-items: flex-start; gap: 10px; font-size: 12.5px; line-height: 1.6; color: var(--color-neutral-400); }
+    .own__box { width: 16px; height: 16px; border-radius: var(--radius-sm); background: transparent;
+                border: 1.5px solid var(--color-divider); margin-top: 2px; }
+    .own__ack input:checked + .own__box {
+      border-color: var(--color-accent); background: var(--color-accent);
+      box-shadow: inset 0 0 0 3px var(--color-bg);
     }
-    h1 {
-      color: #e0e0e0;
-      margin-bottom: 30px;
-      font-weight: 500;
-    }
-    .identity-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-      gap: 24px;
-    }
-    .identity-card {
-      background-color: #1e1e1e;
-      color: #e0e0e0;
-      border: 1px solid #333;
-      border-radius: 8px;
-      transition: all 0.3s ease;
-      display: flex;
-      flex-direction: column;
-      height: 100%;
-    }
-    .identity-card:hover {
-      transform: translateY(-4px);
-      box-shadow: 0 8px 16px rgba(0, 0, 0, 0.4);
-      border-color: #555;
-    }
-    .card-icon {
-      font-size: 32px;
-      height: 32px;
-      width: 32px;
-      color: #90caf9;
-      margin-right: 12px;
-    }
-    mat-card-title {
-      color: #e0e0e0;
-      font-size: 1.25rem;
-      font-weight: 600;
-    }
-    mat-card-subtitle {
-      color: #888;
-    }
-    mat-card-content {
-      padding: 16px;
-      flex-grow: 1;
-      color: #b0b0b0;
-      line-height: 1.6;
-    }
-    mat-card-actions {
-      padding: 16px;
-      display: flex;
-      justify-content: flex-end;
-    }
-    .active-identity-card {
-      background-color: #1e1e1e;
-      color: #e0e0e0;
-      border: 1px solid #333;
-      border-radius: 8px;
-      padding: 24px;
-    }
-    .active-header-title {
-      display: flex;
-      flex-direction: column;
-      margin-bottom: 12px;
-    }
-    .active-title {
-      font-size: 1.4rem;
-      font-weight: 600;
-      color: #e0e0e0;
-    }
-    .active-subtitle {
-      font-size: 0.9rem;
-      color: #888;
-      margin-top: 4px;
-    }
-    .field-label {
-      font-size: 0.95rem;
-      font-weight: 500;
-      color: #bbb;
-    }
-    .action-btn {
-      --mdc-outlined-button-outline-color: #444;
-      --mdc-outlined-button-label-text-color: #bbb;
-      font-size: 0.8rem !important;
-      height: 32px !important;
-      line-height: 32px !important;
-      padding: 0 10px !important;
-    }
-    .action-btn:hover {
-      --mdc-outlined-button-outline-color: #888;
-      --mdc-outlined-button-label-text-color: #fff;
-      background-color: rgba(255, 255, 255, 0.05);
-    }
-    .btn-svg {
-      width: 14px;
-      height: 14px;
-      margin-right: 6px;
-      vertical-align: middle;
-      display: inline-block;
-    }
-    .account-info {
-      margin: 16px 0;
-      padding: 16px;
-      background-color: #2a2a2a;
-      border-radius: 6px;
-      border-left: 4px solid #2196f3;
-    }
-    .account-name {
-      color: #2196f3;
-      font-weight: 600;
-      font-size: 1.1rem;
-    }
-    .demo-badge {
-      color: #4caf50;
-      font-weight: 600;
-      margin-top: 8px;
-      font-size: 0.9rem;
-    }
-    .local-badge { color: #90caf9; margin-top: 8px; font-size: 0.85rem; }
-    .register-form {
-      display: flex; flex-direction: column; gap: 4px; margin-top: 20px;
-    }
-    .name-field { width: 100%; }
-    /* Material viene con tema claro; se alinea con el resto de la página. */
-    .name-field ::ng-deep {
-      .mat-mdc-text-field-wrapper { background-color: #2a2a2a; }
-      .mdc-notched-outline__leading,
-      .mdc-notched-outline__notch,
-      .mdc-notched-outline__trailing { border-color: #444; }
-      input.mat-mdc-input-element { color: #e0e0e0; caret-color: #90caf9; }
-      .mat-mdc-form-field-hint { color: #888; font-size: 0.78rem; }
-      .mat-mdc-floating-label { color: #bbb; }
-    }
-    .ack-box { color: #b0b0b0; font-size: 0.85rem; margin-top: 4px; }
-    .ack-box ::ng-deep .mdc-form-field > label {
-      line-height: 1.5; padding-left: 8px;
-    }
-    .name-error { color: #ef9a9a; font-size: 0.82rem; margin: 4px 0 0; }
-    .key-field {
-      margin: 24px 0;
-    }
-    .key-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 8px;
-      color: #e0e0e0;
-    }
-    .key-actions {
-      display: flex;
-      gap: 4px;
-    }
-    .small-icon {
-      font-size: 18px;
-      height: 18px;
-      width: 18px;
-      color: #888;
-    }
-    .small-icon:hover {
-      color: #fff;
-    }
-    .key-block {
-      font-family: 'Courier New', monospace;
-      font-size: 0.85rem;
-      background-color: #0c0c0c;
-      padding: 16px;
-      border-radius: 6px;
-      display: block;
-      border: 1px solid #222;
-      overflow-x: auto;
-    }
-    .pubkey-block {
-      color: #90caf9;
-      word-break: break-all;
-      white-space: pre-wrap;
-    }
-    .privkey-block {
-      color: #a5d6a7;
-      margin: 0;
-      white-space: pre;
-    }
-    .key-placeholder {
-      font-family: 'Courier New', monospace;
-      font-size: 0.85rem;
-      background-color: #0c0c0c;
-      color: #444;
-      padding: 16px;
-      border-radius: 6px;
-      border: 1px solid #222;
-      letter-spacing: 2px;
-    }
-    .warning-banner {
-      margin-top: 24px;
-      background-color: rgba(255, 152, 0, 0.1);
-      border-left: 4px solid #ff9800;
-      border-radius: 6px;
-      padding: 16px;
-      display: flex;
-      gap: 16px;
-      align-items: flex-start;
-    }
-    /* El respaldo de una sola vez: rojo, no naranja. Es la única advertencia
-       de la app cuya ventana de acción se cierra y no vuelve a abrirse. */
-    .backup-banner {
-      margin-top: 0;
-      background-color: rgba(244, 67, 54, 0.12);
-      border-left-color: #f44336;
-    }
-    .warning-icon {
-      color: #ff9800;
-      font-size: 28px;
-      height: 28px;
-      width: 28px;
-    }
-    .warning-text {
-      color: #ffb74d;
-      font-size: 0.95rem;
-      line-height: 1.6;
-    }
-    .warning-text code {
-      background-color: rgba(0, 0, 0, 0.3);
-      padding: 2px 6px;
-      border-radius: 4px;
-      color: #fff;
-      font-family: monospace;
-    }
-    .active-actions {
-      margin-top: 24px;
-      padding: 0;
-      display: flex;
-      justify-content: flex-start;
-    }
+    .own__ack:hover .own__box { border-color: var(--color-accent); }
+    .own__ack-text { flex: 1; }
+    .own__error { margin-top: 14px; }
+    .own__submit { align-self: flex-start; margin-top: 18px; min-height: 40px; padding: 0 20px; }
   `]
 })
-export class IdentityComponent {
+export class IdentityComponent implements OnInit {
   identityService = inject(IdentityService);
   accountsService = inject(AccountsService);
-  router = inject(Router);
-  snackBar = inject(MatSnackBar);
+  private snackBar = inject(MatSnackBar);
 
+  accounts = signal<DemoAccount[]>([]);
+  loadingAccounts = signal(true);
+  busy = signal(false);
   generating = signal(false);
 
   /**
@@ -448,7 +233,7 @@ export class IdentityComponent {
    * No se persiste a propósito: es la contracara de que la clave sea no
    * exportable. Si se guardara en algún lado para poder mostrarlo de nuevo,
    * volveríamos a tener una copia legible de la privada, que es justo lo que
-   * este cambio elimina.
+   * este diseño elimina.
    */
   pemBackup = signal<string | null>(null);
 
@@ -463,6 +248,101 @@ export class IdentityComponent {
   });
 
   canRegister = computed(() => this.nameValid() && this.acknowledged());
+
+  ngOnInit() {
+    this.loadAccounts();
+  }
+
+  // -- cuentas demo ---------------------------------------------------------
+
+  private loadAccounts() {
+    this.accountsService.listAccounts().subscribe({
+      next: (accounts) => {
+        this.accounts.set(accounts);
+        this.loadingAccounts.set(false);
+      },
+      // Sin reintento automático: la pantalla sigue siendo útil sin la tabla
+      // (podés generar claves propias), y un bucle de reintentos contra un
+      // backend caído sólo llena la consola.
+      error: () => this.loadingAccounts.set(false),
+    });
+  }
+
+  /** La cuenta que tiene reservada esta sesión. */
+  isMine(account: DemoAccount): boolean {
+    return this.accountsService.selectedAccount()?.username === account.username;
+  }
+
+  stateLabel(account: DemoAccount): string {
+    if (this.isMine(account)) return 'tu sesión';
+    return account.status === 'occupied' ? 'ocupada' : 'libre';
+  }
+
+  modeCls(mode: string): string {
+    return mode === 'pool-coordinator' ? 'tag-accent'
+      : mode === 'standalone' ? 'tag-outline' : 'tag-neutral';
+  }
+
+  use(account: DemoAccount) {
+    if (account.status === 'occupied') {
+      this.snackBar.open('Esa cuenta ya está en uso por otra sesión.', 'Cerrar', { duration: 3000 });
+      return;
+    }
+    this.busy.set(true);
+    this.accountsService.reserveAccount(account.username).subscribe({
+      next: (res) => {
+        this.busy.set(false);
+        if (res.status !== 'reserved' && res.status !== 'already_reserved') return;
+        this.accountsService.setSelectedAccount(account);
+        this.identityService.identity.set({
+          pubkey: account.pubkey,
+          username: account.username,
+          isDemo: true,
+        });
+        this.snackBar.open(`Entraste como "${account.username}".`, 'Cerrar', { duration: 2500 });
+        this.loadAccounts();
+      },
+      error: (err) => {
+        this.busy.set(false);
+        this.snackBar.open(
+          err?.status === 409
+            ? 'Esa cuenta ya está en uso por otra sesión.'
+            : 'No se pudo tomar la cuenta. Probá de nuevo.',
+          'Cerrar', { duration: 3000 });
+        this.loadAccounts();
+      },
+    });
+  }
+
+  release(account: DemoAccount) {
+    this.busy.set(true);
+    this.accountsService.releaseAccount(account.username).subscribe({
+      next: () => {
+        this.busy.set(false);
+        this.accountsService.setSelectedAccount(null);
+        this.identityService.clearIdentity();
+        this.snackBar.open(`Cuenta "${account.username}" liberada.`, 'Cerrar', { duration: 2500 });
+        this.loadAccounts();
+      },
+      error: () => {
+        this.busy.set(false);
+        this.snackBar.open('No se pudo liberar la cuenta.', 'Cerrar', { duration: 3000 });
+      },
+    });
+  }
+
+  /** Suelta la cuenta demo activa desde la ficha de arriba. */
+  releaseCurrent() {
+    const current = this.accountsService.selectedAccount();
+    if (current) {
+      this.release(current);
+      return;
+    }
+    // Sin reserva en esta sesión no hay nada que devolver; se sale y listo.
+    this.identityService.clearIdentity();
+  }
+
+  // -- identidad propia -----------------------------------------------------
 
   async register() {
     this.nameTouched.set(true);
@@ -492,19 +372,8 @@ export class IdentityComponent {
     this.snackBar.open('Identidad borrada.', 'Cerrar', { duration: 2000 });
   }
 
-  /** Descarta el respaldo de la vista. No hay vuelta atrás, y es el punto. */
-  dismissBackup() {
-    this.pemBackup.set(null);
-  }
-
-  changeAccount() {
-    this.accountsService.clearSession();
-    this.identityService.clearIdentity();
-    this.router.navigate(['/select-account']);
-  }
-
-  copyToClipboard(text: string) {
+  copy(text: string, message: string) {
     navigator.clipboard.writeText(text);
-    this.snackBar.open('Copiado al portapapeles.', 'Cerrar', { duration: 2000 });
+    this.snackBar.open(message, 'Cerrar', { duration: 2000 });
   }
 }

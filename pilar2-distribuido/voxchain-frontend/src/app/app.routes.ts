@@ -1,63 +1,77 @@
 import { Routes } from '@angular/router';
 import { accountSelectedGuard } from './core/guards/account-selected.guard';
 
+/**
+ * El mapa de la app, dividido en dos por un criterio: **mirar es público,
+ * actuar pide identidad.**
+ *
+ * Todo lo que sólo lee el estado de la red —la portada, el panel, la cadena,
+ * las leyes, el estado del sistema, los mineros— se ve sin registrarse. Es una
+ * blockchain de gobierno: su registro es público por definición, y pedir
+ * identidad para leerlo contradecía el proyecto. Además rompía la barra, que
+ * ofrece esos destinos siempre y rebotaba a /identity al tocarlos.
+ *
+ * El guard queda sólo donde la pantalla existe para escribir: proponer una ley
+ * y participar de una ventana. Igual no es él quien protege nada — la
+ * autorización real la hace el backend exigiendo la firma del dueño sobre cada
+ * acción; esto sólo evita mostrar un formulario que no se va a poder enviar.
+ */
 export const routes: Routes = [
-  // La portada es pública: explica el proyecto antes de pedir nada. Antes la
-  // raíz era un guard que rebotaba a /dashboard o /identity, así que no había
-  // ningún lugar donde contar de qué se trata.
+  // ── públicas: leer la red no requiere identidad ────────────────────────
   {
     path: '',
     loadComponent: () => import('./features/home/home.component').then(m => m.HomeComponent)
   },
-  { 
-    path: 'select-account', 
-    loadComponent: () => import('./features/account-selection/account-selection.component').then(m => m.AccountSelectionComponent) 
+  {
+    path: 'dashboard',
+    loadComponent: () => import('./features/dashboard/dashboard.component').then(m => m.DashboardComponent)
   },
-  { 
-    path: 'dashboard', 
-    loadComponent: () => import('./features/dashboard/dashboard.component').then(m => m.DashboardComponent),
-    canActivate: [accountSelectedGuard]
+  {
+    path: 'chain',
+    loadComponent: () => import('./features/chain/chain.component').then(m => m.ChainComponent)
   },
-  { 
-    path: 'chain', 
-    loadComponent: () => import('./features/chain/chain.component').then(m => m.ChainComponent),
-    canActivate: [accountSelectedGuard]
+  {
+    path: 'laws',
+    loadComponent: () => import('./features/laws/laws.component').then(m => m.LawsComponent)
   },
-  { 
-    path: 'laws', 
-    loadComponent: () => import('./features/laws/laws.component').then(m => m.LawsComponent),
-    canActivate: [accountSelectedGuard]
+  {
+    path: 'health',
+    loadComponent: () => import('./features/health/health.component').then(m => m.HealthComponent)
   },
-  { 
-    path: 'health', 
-    loadComponent: () => import('./features/health/health.component').then(m => m.HealthComponent),
-    canActivate: [accountSelectedGuard]
-  },
-  { 
-    path: 'identity', 
-    loadComponent: () => import('./features/identity/identity.component').then(m => m.IdentityComponent)
-  },
-  { 
-    path: 'propose', 
-    loadComponent: () => import('./features/propose-law/propose-law.component').then(m => m.ProposeLawComponent),
-    canActivate: [accountSelectedGuard]
-  },
-  { 
-    path: 'queue', 
-    loadComponent: () => import('./features/queue/queue.component').then(m => m.QueueComponent),
-    canActivate: [accountSelectedGuard]
-  },
-  // Pública a propósito: es uno de los dos destinos de la portada, y mostrar el
-  // estado de la red no requiere identidad. Todo lo que escribe (fundar equipo,
-  // unirse, cambiar de modo) lo autoriza el backend por dueño, así que la
-  // pantalla queda de sólo lectura para quien no se registró.
+  // Todo lo que escribe (fundar equipo, unirse, cambiar de modo) lo autoriza el
+  // backend por dueño, así que la pantalla queda de sólo lectura para quien no
+  // se registró.
   {
     path: 'workers',
     loadComponent: () => import('./features/workers/workers.component').then(m => m.WorkersComponent)
   },
+
+  // ── identidad ──────────────────────────────────────────────────────────
+  {
+    path: 'identity',
+    loadComponent: () => import('./features/identity/identity.component').then(m => m.IdentityComponent)
+  },
+  // La tabla de cuentas demo vive ahora dentro de /identity; esta ruta se
+  // conserva por los enlaces que ya existían.
+  {
+    path: 'select-account',
+    loadComponent: () => import('./features/account-selection/account-selection.component').then(m => m.AccountSelectionComponent)
+  },
+
+  // ── con identidad: son pantallas para hacer algo, no para mirar ────────
+  {
+    path: 'propose',
+    loadComponent: () => import('./features/propose-law/propose-law.component').then(m => m.ProposeLawComponent),
+    canActivate: [accountSelectedGuard]
+  },
+  {
+    path: 'queue',
+    loadComponent: () => import('./features/queue/queue.component').then(m => m.QueueComponent),
+    canActivate: [accountSelectedGuard]
+  },
+
   // Los equipos viven dentro de la página de mineros. La ruta se conserva para
   // que no se rompan los enlaces que ya existían.
   { path: 'teams', redirectTo: 'workers', pathMatch: 'full' },
   { path: '**', redirectTo: '' }
 ];
-

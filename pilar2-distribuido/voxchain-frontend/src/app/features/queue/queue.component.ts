@@ -1,306 +1,221 @@
-import { Component, inject, OnInit, signal } from '@angular/core';
+import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { MatCardModule } from '@angular/material/card';
-import { MatButtonModule } from '@angular/material/button';
-import { MatTabsModule } from '@angular/material/tabs';
-import { MatTableModule } from '@angular/material/table';
-import { MatIconModule } from '@angular/material/icon';
+import { RouterModule } from '@angular/router';
 import { ApiService } from '../../core/services/api.service';
 import { IdentityService } from '../../core/services/identity.service';
 import { EventsService } from '../../core/services/events.service';
-import { LAW_CATEGORIES, Law, LawCategory, categoryLabel } from '../../core/models/law.model';
+import { LAW_CATEGORIES, Law, LawCategory, actionLabel, categoryLabel } from '../../core/models/law.model';
 import { SystemAvailability } from '../../core/models/system.model';
 import { Window } from '../../core/models/window.model';
-import { RouterModule } from '@angular/router';
 
 @Component({
   selector: 'app-queue',
   standalone: true,
-  imports: [CommonModule, RouterModule, MatCardModule, MatButtonModule, MatTabsModule, MatTableModule, MatIconModule],
+  imports: [CommonModule, RouterModule],
   template: `
-    <div class="queue-container">
-      <h1>Cola de votación</h1>
-
-      <div *ngIf="!identityService.identity()" class="no-identity">
-        <mat-card>
-          <mat-card-content>
-            <p>Necesitás <a routerLink="/identity">crear una identidad</a> para participar.</p>
-          </mat-card-content>
-        </mat-card>
+    <main class="vc-page vc-page--narrow">
+      <div class="vc-head__text">
+        <h6 class="vc-kicker">Participación</h6>
+        <h1 class="vc-title">Cola de votación</h1>
+        <p class="vc-lead">
+          Se abre una ventana a la vez. Votar es minar: bajás el desafío, tu minero lo
+          trabaja y el nonce que encuentre es tu voto.
+        </p>
       </div>
 
-      <div *ngIf="unavailable() as av" class="system-down">
-        <!-- Ver propose-law: sin la fuente de Material Icons declarada, un
-             <mat-icon> muestra la ligadura como texto. -->
-        <span class="warning-mark" aria-hidden="true">!</span>
-        <div>
-          <strong>Sistema no disponible en este momento</strong>
-          <p>{{ av.message }}</p>
-          <p class="since" *ngIf="av.since">
-            Sin mineros desde {{ av.since | date:'HH:mm:ss' }}.
-          </p>
+      <p class="vc-note vc-note--warn" *ngIf="!identityService.identity()">
+        <strong>Necesitás una identidad para participar.</strong>&ngsp;
+        <span>Podés mirar la cola igual, pero para bajar un desafío entrá en
+          <a routerLink="/identity">Identidad</a>.</span>
+      </p>
+
+      <p class="vc-note vc-note--warn" *ngIf="unavailable() as av">
+        <strong>La cola no avanza por falta de cómputo.</strong>&ngsp;
+        <span>{{ av.message }}</span>&ngsp;
+        <span *ngIf="av.since">Sin mineros desde {{ av.since | date:'HH:mm:ss' }}.</span>
+      </p>
+
+      <!-- La ficha de arriba es siempre la misma pieza: si hay ventana abierta
+           muestra el desafío que se está minando; si no, la ley que está a la
+           cabeza esperando turno. Son dos estados de lo mismo, no dos tarjetas. -->
+      <div class="card elev-sm vc-soft--75 vc-edge hero" *ngIf="window() as w; else esperando">
+        <div class="vc-live__top">
+          <span class="card-kicker">Ventana de votación activa</span>
+          <span class="tag tag-accent">abierta</span>
+        </div>
+        <h3 class="mono vc-live__id">{{ w.law_id }}</h3>
+        <p class="vc-live__text" *ngIf="texts()[w.law_id] as t">{{ t }}</p>
+
+        <div class="vc-live__grid">
+          <div>
+            <p class="vc-label">Ventana</p>
+            <p class="vc-kv mono">{{ w.voting_window_id }}</p>
+          </div>
+          <div>
+            <p class="vc-label">Acción</p>
+            <p class="vc-kv">{{ actionLabel(w.action) }}</p>
+          </div>
+          <div>
+            <p class="vc-label">Dificultad</p>
+            <p class="vc-kv mono">{{ w.n_zeros_required }} ceros</p>
+          </div>
+          <div>
+            <p class="vc-label">Vence</p>
+            <p class="vc-kv vc-kv--accent mono">{{ w.deadline | date:'HH:mm:ss' }}</p>
+          </div>
+        </div>
+
+        <div class="vc-actions hero__area">
+          <span class="tag tag-outline">{{ label(w.category) }}</span>
+          <span class="vc-note-sm">sólo aportan cómputo los equipos que votan esta área</span>
+        </div>
+
+        <div class="hero__challenge">
+          <p class="vc-label">Desafío · partial_hash_base</p>
+          <code class="vc-code-block">{{ w.partial_hash_base }}</code>
+        </div>
+
+        <div class="vc-actions vc-live__cta">
+          <button class="btn btn-primary vc-live__btn" (click)="participate(w)"
+                  [disabled]="!identityService.identity()">Bajar el desafío y participar</button>
+          <button class="btn btn-secondary vc-live__btn" (click)="toggleText(w.law_id)">
+            {{ texts()[w.law_id] ? 'Ocultar la ley' : 'Ver la ley completa' }}
+          </button>
         </div>
       </div>
 
-      <div *ngIf="(activeWindow() || eventsService.activeWindow()) as window" class="active-window">
-        <mat-card>
-          <mat-card-header>
-            <mat-card-title>Ventana de votación activa</mat-card-title>
-            <span class="status-badge active">ABIERTA</span>
-          </mat-card-header>
-          <mat-card-content>
-            <div class="window-details">
-              <p><strong>Ventana:</strong> {{ window.voting_window_id }}</p>
-              <p><strong>Ley:</strong> {{ window.law_id }}</p>
-              <p><strong>Acción:</strong> {{ window.action }}</p>
-              <p>
-                <strong>Área:</strong>
-                <span class="category-chip">{{ label(window.category) }}</span>
-                <span class="category-note">
-                  sólo aportan cómputo los equipos que votan esta área
-                </span>
-              </p>
-              <p><strong>Dificultad:</strong> {{ window.n_zeros_required }} ceros</p>
-              <p><strong>Vence:</strong> {{ window.deadline }}</p>
-              <div class="challenge-box">
-                <p><strong>Challenge (partial_hash_base):</strong></p>
-                <code>{{ window.partial_hash_base }}</code>
-              </div>
+      <ng-template #esperando>
+        <div class="card elev-sm vc-soft--75 hero" *ngIf="nextLaw() as next; else reposo">
+          <div class="vc-live__top">
+            <span class="card-kicker">Próxima en la cola</span>
+            <span class="tag tag-neutral">sin abrir</span>
+          </div>
+          <h3 class="mono vc-live__id">{{ next.law_id }}</h3>
+          <p class="vc-live__text" *ngIf="texts()[next.law_id] as t">{{ t }}</p>
+          <div class="vc-live__grid">
+            <div>
+              <p class="vc-label">Acción</p>
+              <p class="vc-kv">{{ actionLabel(next.action) }}</p>
             </div>
-          </mat-card-content>
-          <mat-card-actions>
-            <button mat-raised-button color="primary" (click)="participate(window)" [disabled]="!identityService.identity()">
-              Participar en esta ventana
+            <div>
+              <p class="vc-label">Autor</p>
+              <p class="vc-kv mono">{{ next.author_pubkey.slice(0, 12) }}…</p>
+            </div>
+            <div>
+              <p class="vc-label">Estado</p>
+              <p class="vc-kv">{{ next.status }}</p>
+            </div>
+          </div>
+          <div class="vc-actions hero__area">
+            <span class="tag tag-outline">{{ label(next.category) }}</span>
+          </div>
+          <div class="vc-actions vc-live__cta">
+            <button class="btn btn-primary vc-live__btn" (click)="prepareForNext(next)"
+                    [disabled]="!identityService.identity()">Prepararse para esta ley</button>
+            <button class="btn btn-secondary vc-live__btn" (click)="toggleText(next.law_id)">
+              {{ texts()[next.law_id] ? 'Ocultar la ley' : 'Ver la ley completa' }}
             </button>
-          </mat-card-actions>
-        </mat-card>
-      </div>
-
-      <div *ngIf="!activeWindow() && nextLaw() as next" class="next-law">
-        <mat-card>
-          <mat-card-header>
-            <mat-card-title>Próxima ley</mat-card-title>
-            <span class="status-badge upcoming">EN ESPERA</span>
-          </mat-card-header>
-          <mat-card-content>
-            <p><strong>ID de ley:</strong> {{ next.law_id }}</p>
-            <p><strong>Autor:</strong> {{ next.author_pubkey.slice(0, 16) }}...</p>
-            <p><strong>Acción:</strong> {{ next.action }}</p>
-            <p><strong>Área:</strong>
-              <span class="category-chip">{{ label(next.category) }}</span>
+          </div>
+        </div>
+        <ng-template #reposo>
+          <div class="card elev-sm vc-soft--75 hero">
+            <span class="card-kicker">Sin ventana abierta</span>
+            <p class="vc-live__idle">
+              No hay ninguna ley en disputa. La red se queda quieta hasta que alguien
+              proponga y haya mineros dispuestos a minar su área.
             </p>
-            <p><strong>Estado:</strong> {{ next.status }}</p>
-          </mat-card-content>
-          <mat-card-actions>
-            <button mat-raised-button color="primary" (click)="prepareForNext(next)" [disabled]="!identityService.identity()">
-              Prepararse para esta ley
-            </button>
-          </mat-card-actions>
-        </mat-card>
-      </div>
+          </div>
+        </ng-template>
+      </ng-template>
 
-      <mat-tab-group>
-        <mat-tab label="Pending ({{ queue().length }})">
-          <ng-template matTabContent>
-            <div class="queue-list">
-              <mat-card *ngFor="let law of queue(); let i = index">
-                <mat-card-content>
-                  <div class="queue-item">
-                    <span class="position">#{{ i + 1 }}</span>
-                    <div class="info">
-                      <p class="law-id">{{ law.law_id }}</p>
-                      <p class="meta">
-                        {{ law.action }}
-                        <span class="category-chip">{{ label(law.category) }}</span>
-                        — {{ law.author_pubkey.slice(0, 16) }}...
-                      </p>
-                      <button mat-button color="accent" (click)="showLawText(law.law_id)" class="view-text-btn">Ver texto</button>
-                      <div *ngIf="lawTexts()[law.law_id]" class="law-text-box">
-                        <pre>{{ lawTexts()[law.law_id] }}</pre>
-                      </div>
-                    </div>
-                  </div>
-                </mat-card-content>
-              </mat-card>
-              <p *ngIf="queue().length === 0" class="empty-queue">No hay leyes en la cola.</p>
+      <section class="vc-section">
+        <h3 class="vc-h3 vc-h3--sm sec__title">En espera de turno</h3>
+        <div class="vc-stack" *ngIf="queue().length; else colaVacia">
+          <div class="card elev-sm vc-plain item" *ngFor="let law of queue(); let i = index">
+            <div class="vc-row">
+              <span class="mono item__pos">#{{ i + 1 }}</span>
+              <span class="mono item__id">{{ law.law_id }}</span>
+              <span class="tag tag-outline">{{ label(law.category) }}</span>
+              <span class="vc-note-sm">{{ actionLabel(law.action) }} · {{ law.author_pubkey.slice(0, 12) }}…</span>
+              <button class="btn btn-ghost vc-push item__toggle" (click)="toggleText(law.law_id)">
+                {{ texts()[law.law_id] ? 'Ocultar texto' : 'Ver texto' }}
+              </button>
             </div>
-          </ng-template>
-        </mat-tab>
-        <mat-tab label="History ({{ history().length }})">
-          <ng-template matTabContent>
-            <div class="history-list">
-              <mat-card *ngFor="let law of history()">
-                <mat-card-content>
-                  <div class="history-item">
-                    <div class="info">
-                      <p class="law-id">{{ law.law_id }}</p>
-                      <p class="meta">
-                        {{ law.action }}
-                        <span class="category-chip">{{ label(law.category) }}</span>
-                        — {{ law.author_pubkey.slice(0, 16) }}...
-                      </p>
-                      <button mat-button color="accent" (click)="showLawText(law.law_id)" class="view-text-btn">Ver texto</button>
-                      <div *ngIf="lawTexts()[law.law_id]" class="law-text-box">
-                        <pre>{{ lawTexts()[law.law_id] }}</pre>
-                      </div>
-                    </div>
-                    <span class="status-badge voted">PROMULGADA</span>
-                  </div>
-                </mat-card-content>
-              </mat-card>
-              <p *ngIf="history().length === 0" class="empty-queue">Todavía no se procesó ninguna ley.</p>
-            </div>
-          </ng-template>
-        </mat-tab>
-      </mat-tab-group>
-    </div>
+            <p class="item__text" *ngIf="texts()[law.law_id] as t">{{ t }}</p>
+          </div>
+        </div>
+        <ng-template #colaVacia>
+          <p class="vc-empty">No hay leyes esperando turno.</p>
+        </ng-template>
+      </section>
+
+      <section class="vc-section">
+        <h3 class="vc-h3 vc-h3--sm sec__title">Ya resueltas</h3>
+        <div class="hist" *ngIf="history().length; else sinHistoria">
+          <div class="hist__row" *ngFor="let law of history()">
+            <span class="mono hist__id">{{ law.law_id }}</span>
+            <span class="tag tag-outline">{{ label(law.category) }}</span>
+            <span class="vc-note-sm">{{ actionLabel(law.action) }} · {{ law.author_pubkey.slice(0, 12) }}…</span>
+            <span class="tag vc-push"
+                  [class.tag-accent]="law.status === 'promulgated'"
+                  [class.tag-neutral]="law.status !== 'promulgated'">{{ statusLabel(law.status) }}</span>
+          </div>
+        </div>
+        <ng-template #sinHistoria>
+          <p class="vc-empty">Todavía no se resolvió ninguna ley.</p>
+        </ng-template>
+      </section>
+    </main>
   `,
   styles: [`
-    .queue-container {
-      padding: 20px;
-      max-width: 1000px;
-      margin: 0 auto;
+    .hero { margin-top: 40px; padding: 26px; }
+    .hero__area, .hero__challenge { margin-top: 22px; }
+    .hero__challenge .vc-label { margin-bottom: 8px; }
+
+    .sec__title { margin-bottom: 20px; }
+
+    .item { padding: 20px 22px; }
+    .item__pos { font-size: 18px; color: var(--color-accent-300); }
+    .item__id { font-size: 14px; color: var(--color-neutral-100); }
+    .item__toggle { font-size: 12.5px; }
+    .item__text {
+      margin: 16px 0 0; padding: 14px 16px; border-radius: var(--radius-md);
+      background: var(--color-neutral-900); font-size: 13.5px; line-height: 1.7;
+      white-space: pre-wrap; color: var(--color-neutral-200);
     }
-    h1, h2 { color: #e0e0e0; }
-    mat-card {
-      background-color: #1e1e1e;
-      color: #e0e0e0;
-      margin-bottom: 16px;
+
+    /* El historial no son tarjetas: es una lista, y la regla superior de cada
+       fila alcanza para separarlas. */
+    .hist { display: flex; flex-direction: column; }
+    .hist__row {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 14px;
+      padding: 15px 0; border-top: 1px solid var(--color-divider);
     }
-    .system-down {
-      display: flex;
-      gap: 12px;
-      align-items: flex-start;
-      color: #ffb74d;
-      padding: 14px;
-      margin-bottom: 16px;
-      background-color: #2d2616;
-      border-left: 3px solid #ffb74d;
-      border-radius: 4px;
-    }
-    .system-down p {
-      margin: 4px 0 0;
-      color: #d7c9ae;
-      font-size: 0.9rem;
-    }
-    .system-down .since { color: #9c8f78; font-size: 0.8rem; }
-    .warning-mark {
-      flex: 0 0 auto;
-      width: 20px;
-      height: 20px;
-      border-radius: 50%;
-      border: 1.5px solid #ffb74d;
-      font-size: 0.85rem;
-      font-weight: 700;
-      line-height: 17px;
-      text-align: center;
-    }
-    mat-card-title { color: #e0e0e0; }
-    .status-badge {
-      font-size: 0.75rem;
-      padding: 2px 8px;
-      border-radius: 10px;
-      font-weight: bold;
-    }
-    .status-badge.active {
-      background-color: #4caf50;
-      color: #fff;
-    }
-    .status-badge.upcoming {
-      background-color: #ff9800;
-      color: #fff;
-    }
-    .status-badge.voted {
-      background-color: #1565c0;
-      color: #fff;
-    }
-    .window-details p, .next-law p {
-      margin: 4px 0;
-      color: #b0b0b0;
-    }
-    .challenge-box {
-      margin-top: 12px;
-      padding: 8px;
-      background-color: #2a2a2a;
-      border-radius: 4px;
-    }
-    .challenge-box code {
-      font-family: 'Courier New', monospace;
-      font-size: 0.8rem;
-      color: #64b5f6;
-      word-break: break-all;
-    }
-    .queue-item, .history-item {
-      display: flex;
-      align-items: center;
-      gap: 16px;
-    }
-    .history-item {
-      justify-content: space-between;
-    }
-    .position {
-      font-size: 1.2rem;
-      font-weight: bold;
-      color: #64b5f6;
-      min-width: 40px;
-    }
-    .law-id {
-      font-weight: bold;
-      margin: 0;
-    }
-    .meta {
-      font-size: 0.85rem;
-      color: #888;
-      margin: 2px 0 0;
-    }
-    .view-text-btn {
-      font-size: 0.75rem;
-      padding: 0 8px;
-      min-width: auto;
-      line-height: 24px;
-      margin-top: 4px;
-    }
-    .law-text-box {
-      margin-top: 8px;
-      padding: 8px;
-      background-color: #2a2a2a;
-      border-radius: 4px;
-      max-height: 200px;
-      overflow-y: auto;
-    }
-    .law-text-box pre {
-      font-size: 0.8rem;
-      color: #b0b0b0;
-      white-space: pre-wrap;
-      word-break: break-word;
-      margin: 0;
-    }
-    .empty-queue, .no-identity p {
-      color: #888;
-    }
-    .no-identity a { color: #64b5f6; }
-    .category-chip { margin: 0 6px; }
-    .category-note { font-size: 0.8rem; color: #777; }
+    .hist__id { font-size: 13.5px; color: var(--color-neutral-100); }
   `]
 })
 export class QueueComponent implements OnInit {
-  private apiService = inject(ApiService);
+  private api = inject(ApiService);
   identityService = inject(IdentityService);
   eventsService = inject(EventsService);
 
   queue = signal<Law[]>([]);
   nextLaw = signal<Law | null>(null);
-  activeWindow = signal<Window | null>(null);
+  private fetchedWindow = signal<Window | null>(null);
   history = signal<Law[]>([]);
-  lawTexts = signal<Record<string, string>>({});
+  /** Textos de ley ya pedidos, por id. Su presencia es además el "está abierto". */
+  texts = signal<Record<string, string>>({});
   /** Etiquetas de las áreas; el backend las pisa con la lista autoritativa. */
   categories = signal<LawCategory[]>(LAW_CATEGORIES);
   /** Estado del sistema: si no hay mineros, la cola no avanza y hay que decirlo. */
   availability = signal<SystemAvailability | null>(null);
 
+  /** La ventana en curso: manda la que llegó por SSE, y si no la del arranque. */
+  window = computed(() => this.eventsService.activeWindow() ?? this.fetchedWindow());
+
   ngOnInit() {
     this.loadData();
-    this.apiService.getLawCategories().subscribe({
+    this.api.getLawCategories().subscribe({
       next: (cats) => { if (cats?.length) this.categories.set(cats); },
       error: () => {},  // nos quedamos con las etiquetas locales
     });
@@ -308,6 +223,19 @@ export class QueueComponent implements OnInit {
 
   label(category: string): string {
     return categoryLabel(category, this.categories());
+  }
+
+  actionLabel = actionLabel;
+
+  /** El estado de una ley, en castellano. El crudo del backend si no lo conocemos. */
+  statusLabel(status: string): string {
+    return ({
+      promulgated: 'promulgada',
+      repealed: 'derogada',
+      discarded: 'descartada',
+      in_window: 'en ventana',
+      pending_queue: 'en cola',
+    } as Record<string, string>)[status] ?? status;
   }
 
   /**
@@ -322,35 +250,40 @@ export class QueueComponent implements OnInit {
   }
 
   private loadData() {
-    this.apiService.getLawQueue().subscribe((laws: Law[]) => {
-      this.queue.set(laws);
+    this.api.getLawQueue().subscribe({
+      next: (laws) => this.queue.set(laws),
+      error: () => {},
     });
-    this.apiService.getNextLaw().subscribe((law: Law | null) => {
-      this.nextLaw.set(law);
-      // Se pregunta por el área y la acción de ESA ley: es la que está a la
-      // cabeza, la que está trabada, y por lo tanto la que explica por qué la
-      // cola no avanza. Encadenado y no en paralelo porque sin la ley no
-      // sabemos qué mirar — y una derogación puede estar vetada donde la
-      // promulgación de la misma área no lo está.
-      this.apiService.getSystemAvailability(law?.category, law?.action,
-                                            law?.law_id).subscribe({
-        next: (av) => this.availability.set(av),
-        // Sin respuesta no se afirma nada: anunciar "sistema caído" porque no se
-        // pudo consultar sería peor que no mostrar el aviso.
-        error: () => this.availability.set(null),
-      });
+    this.api.getNextLaw().subscribe({
+      next: (law: Law | null) => {
+        this.nextLaw.set(law);
+        // Se pregunta por el área y la acción de ESA ley: es la que está a la
+        // cabeza, la que está trabada, y por lo tanto la que explica por qué la
+        // cola no avanza. Encadenado y no en paralelo porque sin la ley no
+        // sabemos qué mirar — y una derogación puede estar vetada donde la
+        // promulgación de la misma área no lo está.
+        this.api.getSystemAvailability(law?.category, law?.action,
+                                       law?.law_id).subscribe({
+          next: (av) => this.availability.set(av),
+          // Sin respuesta no se afirma nada: anunciar "sistema caído" porque no se
+          // pudo consultar sería peor que no mostrar el aviso.
+          error: () => this.availability.set(null),
+        });
+      },
+      error: () => {},
     });
-    this.apiService.getActiveWindow().subscribe({
-      next: (w) => this.activeWindow.set(w),
-      error: () => this.activeWindow.set(null)
+    this.api.getActiveWindow().subscribe({
+      next: (w) => this.fetchedWindow.set(w),
+      error: () => this.fetchedWindow.set(null),
     });
-    this.apiService.getLaws('promulgated').subscribe((laws: Law[]) => {
-      this.history.set(laws);
+    this.api.getLaws('promulgated').subscribe({
+      next: (laws) => this.history.set(laws),
+      error: () => {},
     });
   }
 
   participate(window: Window) {
-    const challenge = {
+    this.download(`challenge-${window.voting_window_id}.json`, {
       voting_window_id: window.voting_window_id,
       law_id: window.law_id,
       action: window.action,
@@ -358,43 +291,40 @@ export class QueueComponent implements OnInit {
       n_zeros_required: window.n_zeros_required,
       partial_hash_base: window.partial_hash_base,
       deadline: window.deadline,
-    };
-    const blob = new Blob([JSON.stringify(challenge, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `challenge-${window.voting_window_id}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }
-
-  showLawText(lawId: string) {
-    if (this.lawTexts()[lawId]) {
-      const texts = { ...this.lawTexts() };
-      delete texts[lawId];
-      this.lawTexts.set(texts);
-      return;
-    }
-    this.apiService.getLawText(lawId).subscribe({
-      next: (text) => this.lawTexts.set({ ...this.lawTexts(), [lawId]: text }),
-      error: () => console.error('Failed to load law text for', lawId)
     });
   }
 
   prepareForNext(law: Law) {
-    const info = {
+    this.download(`next-law-${law.law_id}.json`, {
       law_id: law.law_id,
       action: law.action,
       category: law.category,
       author_pubkey: law.author_pubkey,
       text_hash: law.text_hash,
-    };
-    const blob = new Blob([JSON.stringify(info, null, 2)], { type: 'application/json' });
+    });
+  }
+
+  /** Deja un JSON en el disco del usuario. Lo comparten los dos botones de arriba. */
+  private download(filename: string, payload: unknown) {
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `next-law-${law.law_id}.json`;
+    a.download = filename;
     a.click();
     URL.revokeObjectURL(url);
+  }
+
+  toggleText(lawId: string) {
+    const current = this.texts();
+    if (current[lawId]) {
+      const { [lawId]: _drop, ...rest } = current;
+      this.texts.set(rest);
+      return;
+    }
+    this.api.getLawText(lawId).subscribe({
+      next: (text) => this.texts.set({ ...this.texts(), [lawId]: text }),
+      error: () => console.error('No se pudo leer el texto de', lawId),
+    });
   }
 }
