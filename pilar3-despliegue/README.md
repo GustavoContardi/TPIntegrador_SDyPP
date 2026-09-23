@@ -37,7 +37,9 @@ Diagrama completo: [`docs/diagrams/arquitecturaVoxChain.jpeg`](../docs/diagrams/
 - **GPU opt-in**: los manifests piden `nvidia.com/gpu` sólo si se descomenta el
   recurso junto con las variables `NVIDIA_*` (ver el comentario en
   `gpu-cluster/worker-deployment.yaml`). Sin eso, el minero detecta que no hay
-  GPU utilizable y mina con CPU.
+  GPU utilizable y mina con CPU. `gpu-cluster/gpu-miner-deployment.yaml` es un
+  minero standalone que ya pide la GTX 1060: aplicarlo y borrarlo es la prueba
+  de ingreso/egreso de un nodo GPU.
 
 ## Guía de setup paso a paso
 

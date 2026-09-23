@@ -1,0 +1,146 @@
+# Minero GPU (standalone) para la GTX 1060 del k3s. No es parte del despliegue
+# por defecto (no está en kustomization.yaml ni lo aplica 04-gpu-workers): se
+# aplica a mano para la prueba de ingreso/egreso de nodos GPU.
+#
+#   kubectl apply  -f gpu-miner-deployment.yaml   # entra la GPU
+#   kubectl delete -f gpu-miner-deployment.yaml   # sale la GPU
+#
+# Reemplaza al gpu-miner-deploy.yaml de la raíz, que usaba amqp://...:5672: el
+# LoadBalancer de RabbitMQ sólo publica 5671 (AMQPS), así que no conectaba. El
+# env replica el que arma "Register Worker" (voxchain_api/routers/workers.py),
+# incluido Redis: sin él el keep-alive no llega, `has_gpu` no se ve en
+# worker:status:<id> y la dificultad dinámica no se entera de la GPU.
+#
+# No lleva WORKER_ENROLL_TOKEN: el nodo firma como identidad anónima
+# (identity.py), que alcanza para minar.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gpu-miner
+  namespace: g-git-push-cv
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gpu-miner
+  template:
+    metadata:
+      labels:
+        app: gpu-miner
+    spec:
+      terminationGracePeriodSeconds: 10
+      # Si el k3s registra el runtime de NVIDIA como RuntimeClass aparte (y no
+      # como default de containerd), descomentar. Se ve con
+      # `kubectl get runtimeclass`.
+      # runtimeClassName: nvidia
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: gpu-miner
+          image: southamerica-east1-docker.pkg.dev/voxchain-unlu/voxchain-images/worker-gpu:latest
+          imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - containerPort: 8080
+              name: health
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "512Mi"
+              # Pedir la placa es lo que manda el pod al nodo que la tiene; las
+              # variables NVIDIA de abajo son las que la exponen al contenedor.
+              # Van juntas (ver Dockerfile.gpu).
+              nvidia.com/gpu: 1
+          env:
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: "all"
+            - name: NVIDIA_DRIVER_CAPABILITIES
+              value: "compute,utility"
+            - name: WORKER_ID
+              value: gpu-miner-1060
+            - name: WORKER_MODE
+              value: standalone
+            - name: WORKER_CAPACITY
+              value: "1"
+            - name: WORKER_PRIVKEY_PEM
+              value: /app/keys/node-key.pem
+            - name: RABBITMQ_USER
+              valueFrom:
+                secretKeyRef:
+                  name: rabbitmq-credentials
+                  key: username
+            - name: RABBITMQ_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: rabbitmq-credentials
+                  key: password
+            - name: RABBITMQ_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: worker-config
+                  key: rabbitmq-host
+            - name: RABBITMQ_URL
+              value: "amqps://$(RABBITMQ_USER):$(RABBITMQ_PASS)@$(RABBITMQ_HOST):5671/"
+            - name: RABBITMQ_TLS_CA_PATH
+              value: /etc/rabbitmq-ca/ca.crt
+            - name: RABBITMQ_TLS_SERVER_NAME
+              value: rabbitmq.voxchain.svc.cluster.local
+            - name: REDIS_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: worker-config
+                  key: redis-host
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-credentials
+                  key: password
+            - name: REDIS_URL
+              value: "redis://:$(REDIS_PASSWORD)@$(REDIS_HOST):6379/0"
+            - name: LOG_DIR
+              value: /var/log/voxchain
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: keys
+              mountPath: /app/keys
+            - name: tmp
+              mountPath: /tmp
+            - name: logs
+              mountPath: /var/log/voxchain
+            - name: rabbitmq-ca
+              mountPath: /etc/rabbitmq-ca
+              readOnly: true
+      volumes:
+        - name: keys
+          emptyDir:
+            medium: Memory
+        - name: tmp
+          emptyDir: {}
+        - name: logs
+          emptyDir: {}
+        - name: rabbitmq-ca
+          secret:
+            secretName: rabbitmq-ca

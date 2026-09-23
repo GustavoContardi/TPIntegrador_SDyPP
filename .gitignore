@@ -73,3 +73,8 @@ SEGURIDAD-CLAVES.md
 COMO-FUNCIONA-AHORA.md
 DELIBERACION.md
 EstadoChecklist.md
+
+# Caché de kubectl: sin credenciales, pero trae la IP y el puerto del k3s
+.kube/
+# Handoff de diseño del frontend (material de trabajo, no del proyecto)
+*-handoff.zip

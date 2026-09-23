@@ -70,7 +70,9 @@ Declaración requerida por la consigna (§6 de la checklist):
   manifests de Kubernetes y Terraform, documentación técnica
   (informes de hits, README e informe final) y revisión de decisiones de
   diseño. `AGENT.md` es el contexto de dominio que se le dio al agente para
-  trabajar con las reglas de negocio cerradas.
+  trabajar con las reglas de negocio cerradas. El prompt con el que se
+  bootstrapeó el frontend está en
+  [`docs/ia/prompt-frontend.md`](docs/ia/prompt-frontend.md).
 <!-- Si se usaron otras herramientas (Copilot, ChatGPT, Cursor...), agregarlas acá. -->
 
 Todo el código generado con asistencia de IA fue revisado, entendido y validado
