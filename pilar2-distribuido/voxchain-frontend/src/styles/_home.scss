@@ -1,0 +1,252 @@
+// Portada (`features/home`).
+//
+// Vive acá y no en el componente porque la portada es una landing entera y sus
+// estilos pasan de largo el presupuesto de 4 kB por hoja de componente. Todo va
+// con prefijo `hm-` para que, siendo global, no pise ninguna clase de las otras
+// pantallas (varias usan `.hero`, por ejemplo).
+
+@keyframes hm-rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+@keyframes hm-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+
+// `clip` y no `hidden`: corta los resplandores que se salen del ancho sin
+// crear un contenedor de scroll (que rompería el `position: sticky` de la barra).
+.hm { overflow-x: clip; }
+
+.hm-rise { animation: hm-rise .7s cubic-bezier(.2, .7, .2, 1) both; }
+.hm-rise--late { animation-delay: .15s; }
+
+// ── hero ───────────────────────────────────────────────────────────────────
+.hm-hero {
+  display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, .8fr);
+  gap: 64px; align-items: center; padding: 96px 0 80px;
+}
+
+.hm-pill {
+  display: inline-flex; align-items: center; gap: 9px; margin: 0 0 28px;
+  padding: 6px 14px; border-radius: 999px; border: 1px solid var(--color-accent-800);
+  background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+  font-size: 12px; letter-spacing: .02em; color: var(--color-accent-300);
+}
+.hm-pill__dot { width: 7px; height: 7px; border-radius: 50%; background: var(--color-accent-600); }
+.hm-pill__dot.on {
+  background: var(--color-accent); box-shadow: 0 0 10px var(--color-accent);
+  animation: vc-pulse 1.8s ease-in-out infinite;
+}
+
+.hm-title {
+  margin: 0; font-size: clamp(50px, 7vw, 104px); line-height: .92;
+  letter-spacing: -.04em; font-weight: 500;
+}
+.hm-title__vox, .hm-title__reborn { display: block; }
+.hm-title__vox {
+  background: linear-gradient(180deg, var(--color-neutral-100) 30%, var(--color-neutral-400));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+// El resplandor es el único lugar donde el acento se derrama, y es una aureola,
+// no un relleno: el sistema lo admite como luz.
+.hm-title__reborn {
+  color: var(--color-accent); font-weight: 300;
+  text-shadow: 0 0 60px color-mix(in srgb, var(--color-accent) 45%, transparent);
+}
+.hm-tagline {
+  margin: 30px 0 0; font-size: clamp(20px, 2.3vw, 30px); font-weight: 300;
+  letter-spacing: -.01em; color: var(--color-accent-300);
+}
+.hm-lead {
+  margin: 20px 0 0; max-width: 56ch; font-size: 16.5px; line-height: 1.75;
+  color: var(--color-neutral-300);
+}
+.hm-lead strong { color: var(--color-neutral-100); font-weight: 500; }
+
+.hm-cta { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 36px; }
+.hm-cta--center { justify-content: center; }
+.hm-btn { min-height: 46px; padding: 0 24px; font-size: 14.5px; }
+// El principal sigue siendo un contorno —Nocturne no rellena botones— pero en
+// la portada se enciende: tinte de acento y un halo, porque acá hay una sola
+// cosa que queremos que hagas.
+.hm-btn--main {
+  gap: 10px; color: var(--color-accent-200);
+  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+  box-shadow: 0 10px 34px -10px var(--color-accent);
+}
+.hm-btn--main:hover:not(:disabled) {
+  color: var(--color-accent-100);
+  background: color-mix(in srgb, var(--color-accent) 26%, transparent);
+}
+.hm-arrow { transition: transform .2s ease; }
+.hm-btn--main:hover .hm-arrow { transform: translateX(3px); }
+
+.hm-trust {
+  display: flex; flex-wrap: wrap; gap: 10px 22px; margin: 30px 0 0; padding: 0;
+  list-style: none; font-size: 13px; color: var(--color-neutral-400);
+}
+.hm-trust li { display: inline-flex; align-items: center; gap: 7px; }
+.hm-trust svg {
+  width: 16px; height: 16px; fill: none; stroke: var(--color-accent);
+  stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round;
+}
+
+// La tarjeta en vivo flota apenas sobre un halo: es la prueba de que la
+// promesa del título se está cumpliendo mientras mirás.
+.hm-hero__side { position: relative; }
+.hm-glow {
+  position: absolute; inset: -12% -8%; z-index: 0; pointer-events: none;
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--color-accent) 28%, transparent), transparent);
+  filter: blur(20px);
+}
+.hm-live {
+  position: relative; z-index: 1; gap: 0; padding: 26px 26px 22px;
+  border: 1px solid var(--color-accent-800);
+  background: color-mix(in srgb, var(--color-surface) 82%, transparent);
+  backdrop-filter: blur(8px);
+  animation: hm-float 6s ease-in-out infinite;
+}
+.hm-live__label { margin: 18px 0 0; font-size: 12.5px; color: var(--color-neutral-500); }
+.hm-live__law { margin: 6px 0 0; font-size: 24px; line-height: 1.25; color: var(--color-neutral-100); word-break: break-all; }
+.hm-live__tags { margin-top: 14px; }
+.hm-live__calm { margin: 16px 0 0; font-size: 22px; font-weight: 400; letter-spacing: -.01em; color: var(--color-neutral-100); }
+.hm-live__idle { margin: 8px 0 0; font-size: 14px; line-height: 1.7; color: var(--color-neutral-400); }
+.hm-live__grid {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px;
+  margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--color-divider);
+}
+.hm-live__num { margin: 0 0 4px; font-family: var(--font-mono); font-size: 24px; color: var(--color-neutral-100); }
+.hm-live__num--accent { color: var(--color-accent-300); }
+
+.hm-link {
+  display: inline-flex; align-items: center; gap: 6px; margin-top: 20px;
+  font-size: 13.5px; font-weight: 500;
+}
+.hm-link span { transition: transform .2s ease; }
+.hm-link:hover span { transform: translateX(3px); }
+
+// ── números ────────────────────────────────────────────────────────────────
+.hm-numbers {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-block: 1px solid var(--color-divider);
+}
+.hm-num { padding: 30px 24px; text-align: center; }
+.hm-num + .hm-num { border-left: 1px solid var(--color-divider); }
+.hm-num__value {
+  margin: 0; font-size: clamp(34px, 4vw, 48px); font-weight: 400; line-height: 1;
+  letter-spacing: -.03em; color: var(--color-neutral-100);
+}
+.hm-num__value--accent { color: var(--color-accent-300); }
+.hm-num__label {
+  margin: 10px 0 0; font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--color-neutral-500);
+}
+
+// ── secciones ──────────────────────────────────────────────────────────────
+.hm-section { padding: 96px 0 0; }
+.hm-eyebrow {
+  margin: 0 0 12px; font-size: 12px; letter-spacing: .14em; text-transform: uppercase;
+  color: var(--color-accent);
+}
+.hm-h2 {
+  margin: 0; max-width: 24ch; font-size: clamp(28px, 3.4vw, 42px); font-weight: 400;
+  line-height: 1.12; letter-spacing: -.025em; color: var(--color-neutral-100);
+}
+.hm-body { margin: 0; font-size: 14px; line-height: 1.75; color: var(--color-neutral-400); }
+
+.hm-steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 40px; margin-top: 48px; }
+.hm-step__mark { display: flex; align-items: center; gap: 12px; }
+.hm-step__num { font-size: 13px; color: var(--color-accent); }
+.hm-step__line { flex: 1; height: 1px; background: linear-gradient(to right, var(--color-accent-700), transparent); }
+.hm-step__title { margin: 18px 0 10px; font-size: 21px; font-weight: 500; color: var(--color-neutral-100); }
+
+.hm-features { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-top: 48px; }
+.hm-feature {
+  gap: 0; padding: 28px 26px;
+  background: color-mix(in srgb, var(--color-surface) 55%, transparent);
+  border: 1px solid transparent; transition: border-color .2s ease, transform .2s ease;
+}
+.hm-feature:hover { border-color: var(--color-accent-800); transform: translateY(-2px); }
+.hm-feature__title { margin: 18px 0 8px; font-size: 17px; font-weight: 500; color: var(--color-neutral-100); }
+.hm-icon {
+  display: inline-grid; place-items: center; width: 42px; height: 42px; border-radius: 12px;
+  background: var(--color-accent-900); box-shadow: inset 0 0 0 1px var(--color-accent-800);
+}
+.hm-icon svg {
+  width: 21px; height: 21px; fill: none; stroke: var(--color-accent-300);
+  stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round;
+}
+
+.hm-paths { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; margin-top: 48px; }
+.hm-path {
+  gap: 0; padding: 34px 32px; align-items: flex-start;
+  background: color-mix(in srgb, var(--color-surface) 55%, transparent);
+}
+.hm-path--main {
+  background:
+    radial-gradient(120% 90% at 0% 0%, color-mix(in srgb, var(--color-accent) 16%, transparent), transparent 60%),
+    color-mix(in srgb, var(--color-surface) 70%, transparent);
+  box-shadow: inset 0 0 0 1px var(--color-accent-800), var(--shadow-sm);
+}
+.hm-path__title { margin: 14px 0 12px; font-size: 23px; font-weight: 400; line-height: 1.25; letter-spacing: -.015em; color: var(--color-neutral-100); }
+.hm-list { margin: 20px 0 28px; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 10px; }
+.hm-list li { position: relative; padding-left: 22px; font-size: 14px; color: var(--color-neutral-300); }
+.hm-list li::before {
+  content: ''; position: absolute; left: 2px; top: .5em; width: 7px; height: 7px;
+  border-radius: 50%; background: var(--color-accent);
+}
+
+.hm-faq { display: grid; grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); gap: 48px; align-items: start; }
+.hm-faq__list { display: flex; flex-direction: column; }
+.hm-q { border-top: 1px solid var(--color-divider); }
+.hm-q:last-child { border-bottom: 1px solid var(--color-divider); }
+.hm-q summary {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 20px 0; cursor: pointer; list-style: none;
+  font-size: 16px; color: var(--color-neutral-100);
+}
+.hm-q summary::-webkit-details-marker { display: none; }
+.hm-q summary::after {
+  content: '+'; flex: none; font-size: 22px; font-weight: 300; line-height: 1;
+  color: var(--color-accent); transition: transform .2s ease;
+}
+.hm-q[open] summary::after { transform: rotate(45deg); }
+.hm-q summary:hover { color: var(--color-accent-300); }
+.hm-q .hm-body { padding: 0 32px 22px 0; }
+
+// ── cierre ─────────────────────────────────────────────────────────────────
+.hm-closing {
+  position: relative; overflow: hidden; margin-top: 112px; padding: 80px 32px;
+  border-radius: 20px; text-align: center;
+  border: 1px solid var(--color-accent-800);
+  background: color-mix(in srgb, var(--color-section) 55%, var(--color-bg));
+}
+.hm-closing__glow {
+  position: absolute; left: 50%; top: -60%; width: 90%; height: 140%; transform: translateX(-50%);
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--color-accent) 30%, transparent), transparent);
+  pointer-events: none;
+}
+.hm-closing > *:not(.hm-closing__glow) { position: relative; }
+.hm-closing__title {
+  margin: 0; font-size: clamp(32px, 4.4vw, 56px); font-weight: 400;
+  letter-spacing: -.03em; color: var(--color-neutral-100);
+}
+.hm-closing__body {
+  margin: 16px auto 0; max-width: 48ch; font-size: 16px; line-height: 1.7;
+  color: var(--color-neutral-300);
+}
+
+.hm-foot { margin: 48px 0 0; text-align: center; font-size: 12px; color: var(--color-neutral-600); }
+
+// ── responsive ─────────────────────────────────────────────────────────────
+@media (max-width: 960px) {
+  .hm-hero { grid-template-columns: minmax(0, 1fr); gap: 48px; padding: 56px 0 56px; }
+  .hm-faq { grid-template-columns: minmax(0, 1fr); gap: 24px; }
+}
+@media (max-width: 720px) {
+  .hm-numbers { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .hm-num:nth-child(3) { border-left: 0; }
+  .hm-num:nth-child(n + 3) { border-top: 1px solid var(--color-divider); }
+  .hm-section { padding-top: 72px; }
+  .hm-path { padding: 26px 22px; }
+  .hm-closing { margin-top: 80px; padding: 56px 20px; }
+  .hm-live__num { font-size: 20px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hm-rise, .hm-live { animation: none; }
+}

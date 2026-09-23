@@ -23,7 +23,6 @@ API Gateway para VoxChain, implementada con FastAPI. Expone endpoints REST para 
 | `routers/laws.py` | Endpoints para leyes (`GET /api/laws`, `POST /api/laws`, `GET /api/laws/{law_id}`, cola, texto y catálogo de categorías). |
 | `routers/windows.py` | Endpoints para ventanas de votación (`GET /api/windows/active`, `GET /api/windows/{voting_window_id}`; no hay listado de todas). |
 | `routers/workers.py` | Gestión de workers: status, registro/baja dinámica, switch de modo, y política de voto (`accept`/`reject` por `action` o `law_id`) de pool coordinators. |
-| `routers/accounts.py` | Cuentas demo: listado, reserva y liberación de sesión (`GET/POST /api/accounts/...`). |
 | `routers/health.py` | Health check agregado (`GET /api/health`). |
 | `services/redis_reader.py` | Cliente de lectura de Redis (cadena, leyes, ventanas). |
 | `services/rabbitmq_publisher.py` | Publicador de RabbitMQ para propuestas de leyes. |
@@ -71,10 +70,6 @@ Metrics: `GET /metrics` → Métricas Prometheus (Prometheus text format).
 | `/api/teams/{team_id}/leave` | POST | Saca un minero propio del equipo y lo devuelve a competitivo |
 | `/api/workers/register` | POST | Registra un worker dinámico nuevo |
 | `/api/workers/{worker_id}` | DELETE | Da de baja un worker dinámico |
-| `/api/accounts` | GET | Lista las cuentas demo disponibles/ocupadas |
-| `/api/accounts/{username}` | GET | Detalle de una cuenta demo |
-| `/api/accounts/reserve` | POST | Reserva una cuenta demo para una sesión |
-| `/api/accounts/release` | POST | Libera una cuenta demo reservada |
 | `/api/health` | GET | Health check agregado del sistema |
 | `/api/events` | GET | SSE stream para eventos en tiempo real |
 

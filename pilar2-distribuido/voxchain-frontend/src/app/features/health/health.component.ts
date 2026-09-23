@@ -34,14 +34,14 @@ interface Servicio {
     <main class="vc-page">
       <div class="vc-head">
         <div class="vc-head__text">
-          <h6 class="vc-kicker">Operación</h6>
-          <h1 class="vc-title">Estado del sistema</h1>
+          <h6 class="vc-kicker">Transparencia</h6>
+          <h1 class="vc-title">Estado de la red</h1>
           <p class="vc-lead">
-            Los cuatro componentes que tienen que estar vivos para que una ley pueda
-            sancionarse. Se consulta cada diez segundos.
+            Las cuatro piezas que mantienen viva la red, en tiempo real. Si todas laten,
+            tu ley puede votarse.
           </p>
         </div>
-        <span class="mono read-at" *ngIf="lastRead()">última lectura {{ lastRead() }}</span>
+        <span class="read-at" *ngIf="lastRead()">actualizado a las {{ lastRead() }}</span>
       </div>
 
       <div class="grid">
@@ -50,7 +50,7 @@ interface Servicio {
             <h4 class="svc__name">{{ s.name }}</h4>
             <span class="tag" [ngClass]="s.badgeCls">{{ s.badge }}</span>
           </div>
-          <p class="mono svc__value">{{ s.value }}</p>
+          <p class="svc__value">{{ s.value }}</p>
 
           <div class="svc__trace">
             <svg viewBox="0 0 240 40" preserveAspectRatio="none" aria-hidden="true" class="svc__svg">
@@ -71,30 +71,30 @@ interface Servicio {
       </div>
 
       <p class="vc-note-sm grid__foot">
-        La línea late mientras el componente responde el health check; si deja de
-        contestar, se queda plana.
+        La línea late mientras la pieza responde; si deja de hacerlo, se queda plana.
+        Se actualiza sola cada diez segundos.
       </p>
 
       <section class="vc-section--divided qa">
         <div>
-          <h5 class="vc-h5">Qué pasa si se cae el NCT</h5>
+          <h5 class="vc-h5">¿Y si se cae la coordinación?</h5>
           <p class="qa__body">
-            Otro nodo toma el lease atómico en Redis y sigue abriendo y cerrando
-            ventanas. La ventana en curso conserva su deadline.
+            Otro nodo toma el relevo al instante y las votaciones siguen como si nada.
+            La que estaba en curso conserva su horario de cierre.
           </p>
         </div>
         <div>
-          <h5 class="vc-h5">Qué pasa si no hay mineros</h5>
+          <h5 class="vc-h5">¿Y si no hay mineros?</h5>
           <p class="qa__body">
-            Las propuestas se aceptan igual, pero quedan encoladas: la ventana no se
-            abre hasta que haya cómputo dispuesto a minar esa área.
+            Podés proponer igual: tu ley queda guardada esperando su turno y la
+            votación arranca sola en cuanto haya mineros dispuestos a respaldarla.
           </p>
         </div>
         <div>
-          <h5 class="vc-h5">Qué pasa si se cae Redis</h5>
+          <h5 class="vc-h5">¿Y si se cae el registro?</h5>
           <p class="qa__body">
-            El sistema queda de sólo lectura: sin estado compartido no se puede sellar
-            un bloque ni renovar un lease.
+            La red se pone en pausa para no sellar nada a medias. Todo lo ya decidido
+            queda a salvo y se retoma apenas vuelve.
           </p>
         </div>
       </section>
@@ -109,7 +109,7 @@ interface Servicio {
     .svc { padding: 22px; }
     .svc__top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
     .svc__name { margin: 0; font-size: 17px; color: var(--color-neutral-100); }
-    .svc__value { margin: 14px 0 0; font-size: 20px; color: var(--color-neutral-100); }
+    .svc__value { margin: 14px 0 0; font-size: 20px; font-family: var(--font-heading); color: var(--color-neutral-100); }
     .svc__trace { position: relative; height: 40px; margin: 14px 0 0; overflow: hidden; }
     .svc__svg { position: absolute; inset: 0; width: 100%; height: 100%; }
     .svc__beat { animation: vc-ecg 2.6s linear infinite; }
@@ -134,12 +134,12 @@ export class HealthComponent implements OnInit, OnDestroy {
     const h = this.health();
     const count = this.workerCount();
     return [
-      this.build('API', h['api'], 'voxchain-api · :8000'),
-      this.build('NCT', h['nct'], 'coordinator · lease vigente'),
+      this.build('Plataforma', h['api'], 'lo que estás usando ahora'),
+      this.build('Coordinación', h['nct'], 'abre y cierra las votaciones'),
       this.build('Mineros', h['workers'],
-        count ? `${count.vivos} de ${count.total} reportando` : 'latido de los últimos 15 s',
+        count ? `${count.vivos} de ${count.total} encendidos` : 'los que respaldan las leyes',
         count ? `${count.vivos} / ${count.total}` : undefined),
-      this.build('Redis', h['redis'], 'estado y leases'),
+      this.build('Registro', h['redis'], 'guarda el estado de la red'),
     ];
   });
 
@@ -167,7 +167,7 @@ export class HealthComponent implements OnInit, OnDestroy {
     const ok = e === 'ok';
     const caido = e === 'error';
     const value = override && ok ? override : ({
-      ok: 'ok',
+      ok: 'funcionando',
       error: 'sin respuesta',
       none: 'sin mineros',
       unknown: 'sin datos',
@@ -176,8 +176,8 @@ export class HealthComponent implements OnInit, OnDestroy {
     return {
       name,
       value,
-      sub: caido ? 'no contesta el health check' : sub,
-      badge: ok ? 'en línea' : caido ? 'caído' : 'degradado',
+      sub: caido ? 'no está respondiendo' : sub,
+      badge: ok ? 'en línea' : caido ? 'caído' : 'con demoras',
       badgeCls: ok ? 'tag-accent' : 'tag-neutral',
       alive: ok,
       stroke: ok ? 'var(--color-accent)'
@@ -189,14 +189,14 @@ export class HealthComponent implements OnInit, OnDestroy {
     this.api.getHealth().subscribe({
       next: (status: any) => {
         this.health.set(status);
-        this.lastRead.set(new Date().toLocaleTimeString('es-AR'));
+        this.lastRead.set(new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
       },
       // Si la propia API no contesta, no hay nada que creerle a la lectura
       // anterior: se marcan los cuatro como sin respuesta en vez de dejar en
       // pantalla un "todo ok" de hace diez segundos.
       error: () => {
         this.health.set({ api: 'error', nct: 'error', workers: 'error', redis: 'error' });
-        this.lastRead.set(new Date().toLocaleTimeString('es-AR'));
+        this.lastRead.set(new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
       },
     });
     this.api.getWorkersStatus().subscribe({

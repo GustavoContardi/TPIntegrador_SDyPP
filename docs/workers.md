@@ -677,9 +677,6 @@ Detalles que importan:
 - **Cada firma se consume** (`sig:used:<sha256>`, con el TTL de la ventana de
   frescura). Sin eso la firma sigue siendo válida durante los 300 s de la
   ventana y quien la vio pasar puede repetir la acción.
-- Las **cuentas demo** son custodiales y no pueden firmar desde el navegador:
-  siguen el camino viejo. Los dos caminos son disjuntos porque los `worker_id`
-  demo están reservados y el alta los rechaza con 409.
 
 ### La identidad del minero no es la del ciudadano
 

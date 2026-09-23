@@ -4,7 +4,10 @@ import { RouterModule } from '@angular/router';
 import { ApiService } from '../../core/services/api.service';
 import { IdentityService } from '../../core/services/identity.service';
 import { EventsService } from '../../core/services/events.service';
-import { LAW_CATEGORIES, Law, LawCategory, actionLabel, categoryLabel } from '../../core/models/law.model';
+import {
+  LAW_CATEGORIES, Law, LawCategory, actionLabel, categoryLabel, lawStatusLabel,
+} from '../../core/models/law.model';
+import { friendlyDate } from '../../core/utils/format';
 import { SystemAvailability } from '../../core/models/system.model';
 import { Window } from '../../core/models/window.model';
 import { DeliberationPanelComponent } from '../deliberation/deliberation-panel.component';
@@ -17,23 +20,24 @@ import { DeliberationPanelComponent } from '../deliberation/deliberation-panel.c
     <main class="vc-page vc-page--narrow">
       <div class="vc-head__text">
         <h6 class="vc-kicker">Participación</h6>
-        <h1 class="vc-title">Cola de votación</h1>
+        <h1 class="vc-title">Votar</h1>
         <p class="vc-lead">
-          Se abre una ventana a la vez. Votar es minar: bajás el desafío, tu minero lo
-          trabaja y el nonce que encuentre es tu voto.
+          Las leyes se votan de a una. Antes de cada votación, quienes tienen mineros
+          deciden si ponen su poder de cómputo a favor. Acá ves qué se vota ahora, qué
+          viene después y cómo terminó lo anterior.
         </p>
       </div>
 
       <p class="vc-note vc-note--warn" *ngIf="!identityService.identity()">
         <strong>Necesitás una identidad para participar.</strong>&ngsp;
-        <span>Podés mirar la cola igual, pero para bajar un desafío entrá en
-          <a routerLink="/identity">Identidad</a>.</span>
+        <span>Podés mirar todo igual; para decidir, <a routerLink="/identity">creá tu identidad</a>
+          en segundos.</span>
       </p>
 
       <p class="vc-note vc-note--warn" *ngIf="unavailable() as av">
-        <strong>La cola no avanza por falta de cómputo.</strong>&ngsp;
+        <strong>Las votaciones están en pausa.</strong>&ngsp;
         <span>{{ av.message }}</span>&ngsp;
-        <span *ngIf="av.since">Sin mineros desde {{ av.since | date:'HH:mm:ss' }}.</span>
+        <span *ngIf="av.since">En pausa desde las {{ av.since | date:'HH:mm' }}.</span>
       </p>
 
       <!-- Antes de su ventana, cada ley pasa por una pausa en la que los
@@ -41,11 +45,11 @@ import { DeliberationPanelComponent } from '../deliberation/deliberation-panel.c
       <app-deliberation-panel></app-deliberation-panel>
 
       <!-- La ficha de arriba es siempre la misma pieza: si hay ventana abierta
-           muestra el desafío que se está minando; si no, la ley que está a la
-           cabeza esperando turno. Son dos estados de lo mismo, no dos tarjetas. -->
+           muestra la ley que se está votando; si no, la que está a la cabeza
+           esperando turno. Son dos estados de lo mismo, no dos tarjetas. -->
       <div class="card elev-sm vc-soft--75 vc-edge hero" *ngIf="window() as w; else esperando">
         <div class="vc-live__top">
-          <span class="card-kicker">Ventana de votación activa</span>
+          <span class="card-kicker">Votación en curso</span>
           <span class="tag tag-accent">abierta</span>
         </div>
         <h3 class="mono vc-live__id">{{ w.law_id }}</h3>
@@ -53,38 +57,27 @@ import { DeliberationPanelComponent } from '../deliberation/deliberation-panel.c
 
         <div class="vc-live__grid">
           <div>
-            <p class="vc-label">Ventana</p>
-            <p class="vc-kv mono">{{ w.voting_window_id }}</p>
-          </div>
-          <div>
-            <p class="vc-label">Acción</p>
+            <p class="vc-label">Se vota</p>
             <p class="vc-kv">{{ actionLabel(w.action) }}</p>
           </div>
           <div>
             <p class="vc-label">Dificultad</p>
-            <p class="vc-kv mono">{{ w.n_zeros_required }} ceros</p>
+            <p class="vc-kv">nivel {{ w.n_zeros_required }}</p>
           </div>
           <div>
-            <p class="vc-label">Vence</p>
-            <p class="vc-kv vc-kv--accent mono">{{ w.deadline | date:'HH:mm:ss' }}</p>
+            <p class="vc-label">Cierra</p>
+            <p class="vc-kv vc-kv--accent">{{ w.deadline | date:'HH:mm' }} h</p>
           </div>
         </div>
 
         <div class="vc-actions hero__area">
           <span class="tag tag-outline">{{ label(w.category) }}</span>
-          <span class="vc-note-sm">sólo aportan cómputo los equipos que votan esta área</span>
-        </div>
-
-        <div class="hero__challenge">
-          <p class="vc-label">Desafío · partial_hash_base</p>
-          <code class="vc-code-block">{{ w.partial_hash_base }}</code>
+          <span class="vc-note-sm">la respaldan los equipos que eligieron esta área</span>
         </div>
 
         <div class="vc-actions vc-live__cta">
-          <button class="btn btn-primary vc-live__btn" (click)="participate(w)"
-                  [disabled]="!identityService.identity()">Bajar el desafío y participar</button>
           <button class="btn btn-secondary vc-live__btn" (click)="toggleText(w.law_id)">
-            {{ texts()[w.law_id] ? 'Ocultar la ley' : 'Ver la ley completa' }}
+            {{ texts()[w.law_id] ? 'Ocultar la ley' : 'Leer la ley completa' }}
           </button>
         </div>
       </div>
@@ -92,56 +85,53 @@ import { DeliberationPanelComponent } from '../deliberation/deliberation-panel.c
       <ng-template #esperando>
         <div class="card elev-sm vc-soft--75 hero" *ngIf="nextLaw() as next; else reposo">
           <div class="vc-live__top">
-            <span class="card-kicker">Próxima en la cola</span>
-            <span class="tag tag-neutral">sin abrir</span>
+            <span class="card-kicker">La próxima en votarse</span>
+            <span class="tag tag-neutral">{{ statusLabel(next.status) }}</span>
           </div>
           <h3 class="mono vc-live__id">{{ next.law_id }}</h3>
           <p class="vc-live__text" *ngIf="texts()[next.law_id] as t">{{ t }}</p>
           <div class="vc-live__grid">
             <div>
-              <p class="vc-label">Acción</p>
+              <p class="vc-label">Se vota</p>
               <p class="vc-kv">{{ actionLabel(next.action) }}</p>
             </div>
             <div>
-              <p class="vc-label">Autor</p>
-              <p class="vc-kv mono">{{ next.author_pubkey.slice(0, 12) }}…</p>
-            </div>
-            <div>
-              <p class="vc-label">Estado</p>
-              <p class="vc-kv">{{ next.status }}</p>
+              <p class="vc-label">Propuesta el</p>
+              <p class="vc-kv">{{ date(next.created_at) }}</p>
             </div>
           </div>
           <div class="vc-actions hero__area">
             <span class="tag tag-outline">{{ label(next.category) }}</span>
           </div>
           <div class="vc-actions vc-live__cta">
-            <button class="btn btn-primary vc-live__btn" (click)="prepareForNext(next)"
-                    [disabled]="!identityService.identity()">Prepararse para esta ley</button>
             <button class="btn btn-secondary vc-live__btn" (click)="toggleText(next.law_id)">
-              {{ texts()[next.law_id] ? 'Ocultar la ley' : 'Ver la ley completa' }}
+              {{ texts()[next.law_id] ? 'Ocultar la ley' : 'Leer la ley completa' }}
             </button>
           </div>
         </div>
         <ng-template #reposo>
           <div class="card elev-sm vc-soft--75 hero">
-            <span class="card-kicker">Sin ventana abierta</span>
+            <span class="card-kicker">Sin votaciones en curso</span>
             <p class="vc-live__idle">
-              No hay ninguna ley en disputa. La red se queda quieta hasta que alguien
-              proponga y haya mineros dispuestos a minar su área.
+              No hay ninguna ley en juego. La próxima votación arranca en cuanto alguien
+              proponga una ley y haya mineros dispuestos a respaldarla.
             </p>
+            <div class="vc-actions vc-live__cta" *ngIf="identityService.identity()">
+              <a class="btn btn-primary vc-live__btn" routerLink="/propose">Proponer una ley</a>
+            </div>
           </div>
         </ng-template>
       </ng-template>
 
       <section class="vc-section">
-        <h3 class="vc-h3 vc-h3--sm sec__title">En espera de turno</h3>
+        <h3 class="vc-h3 vc-h3--sm sec__title">Esperando su turno</h3>
         <div class="vc-stack" *ngIf="queue().length; else colaVacia">
           <div class="card elev-sm vc-plain item" *ngFor="let law of queue(); let i = index">
             <div class="vc-row">
               <span class="mono item__pos">#{{ i + 1 }}</span>
               <span class="mono item__id">{{ law.law_id }}</span>
               <span class="tag tag-outline">{{ label(law.category) }}</span>
-              <span class="vc-note-sm">{{ actionLabel(law.action) }} · {{ law.author_pubkey.slice(0, 12) }}…</span>
+              <span class="vc-note-sm">{{ actionLabel(law.action) }} · {{ date(law.created_at) }}</span>
               <button class="btn btn-ghost vc-push item__toggle" (click)="toggleText(law.law_id)">
                 {{ texts()[law.law_id] ? 'Ocultar texto' : 'Ver texto' }}
               </button>
@@ -160,7 +150,7 @@ import { DeliberationPanelComponent } from '../deliberation/deliberation-panel.c
           <div class="hist__row" *ngFor="let law of history()">
             <span class="mono hist__id">{{ law.law_id }}</span>
             <span class="tag tag-outline">{{ label(law.category) }}</span>
-            <span class="vc-note-sm">{{ actionLabel(law.action) }} · {{ law.author_pubkey.slice(0, 12) }}…</span>
+            <span class="vc-note-sm">{{ actionLabel(law.action) }} · {{ date(law.created_at) }}</span>
             <span class="tag vc-push"
                   [class.tag-accent]="law.status === 'promulgated'"
                   [class.tag-neutral]="law.status !== 'promulgated'">{{ statusLabel(law.status) }}</span>
@@ -174,8 +164,7 @@ import { DeliberationPanelComponent } from '../deliberation/deliberation-panel.c
   `,
   styles: [`
     .hero { margin-top: 40px; padding: 26px; }
-    .hero__area, .hero__challenge { margin-top: 22px; }
-    .hero__challenge .vc-label { margin-bottom: 8px; }
+    .hero__area { margin-top: 22px; }
 
     .sec__title { margin-bottom: 20px; }
 
@@ -232,17 +221,8 @@ export class QueueComponent implements OnInit {
 
   actionLabel = actionLabel;
 
-  /** El estado de una ley, en castellano. El crudo del backend si no lo conocemos. */
-  statusLabel(status: string): string {
-    return ({
-      promulgated: 'promulgada',
-      repealed: 'derogada',
-      discarded: 'descartada',
-      in_deliberation: 'en deliberación',
-      in_window: 'en ventana',
-      pending_queue: 'en cola',
-    } as Record<string, string>)[status] ?? status;
-  }
+  statusLabel = lawStatusLabel;
+  date = friendlyDate;
 
   /**
    * El aviso de sistema caído, o null si está operativo.
@@ -286,39 +266,6 @@ export class QueueComponent implements OnInit {
       next: (laws) => this.history.set(laws),
       error: () => {},
     });
-  }
-
-  participate(window: Window) {
-    this.download(`challenge-${window.voting_window_id}.json`, {
-      voting_window_id: window.voting_window_id,
-      law_id: window.law_id,
-      action: window.action,
-      category: window.category,
-      n_zeros_required: window.n_zeros_required,
-      partial_hash_base: window.partial_hash_base,
-      deadline: window.deadline,
-    });
-  }
-
-  prepareForNext(law: Law) {
-    this.download(`next-law-${law.law_id}.json`, {
-      law_id: law.law_id,
-      action: law.action,
-      category: law.category,
-      author_pubkey: law.author_pubkey,
-      text_hash: law.text_hash,
-    });
-  }
-
-  /** Deja un JSON en el disco del usuario. Lo comparten los dos botones de arriba. */
-  private download(filename: string, payload: unknown) {
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(url);
   }
 
   toggleText(lawId: string) {

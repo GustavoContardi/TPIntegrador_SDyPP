@@ -19,7 +19,6 @@ from common.metrics import api_http_request_duration_seconds, api_http_requests_
 
 from voxchain_api.config import config
 from voxchain_api.routers import (
-    accounts,
     chain,
     deliberation,
     health,
@@ -110,7 +109,6 @@ async def metrics():
                              media_type="text/plain; version=0.0.4")
 
 # Include routers
-app.include_router(accounts.router)
 app.include_router(chain.router)
 app.include_router(laws.router)
 app.include_router(windows.router)

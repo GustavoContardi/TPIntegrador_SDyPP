@@ -48,15 +48,6 @@ export interface Team {
   coordinator_online: boolean;
 }
 
-/** Mineros de las cuentas de demo, que no tienen clave privada en el navegador. */
-const DEMO_WORKERS: Record<string, string[]> = {
-  valentin: ['worker-standalone'],
-  gustavo: ['worker-pool-coordinator'],
-  matt: ['worker-pool-miner-1'],
-  profesor1: ['worker-pool-miner-2'],
-  profesor2: ['worker-pool-miner-3'],
-};
-
 /**
  * Si el minero pertenece a la identidad activa.
  *
@@ -65,19 +56,12 @@ const DEMO_WORKERS: Record<string, string[]> = {
  */
 export function isOwnedBy(worker: WorkerStatus, identity: Identity | null): boolean {
   if (!identity) return false;
-  if (identity.isDemo) {
-    return (DEMO_WORKERS[identity.username || ''] || []).includes(worker.worker_id);
-  }
   return worker.pubkey === identity.pubkey;
 }
 
 /** El worker es dinámico (lo registró un usuario), no uno de los precargados. */
 export function isDynamicWorker(worker: WorkerStatus): boolean {
-  const preconfigured = [
-    'worker-1', 'worker-2', 'pool-coordinator-1',
-    'worker-standalone', 'worker-pool-coordinator',
-    'worker-pool-miner-1', 'worker-pool-miner-2', 'worker-pool-miner-3',
-  ];
+  const preconfigured = ['worker-1', 'worker-2', 'pool-coordinator-1'];
   return !preconfigured.includes(worker.worker_id);
 }
 
@@ -106,8 +90,8 @@ export async function buildRegistration(
   workerId: string,
 ): Promise<WorkerRegistration> {
   const identity = identityService.identity();
-  if (!identity || identity.isDemo) {
-    throw new Error('Sólo las identidades propias pueden registrar mineros.');
+  if (!identity) {
+    throw new Error('Necesitás una identidad para registrar mineros.');
   }
   const timestamp = new Date().toISOString();
   const signature = await identityService.sign(`${workerId}|register|${timestamp}`);

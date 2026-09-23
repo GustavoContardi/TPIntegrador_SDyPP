@@ -214,8 +214,8 @@ class _ClienteFirmante:
     método, la URL y el cuerpo — igual que hace el frontend.
 
     Firma con la identidad que corresponda al `X-Owner-Id` que pasó el test. Si
-    no reconoce esa identidad (una cuenta demo, o un `X-Owner-Id` inventado a
-    propósito) no firma nada: es justo el caso que varios tests quieren ejercer.
+    no reconoce esa identidad (un `X-Owner-Id` inventado a propósito) no firma
+    nada: es justo el caso que varios tests quieren ejercer.
     """
 
     def __init__(self, client):
@@ -1392,42 +1392,3 @@ class TestAdministrarExigeFirma:
                               headers=headers)
         assert repetida.status_code == 401
         assert "utilizada" in repetida.json()["detail"]
-
-
-class TestLasCuentasDemoSiguenAndando:
-    """El camino custodial no se rompe al exigir firmas.
-
-    Una cuenta demo no puede firmar desde el navegador —su clave la tiene el
-    backend— así que se autoriza como antes. Que siga funcionando es parte del
-    contrato: si al cerrar el agujero la demo dejaba de andar, el arreglo no
-    servía.
-    """
-
-    def test_una_cuenta_demo_administra_su_minero_sin_firmar(self, api, r):
-        crudo = api._client
-        _online(r, "worker-standalone")
-        resp = crudo.post("/api/workers/worker-standalone/switch-mode",
-                          json={"target": "standalone"},
-                          headers={"X-Owner-Id": "valentin"})
-        assert resp.status_code == 200, resp.text
-
-    def test_una_cuenta_demo_no_administra_el_minero_de_otra(self, api, r):
-        crudo = api._client
-        resp = crudo.post("/api/workers/worker-pool-miner-1/switch-mode",
-                          json={"target": "standalone"},
-                          headers={"X-Owner-Id": "valentin"})
-        assert resp.status_code == 403
-
-    def test_un_id_demo_no_se_puede_registrar(self, r):
-        """Lo que mantiene disjuntos los dos caminos de autorización.
-
-        Si un ciudadano real pudiera registrar `worker-standalone`, su minero
-        caería en el camino custodial y quedaría administrable sin firma.
-        """
-        from fastapi import HTTPException
-        from voxchain_api.routers import workers as workers_router
-
-        with pytest.raises(HTTPException) as exc:
-            workers_router.persist_worker_registration(
-                _Identidad().registro("worker-standalone"), r)
-        assert exc.value.status_code == 409

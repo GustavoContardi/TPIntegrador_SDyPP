@@ -234,21 +234,12 @@ deploy_k3s() {
     ok "Secrets creados desde Secret Manager"
 
     echo "---"
-    info "Aplicando manifiestos de GPU cluster (demo: 5 nodos)..."
-    # Nodos demo individuales (escenario con usuarios precargados)
-    kubectl apply -f pilar3-despliegue/kubernetes/gpu-cluster/demo-deployments.yaml
+    info "Aplicando manifiestos de GPU cluster..."
     # RBAC y manifiestos auxiliares
     kubectl apply -f pilar3-despliegue/kubernetes/gpu-cluster/worker-rbac.yaml
     kubectl apply -f pilar3-despliegue/kubernetes/gpu-cluster/backend-proxy-rbac.yaml
     kubectl apply -f pilar3-despliegue/kubernetes/gpu-cluster/worker-modes-configmap.yaml
-    ok "Manifiestos GPU cluster (demo) aplicados"
-
-    echo "---"
-    info "Verificando rollouts..."
-    for deploy in worker-standalone worker-pool-coordinator worker-pool-miner-1 worker-pool-miner-2 worker-pool-miner-3; do
-        kubectl rollout status -n "$NAMESPACE_K3S" \
-            "deployment/$deploy" --timeout=120s || warn "rollout de $deploy no completó"
-    done
+    ok "Manifiestos GPU cluster aplicados"
 
     echo "---"
     info "Estado final:"

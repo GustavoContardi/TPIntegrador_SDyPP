@@ -4,31 +4,28 @@ import { ApiService } from '../../core/services/api.service';
 import { EventsService } from '../../core/services/events.service';
 import { Block } from '../../core/models/block.model';
 import { actionLabel } from '../../core/models/law.model';
+import { friendlyDate } from '../../core/utils/format';
 
 /** Un bloque con lo que la tabla necesita ya calculado. */
 interface Fila {
   height: string;
   hash: string;
-  hashShort: string;
-  prev: string;
+  seal: string;
   law: string;
   action: string;
   zeros: number;
-  nonce: string;
   winner: string;
-  window: string;
   ts: string;
   derogacion: boolean;
 }
 
 /**
- * La cadena de bloques.
+ * El historial: cada decisión que la red selló, de la más nueva a la más vieja.
  *
- * El diseño no llegó a maquetar esta pantalla, pero sí dejó dicho qué se
- * muestra de un bloque: altura, hash, ley, acción, ceros, nonce, ganador,
- * ventana y fecha. Está armada con las mismas piezas del sistema que el resto
- * — tabla con la regla que se desvanece, monoespaciada para todo lo que
- * calculó la red, el acento sólo en la etiqueta de acción.
+ * Es la cadena de bloques, pero contada para quien no sabe qué es un nonce ni
+ * un hash previo. De cada bloque se muestra lo que alguien puede querer saber
+ * —qué ley, qué se decidió, quién la selló y cuándo— más un sello corto que
+ * funciona como comprobante. El detalle criptográfico sigue en la API.
  *
  * La altura se cuenta desde el final: el bloque más nuevo va primero porque es
  * el que interesa, y su número es el largo de la cadena.
@@ -41,16 +38,16 @@ interface Fila {
     <main class="vc-page">
       <div class="vc-head">
         <div class="vc-head__text">
-          <h6 class="vc-kicker">Registro</h6>
-          <h1 class="vc-title">Cadena de bloques</h1>
+          <h6 class="vc-kicker">Registro público</h6>
+          <h1 class="vc-title">Historial</h1>
           <p class="vc-lead">
-            Cada bloque sella una ley con el nonce que alguien encontró y queda
-            encadenado al anterior por su hash. Reescribir uno obliga a rehacer todo el
-            trabajo de los que vinieron después.
+            Cada decisión de la red queda sellada y encadenada a la anterior. Nadie
+            puede borrarla ni modificarla: cambiar una sola obligaría a rehacer todo el
+            trabajo que vino después.
           </p>
         </div>
-        <span class="mono vc-muted head__len" *ngIf="rows().length">
-          {{ rows().length }} bloque{{ rows().length === 1 ? '' : 's' }}
+        <span class="vc-muted head__len" *ngIf="rows().length">
+          {{ rows().length }} {{ rows().length === 1 ? 'decisión sellada' : 'decisiones selladas' }}
         </span>
       </div>
 
@@ -58,37 +55,29 @@ interface Fila {
         <table class="table chain__table">
           <thead>
             <tr>
-              <th>Altura</th>
-              <th>Hash del bloque</th>
+              <th>N.º</th>
               <th>Ley</th>
-              <th>Acción</th>
-              <th class="num">Ceros</th>
-              <th class="num">Nonce</th>
-              <th>Ganador</th>
-              <th>Ventana</th>
+              <th>Decisión</th>
+              <th class="num">Dificultad</th>
+              <th>Sellada por</th>
               <th>Fecha</th>
+              <th>Sello</th>
             </tr>
           </thead>
           <tbody>
             <tr *ngFor="let b of rows()">
               <td class="mono chain__height">{{ b.height }}</td>
-              <td>
-                <code [title]="b.hash">{{ b.hashShort }}</code>
-                <!-- El anterior va debajo y apagado: es el eslabón, no el dato
-                     que se busca, pero sin él la cadena no se ve encadenada. -->
-                <span class="mono chain__prev">← {{ b.prev }}</span>
-              </td>
               <td class="mono chain__law">{{ b.law }}</td>
               <td>
                 <span class="tag" [class.tag-outline]="b.derogacion" [class.tag-accent]="!b.derogacion">
                   {{ b.action }}
                 </span>
               </td>
-              <td class="mono num chain__zeros">{{ b.zeros }}</td>
-              <td class="mono num">{{ b.nonce }}</td>
+              <td class="num chain__zeros">nivel {{ b.zeros }}</td>
               <td class="chain__winner">{{ b.winner }}</td>
-              <td class="mono chain__window">{{ b.window }}</td>
-              <td class="mono chain__ts">{{ b.ts }}</td>
+              <td class="chain__ts">{{ b.ts }}</td>
+              <!-- El sello es el comprobante: corto a la vista, entero al pasar el mouse. -->
+              <td><code class="chain__seal" [title]="b.hash">{{ b.seal }}</code></td>
             </tr>
           </tbody>
         </table>
@@ -96,23 +85,22 @@ interface Fila {
 
       <ng-template #vacia>
         <p class="vc-empty chain__empty">
-          La cadena está vacía: todavía no se selló ningún bloque.
+          Todavía no se selló ninguna decisión. La primera ley que la red resuelva va a
+          aparecer acá.
         </p>
       </ng-template>
     </main>
   `,
   styles: [`
-    .head__len { font-size: 11.5px; white-space: nowrap; }
+    .head__len { font-size: 12.5px; white-space: nowrap; }
     .chain { margin-top: 40px; }
-    .chain__table { min-width: 1120px; white-space: nowrap; }
+    .chain__table { min-width: 820px; white-space: nowrap; }
     .chain__height { font-size: 13px; color: var(--color-neutral-500); }
-    .chain__prev { display: block; margin-top: 4px; font-size: 11px; color: var(--color-neutral-700); }
-    .chain__law { font-size: 13px; color: var(--color-neutral-200); }
-    /* Los ceros son la dificultad: el dato que explica cuánto costó el bloque. */
-    .chain__zeros { font-size: 14px; color: var(--color-accent-300); }
+    .chain__law { font-size: 13px; color: var(--color-neutral-100); }
+    .chain__zeros { font-size: 13px; color: var(--color-accent-300); }
     .chain__winner { font-size: 13px; color: var(--color-neutral-300); }
-    .chain__window { font-size: 12.5px; color: var(--color-neutral-500); }
-    .chain__ts { font-size: 12px; color: var(--color-neutral-500); }
+    .chain__ts { font-size: 12.5px; color: var(--color-neutral-400); }
+    .table code.chain__seal { font-size: 12px; color: var(--color-neutral-500); }
     .chain__empty { margin-top: 40px; }
   `]
 })
@@ -131,15 +119,12 @@ export class ChainComponent {
         // último bloque queda con la altura más alta.
         height: '#' + (i + 1),
         hash: b.block_hash,
-        hashShort: b.block_hash.slice(0, 16) + '…',
-        prev: b.previous_hash ? b.previous_hash.slice(0, 12) + '…' : 'génesis',
+        seal: b.block_hash.slice(0, 10),
         law: b.law_id,
         action: actionLabel(b.action),
         zeros: b.n_zeros_required,
-        nonce: b.nonce.toLocaleString('es-AR'),
         winner: b.winning_node_or_pool,
-        window: b.voting_window_id,
-        ts: b.timestamp,
+        ts: friendlyDate(b.timestamp),
         derogacion: b.action === 'derogacion',
       }))
       .reverse();

@@ -66,23 +66,24 @@ def assess_proposer(*, founded_team: bool, worker_id: Optional[str],
     miembro más.
 
     Un ``pool-coordinator`` sin equipo registrado cuenta como dueño de equipo:
-    coordina un pool y responde por él. Pasa con el pool de las cuentas demo,
-    que se arma por despliegue y no por ``/api/teams``; con equipos reales el
-    coordinador siempre tiene su registro y entra por ``founded_team``.
+    coordina un pool y responde por él. Pasa con un pool que se arma por
+    despliegue y no por ``/api/teams``; con equipos reales el coordinador
+    siempre tiene su registro y entra por ``founded_team``.
     """
     if founded_team:
         return ProposerStanding(STANDING_TEAM_OWNER)
     if not worker_id:
         return ProposerStanding(
             None,
-            "Sólo pueden proponer leyes el dueño de un minero standalone o el "
-            "fundador de un equipo. Registrá un minero para poder proponer.")
+            "Para proponer leyes necesitás un minero propio que mine por su "
+            "cuenta, o fundar un equipo. Registrá un minero para poder "
+            "proponer.")
     if worker_team:
         return ProposerStanding(
             None,
-            f"Tu minero '{worker_id}' es miembro del equipo '{worker_team}': "
-            "las leyes las propone su fundador. Salí del equipo para proponer "
-            "como standalone.")
+            f"Tu minero '{worker_id}' es parte del equipo '{worker_team}', y en "
+            "un equipo las leyes las propone quien lo fundó. Si querés proponer "
+            "vos, sacá tu minero del equipo.")
     mode = worker_mode or _MODE_STANDALONE
     if mode == _MODE_STANDALONE:
         return ProposerStanding(STANDING_STANDALONE)
@@ -90,5 +91,5 @@ def assess_proposer(*, founded_team: bool, worker_id: Optional[str],
         return ProposerStanding(STANDING_TEAM_OWNER)
     return ProposerStanding(
         None,
-        f"Tu minero '{worker_id}' mina en modo '{mode}', dentro de un pool: "
-        "las leyes las propone quien lo coordina.")
+        f"Tu minero '{worker_id}' mina dentro de un equipo: las leyes las "
+        "propone quien lo lidera.")

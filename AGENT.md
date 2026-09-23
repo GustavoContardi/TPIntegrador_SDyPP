@@ -64,7 +64,7 @@ Consecuencias que hay que asumir, no esconder:
 
 - **El respaldo se muestra una sola vez**, al crear la identidad. Después ni la app ni el usuario pueden volver a leer la clave. Si no la guardó en ese momento, no hay recuperación — y no la hay porque no existe ninguna autoridad que pueda dársela de vuelta.
 - Las identidades viejas **se migran solas** al abrir la app: se reimporta el PKCS#8 como clave no extraíble, se pasa a IndexedDB y recién entonces se borra el original de `localStorage`. Si el guardado falla, la identidad sigue siendo recuperable en el próximo arranque.
-- `localStorage` conserva **sólo la parte pública** (`pubkey`, nombre para mostrar, si es demo). Es información pública y se lee de forma síncrona, que es lo que necesitan los guards de ruta y las plantillas.
+- `localStorage` conserva **sólo la parte pública** (`pubkey` y nombre para mostrar). Es información pública y se lee de forma síncrona, que es lo que necesitan los guards de ruta y las plantillas.
 
 La otra mitad de esta defensa es la **CSP** que sirve `voxchain-frontend/nginx.conf`: `script-src 'self'` sin `unsafe-inline` ni `unsafe-eval` es lo que intenta que no haya XSS en primer lugar. Para poder ponerla hay que compilar con `inlineCritical: false` (`angular.json`), porque el inliner de CSS crítico de Angular mete un `<style>` y un `onload=` en el `index.html` que obligarían a aflojar la directiva. `style-src` sí lleva `unsafe-inline` porque Angular Material inyecta estilos en tiempo de ejecución; es un residuo mucho menor, con CSS no se ejecuta JavaScript.
 
@@ -88,8 +88,6 @@ La autorización se verifica siempre contra el dueño **guardado en Redis**, nun
 
 Nota importante: el PoW se verifica sin ninguna clave (`verify_nonce` cuenta ceros). **La firma no valida el trabajo, valida a quién se le acredita.**
 
-Las cuentas demo son la excepción documentada: son custodiales (la privada la tiene el backend, el navegador no puede firmar) y siguen el camino viejo de comparación por cabecera. Los dos caminos son disjuntos: los `worker_id` demo están reservados y el alta los rechaza con 409, así que ningún minero de un ciudadano real cae ahí.
-
 #### Identidad de ciudadano vs. identidad de nodo
 
 Un minero **no** firma con la clave del ciudadano que lo registró: tiene una identidad propia, un par EC P-256 que genera dentro de su propio proceso al arrancar y que no transmite nunca. Son dos identidades distintas a propósito.
@@ -109,7 +107,7 @@ Un token filtrado permite, como máximo, ocupar el slot de nodo de ese minero du
 
 1. Propone una ley —para promulgar o para derogar— **sólo el fundador de un equipo o el dueño de un minero standalone**. **Proponer no tiene costo de PoW**, solo de cooldown (ver 3.4).
    - Son exactamente quienes responden en la deliberación (3.12): la ley la trae a la mesa quien después decide si la mina. Un ciudadano sin minero no tiene nada que aportar a la ventana que abriría; un miembro de equipo ya delegó su voz en el fundador, y si pudiera proponer por su cuenta el equipo dejaría de decidir como uno.
-   - Standalone = identidad con un minero registrado que no está en ningún equipo, **esté vivo o no** (que no mine ahora lo cubre el quórum, 3.11). Un `pool-coordinator` sin equipo registrado cuenta como dueño de equipo: es el caso del pool de las cuentas demo, que se arma por despliegue.
+   - Standalone = identidad con un minero registrado que no está en ningún equipo, **esté vivo o no** (que no mine ahora lo cubre el quórum, 3.11). Un `pool-coordinator` sin equipo registrado cuenta como dueño de equipo: es el caso de un pool que se arma por despliegue y no por `/api/teams`.
    - Se verifica en el API (403 con el motivo, y `GET /api/laws/proposer/<pubkey>` para que el formulario avise antes) y en el NCT, después de la firma y antes del cooldown: a la cola `propuestas` se puede llegar sin pasar por el API. La regla vive en `common/blockchain/proposers.py`; los datos los junta `VoxChainStore.proposer_standing`.
    - `RESTRICT_PROPOSERS=false` la apaga (NCT y API, mismo valor). Lo necesitan los inyectores de carga (`scripts/demo_carga.py`, el compose de escalado), que proponen con identidades inventadas.
    - **No cierra Sybil** (ver 9): registrar un minero cuesta una identidad nueva. Lo que sí cambia es que un equipo grande tiene una sola voz para proponer, no una por miembro.

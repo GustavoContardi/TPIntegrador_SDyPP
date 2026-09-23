@@ -187,7 +187,7 @@ manifests del repositorio.
 | `worker/` (modo `pool-worker`) | Miembro de un equipo: pide rangos al coordinator y los mina |
 | `worker/` (modo `pool-auto`) | Pool de infraestructura anónimo: los pares eligen coordinator por mini-PoW |
 | `worker/` (modo `standalone`) | Mina el espacio completo por su cuenta (modo competitivo) |
-| `voxchain_api/` | API REST (FastAPI): propuestas, cadena, cuentas demo, estado de workers, equipos, deliberación y disponibilidad (quórum) |
+| `voxchain_api/` | API REST (FastAPI): propuestas, cadena, estado de workers, equipos, deliberación y disponibilidad (quórum) |
 | `voxchain-frontend/` | SPA en Angular; firma las propuestas y las decisiones de deliberación en el navegador |
 | `common/` | Paquete compartido: `blockchain` (bloques, desafío, dificultad, categorías, quórum, deliberación, proponentes), `identity` (firmas), `storage` (Redis), `messaging` (RabbitMQ), health, logging, métricas |
 

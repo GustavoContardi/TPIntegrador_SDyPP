@@ -187,20 +187,3 @@ jobs:
               echo "$SALIDA"
             fi
           done
-
-      - name: Deploy demo worker nodes (5 nodes for demo scenario)
-        env:
-          KUBECONFIG: ${{ env.K3S_KUBECONFIG_PATH }}
-        run: |
-          kubectl apply -f ${{ env.K8S_DIR }}/demo-deployments.yaml
-
-      - name: Verify deployments
-        env:
-          KUBECONFIG: ${{ env.K3S_KUBECONFIG_PATH }}
-        run: |
-          for deploy in worker-standalone worker-pool-coordinator worker-pool-miner-1 worker-pool-miner-2 worker-pool-miner-3; do
-            kubectl rollout status \
-              -n ${{ env.NAMESPACE }} \
-              deployment/$deploy \
-              --timeout=120s
-          done

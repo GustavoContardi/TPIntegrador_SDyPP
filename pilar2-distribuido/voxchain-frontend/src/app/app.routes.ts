@@ -1,5 +1,5 @@
 import { Routes } from '@angular/router';
-import { accountSelectedGuard } from './core/guards/account-selected.guard';
+import { identityGuard } from './core/guards/identity.guard';
 
 /**
  * El mapa de la app, dividido en dos por un criterio: **mirar es público,
@@ -51,23 +51,17 @@ export const routes: Routes = [
     path: 'identity',
     loadComponent: () => import('./features/identity/identity.component').then(m => m.IdentityComponent)
   },
-  // La tabla de cuentas demo vive ahora dentro de /identity; esta ruta se
-  // conserva por los enlaces que ya existían.
-  {
-    path: 'select-account',
-    loadComponent: () => import('./features/account-selection/account-selection.component').then(m => m.AccountSelectionComponent)
-  },
 
   // ── con identidad: son pantallas para hacer algo, no para mirar ────────
   {
     path: 'propose',
     loadComponent: () => import('./features/propose-law/propose-law.component').then(m => m.ProposeLawComponent),
-    canActivate: [accountSelectedGuard]
+    canActivate: [identityGuard]
   },
   {
     path: 'queue',
     loadComponent: () => import('./features/queue/queue.component').then(m => m.QueueComponent),
-    canActivate: [accountSelectedGuard]
+    canActivate: [identityGuard]
   },
 
   // Los equipos viven dentro de la página de mineros. La ruta se conserva para

@@ -7,9 +7,9 @@ GCP — GKE zonal, southamerica-east1-a      Clúster GPU — k3s (externo)
 ┌──────────────────────────────┐           ┌──────────────────────────────┐
 │ Namespace: voxchain          │           │ Namespace: g-git-push-cv     │
 │                              │   AMQPS   │                              │
-│ RabbitMQ (STS ×3) ─ LB:5671 ─┼──────────►┼ worker-standalone            │
-│                              │(CA propia)│ worker-pool-coordinator      │
-│ Redis + Sentinel (STS ×3+3)  │           │ worker-pool-miner-1..3       │
+│ RabbitMQ (STS ×3) ─ LB:5671 ─┼──────────►┼ mineros de los ciudadanos    │
+│                              │(CA propia)│ (los levanta el alta desde   │
+│ Redis + Sentinel (STS ×3+3)  │           │ la UI)                       │
 │        └──────── LB:6379 ────┼──────────►┼ (estado worker:status:*)     │
 │                              │  (sin TLS)│ - CPU por defecto            │
 │ NCT primary + standby        │           │ - GPU opt-in por pod         │
@@ -30,9 +30,10 @@ Diagrama completo: [`docs/diagrams/arquitecturaVoxChain.jpeg`](../docs/diagrams/
   LoadBalancer: **RabbitMQ por AMQPS** (5671, con CA propia) para desafíos y
   nonces, y **Redis** (6379, con contraseña y **sin TLS**) para reportar su
   estado.
-- El pipeline `04` despliega el **escenario de demo**: un minero standalone y un
-  pool con coordinator y 3 mineros. `worker-deployment.yaml` + `worker-hpa.yaml`
-  (2→10 por CPU) y `pool-miner-*` son alternativas que se aplican a mano.
+- El pipeline `04` prepara el namespace, los secretos y los ConfigMaps, pero no
+  despliega mineros: los levanta el alta desde la UI. `worker-deployment.yaml` +
+  `worker-hpa.yaml` (2→10 por CPU) y `pool-miner-*` son alternativas que se
+  aplican a mano.
 - **GPU opt-in**: los manifests piden `nvidia.com/gpu` sólo si se descomenta el
   recurso junto con las variables `NVIDIA_*` (ver el comentario en
   `gpu-cluster/worker-deployment.yaml`). Sin eso, el minero detecta que no hay
@@ -174,7 +175,7 @@ kubectl create secret generic redis-credentials -n g-git-push-cv \
   --from-literal=password="$REDIS_PASS"
 
 kubectl apply -f pilar3-despliegue/kubernetes/gpu-cluster/worker-modes-configmap.yaml
-kubectl apply -f pilar3-despliegue/kubernetes/gpu-cluster/demo-deployments.yaml
+# los mineros los levanta el alta desde la UI; a mano: worker-deployment.yaml
 ```
 
 En el k3s del profesor el namespace ya existe y nuestra ServiceAccount no

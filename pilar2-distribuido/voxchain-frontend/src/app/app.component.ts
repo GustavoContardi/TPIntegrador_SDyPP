@@ -28,7 +28,7 @@ import { IdentityService } from './core/services/identity.service';
 
           <nav class="nav-links">
             <a routerLink="/dashboard" routerLinkActive="on" [ariaCurrentWhenActive]="'page'">Panel</a>
-            <a routerLink="/chain" routerLinkActive="on" [ariaCurrentWhenActive]="'page'">Cadena</a>
+            <a routerLink="/chain" routerLinkActive="on" [ariaCurrentWhenActive]="'page'">Historial</a>
             <a routerLink="/laws" routerLinkActive="on" [ariaCurrentWhenActive]="'page'">Leyes</a>
             <a routerLink="/queue" routerLinkActive="on" [ariaCurrentWhenActive]="'page'"
                *ngIf="identityService.identity()">Votar</a>
@@ -43,12 +43,12 @@ import { IdentityService } from './core/services/identity.service';
               <!-- El punto late mientras haya sesión: es el mismo semáforo que
                    usan los mineros, acá aplicado a tu propia identidad. -->
               <span class="session__dot"></span>
-              <span class="session__label mono">{{ sessionLabel() }}</span>
-              <a class="btn btn-ghost session__btn" routerLink="/identity">Identidad</a>
+              <span class="session__label">{{ sessionLabel() }}</span>
+              <a class="btn btn-ghost session__btn" routerLink="/identity">Mi identidad</a>
               <button class="btn btn-ghost session__out" (click)="logout()" title="Cerrar sesión">×</button>
             </ng-container>
             <ng-template #anon>
-              <a class="btn btn-primary session__in" routerLink="/identity">Identificarme</a>
+              <a class="btn btn-primary session__in" routerLink="/identity">Crear mi identidad</a>
             </ng-template>
           </div>
         </div>
@@ -98,7 +98,7 @@ import { IdentityService } from './core/services/identity.service';
       background: var(--color-accent); box-shadow: 0 0 10px var(--color-accent);
       animation: vc-pulse 1.8s ease-in-out infinite;
     }
-    .session__label { font-size: 11.5px; white-space: nowrap; color: var(--color-neutral-300); }
+    .session__label { font-size: 12.5px; white-space: nowrap; color: var(--color-neutral-300); }
     .session__btn { font-size: 12px; color: var(--color-neutral-500); }
     .session__btn:hover { color: var(--color-text); background: transparent; }
     .session__out { font-size: 17px; line-height: 1; color: var(--color-neutral-500); padding: 0 6px; }
@@ -115,15 +115,13 @@ export class AppComponent {
   identityService = inject(IdentityService);
 
   /**
-   * Cómo se te nombra en la barra: nombre para mostrar y el principio de la
-   * clave pública. El nombre es local a este navegador, así que la clave va
-   * igual — es lo único con lo que la red te reconoce.
+   * Cómo se te nombra en la barra: tu nombre para mostrar. La clave pública
+   * no se muestra — es un dato para la red, no para vos.
    */
   sessionLabel(): string {
     const id = this.identityService.identity();
     if (!id) return '';
-    const short = id.pubkey.slice(0, 4) + '…' + id.pubkey.slice(-4);
-    return id.username ? `${id.username} · ${short}` : short;
+    return id.username || 'Tu identidad';
   }
 
   logout() {

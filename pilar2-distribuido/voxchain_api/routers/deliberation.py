@@ -70,8 +70,8 @@ def _owner_of(redis_client, voter: dict) -> str:
     registrado = _decode(redis_client.get(f"worker:owner:{voter_id}"))
     if registrado:
         return registrado
-    # Mineros de las cuentas demo: su dueño es un nombre de usuario fijo, no un
-    # registro en Redis (el camino custodial de `authorize_worker_action`).
+    # Mineros precargados del desarrollo local: su dueño es ``default``, no un
+    # registro en Redis (el camino por cabecera de `authorize_worker_action`).
     return next((dueno for dueno, ids in OWNER_WORKERS_MAPPING.items()
                  if voter_id in ids), "")
 

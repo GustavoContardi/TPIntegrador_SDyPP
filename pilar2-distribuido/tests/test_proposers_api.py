@@ -69,7 +69,7 @@ def _propuesta(author):
 def test_sin_minero_recibe_403_con_el_motivo(api, publicadas):
     resp = api.post("/api/laws", json=_propuesta(PK_NADIE))
     assert resp.status_code == 403
-    assert "standalone" in resp.json()["detail"]
+    assert "Registrá un minero" in resp.json()["detail"]
     assert publicadas == []
 
 

@@ -388,22 +388,12 @@ POOL_COORDINATOR_MAPPING = {
 }
 
 # Mapping from owner_id to their owned workers
-# Updated for the demo scenario where each user corresponds to a node in k3s-cluster
 OWNER_WORKERS_MAPPING = {
     "default": ["worker-1", "worker-2", "pool-coordinator-1"],  # For local dev
-    "valentin": ["worker-standalone"],
-    "gustavo": ["worker-pool-coordinator"],
-    "matt": ["worker-pool-miner-1"],
-    "profesor1": ["worker-pool-miner-2"],
-    "profesor2": ["worker-pool-miner-3"],
 }
 
 # Combined list of all registered worker IDs
-ALL_REGISTERED_WORKER_IDS = [
-    "worker-1", "worker-2", "pool-coordinator-1",
-    "worker-standalone", "worker-pool-coordinator",
-    "worker-pool-miner-1", "worker-pool-miner-2", "worker-pool-miner-3"
-]
+ALL_REGISTERED_WORKER_IDS = ["worker-1", "worker-2", "pool-coordinator-1"]
 
 
 # --- Autorización de acciones de administración (AGENT.md 3.1) ---------------
@@ -472,11 +462,10 @@ def authorize_worker_action(redis_client, worker_id: str, action: str,
                             timestamp: Optional[str]) -> str:
     """Autoriza una acción sobre un minero y devuelve el dueño autenticado.
 
-    Los mineros demo siguen el camino viejo: sus dueños son nombres de usuario
-    (``valentin``), no claves, y en modo demo el frontend no puede firmar porque
-    la privada la tiene el backend. Es un modo custodial documentado, y los dos
-    caminos son **disjuntos**: los ids demo están reservados y el alta los
-    rechaza con 409, así que ningún minero de un ciudadano real cae acá.
+    Los mineros precargados del desarrollo local siguen el camino viejo: su
+    dueño es ``default``, no una clave, y se autorizan por cabecera. Los dos
+    caminos son **disjuntos**: esos ids están reservados y el alta los rechaza
+    con 409, así que ningún minero de un ciudadano real cae acá.
     """
     if worker_id in OWNER_WORKERS_MAPPING.get(owner_id, []):
         return owner_id
@@ -505,8 +494,8 @@ def authorize_owner_action(redis_client, resource_id: str, action: str,
                            timestamp: Optional[str]) -> None:
     """Igual que la anterior, para recursos cuyo dueño ya se conoce (un equipo).
 
-    Un dueño que no es una clave P-256 es una cuenta demo: se compara por
-    igualdad, como antes. Uno que sí lo es tiene que firmar.
+    Un dueño que no es una clave P-256 es el ``default`` del desarrollo local:
+    se compara por igualdad, como antes. Uno que sí lo es tiene que firmar.
     """
     if owner_of_resource != owner_id:
         # Cortesía, no defensa (ver `authorize_worker_action`).
@@ -961,7 +950,7 @@ def persist_worker_registration(request: RegisterWorkerRequest, redis_client) ->
 
     # 1. Collision Protection: check against default and other owned workers
     if worker_id in ALL_REGISTERED_WORKER_IDS:
-        raise HTTPException(status_code=409, detail="Worker ID is reserved for a demo/default worker")
+        raise HTTPException(status_code=409, detail="Worker ID is reserved for a default worker")
 
     try:
         existing_owner = redis_client.get(f"worker:owner:{worker_id}")
@@ -1197,9 +1186,9 @@ async def unregister_worker(
     if not x_signature or not x_timestamp:
         raise HTTPException(status_code=400, detail="Missing verification headers (X-Signature / X-Timestamp)")
 
-    # 1. Collision/Demo check: reject deleting hardcoded demo workers
+    # 1. Collision check: reject deleting hardcoded default workers
     if worker_id in ALL_REGISTERED_WORKER_IDS:
-        raise HTTPException(status_code=403, detail="Cannot delete preconfigured demo workers")
+        raise HTTPException(status_code=403, detail="Cannot delete preconfigured default workers")
 
     redis_client = redis.store.r
 

@@ -36,7 +36,6 @@ from common.blockchain.categories import (
     parse_categories,
 )
 from common.blockchain.proposers import ProposerStanding, assess_proposer
-from common.demo_accounts import demo_account_by_pubkey
 
 
 class LawStatus:
@@ -684,25 +683,15 @@ return 1
     # ninguna de esas claves.
 
     def proposer_standing(self, pubkey: str) -> ProposerStanding:
-        """Si ``pubkey`` puede proponer una ley, y en calidad de qué.
-
-        Las cuentas demo no tienen ``worker:owner:*`` (son custodiales, ver
-        ``common.demo_accounts``): su minero sale de la tabla fija, y el equipo
-        que funden queda a nombre de su usuario, no de su pubkey, porque así lo
-        anota el API cuando actúan por cabecera.
-        """
-        demo = demo_account_by_pubkey(pubkey) if pubkey else None
-        owners = [pubkey] + ([demo[0]] if demo else [])
-        founded = any(self._existing_team(self.r.get(f"team:owner:{o}"))
-                      for o in owners if o)
-        worker_id = demo[1]["worker_id"] if demo else self._worker_of_owner(pubkey)
+        """Si ``pubkey`` puede proponer una ley, y en calidad de qué."""
+        founded = bool(pubkey) and bool(
+            self._existing_team(self.r.get(f"team:owner:{pubkey}")))
+        worker_id = self._worker_of_owner(pubkey)
         team_id = self._existing_team(
             self.r.get(f"worker:team:{worker_id}")) if worker_id else None
         team_name = (self.r.hget(f"team:{team_id}", "name") or team_id
                      if team_id else None)
         mode = self._reported_mode(worker_id) if worker_id else ""
-        if not mode and demo:
-            mode = demo[1].get("mode", "")
         return assess_proposer(founded_team=founded, worker_id=worker_id,
                                worker_team=team_name, worker_mode=mode)
 

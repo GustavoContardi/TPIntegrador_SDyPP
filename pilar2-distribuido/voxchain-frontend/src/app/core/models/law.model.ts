@@ -96,3 +96,21 @@ export function actionLabel(action: string | undefined | null): string {
     derogacion: 'derogación',
   } as Record<string, string>)[action] ?? action;
 }
+
+/**
+ * El estado de una ley en castellano; el crudo del backend si no lo conocemos.
+ *
+ * "En ventana" era la jerga interna: para quien mira, una ley en ventana es
+ * una ley que se está votando.
+ */
+export function lawStatusLabel(status: string | undefined | null): string {
+  if (!status) return '';
+  return ({
+    pending_queue: 'esperando turno',
+    in_deliberation: 'por votarse',
+    in_window: 'en votación',
+    promulgated: 'vigente',
+    repealed: 'derogada',
+    discarded: 'descartada',
+  } as Record<string, string>)[status] ?? status;
+}

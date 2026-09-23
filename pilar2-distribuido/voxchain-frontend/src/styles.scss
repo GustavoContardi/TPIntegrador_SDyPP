@@ -17,6 +17,7 @@
 
 @use '@angular/material' as mat;
 @use 'styles/nocturne';
+@use 'styles/home';
 
 // Material queda sólo por el snackbar: es lo único que aporta comportamiento
 // (apilado, temporizado, accesibilidad) y no mero aspecto. Todo el resto del

@@ -1,18 +1,16 @@
-import { Component, OnInit, computed, inject, signal } from '@angular/core';
+import { Component, computed, inject, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { RouterModule } from '@angular/router';
 import { IdentityService } from '../../core/services/identity.service';
-import { AccountsService, DemoAccount } from '../../core/services/accounts.service';
+import { friendlyError } from '../../core/utils/format';
 
 /**
  * Identidad: quién sos ante la red.
  *
- * Las dos formas de entrar viven en la misma pantalla y no en dos, porque son
- * la misma decisión: una cuenta demo del despliegue (las firmas las resuelve el
- * backend) o un par de claves propio generado acá (la privada no sale del
- * navegador). Antes las cuentas demo estaban en `/select-account`, a un clic de
- * distancia; la ruta sigue existiendo, pero el camino normal es este.
+ * Un par de claves propio generado acá; la privada no sale del navegador.
+ * En pantalla se habla de "código público" y "clave secreta": son la
+ * clave pública y la privada, dichas sin jerga.
  */
 @Component({
   selector: 'app-identity',
@@ -24,116 +22,66 @@ import { AccountsService, DemoAccount } from '../../core/services/accounts.servi
         <h6 class="vc-kicker">Identidad</h6>
         <h1 class="vc-title">Quién sos ante la red</h1>
         <p class="vc-lead">
-          Ante la red te identifica tu clave pública. Podés entrar con una cuenta demo
-          del despliegue o generar un par de claves propio en este navegador.
+          Sin cuentas, sin contraseñas, sin datos personales. Tu identidad se crea en
+          este navegador en un par de segundos y con ella firmás todo lo que hacés en
+          la red.
         </p>
       </div>
 
       <!-- ── identidad activa ────────────────────────────────────────────── -->
       <div class="card elev-sm vc-soft--75 active" *ngIf="identityService.identity() as id">
         <div class="active__top">
-          <span class="card-kicker">
-            Identidad activa · {{ identityService.isDemoMode() ? 'modo demo' : 'claves propias' }}
-          </span>
+          <span class="card-kicker">Tu identidad activa</span>
           <span class="tag tag-accent">{{ id.username || 'sin nombre' }}</span>
         </div>
 
-        <p class="vc-label active__label">Clave pública (SPKI en base64)</p>
+        <p class="vc-label active__label">Tu código público</p>
         <code class="vc-code-block">{{ id.pubkey }}</code>
+        <p class="vc-note-sm active__hint">
+          Es lo que la red ve de vos. Podés compartirlo sin problema: sirve para
+          reconocerte, no para hacerse pasar por vos.
+        </p>
 
         <div class="vc-actions active__cta">
-          <button class="btn btn-secondary active__btn" (click)="copy(id.pubkey, 'Clave pública copiada.')">
-            Copiar clave
+          <button class="btn btn-secondary active__btn" (click)="copy(id.pubkey, 'Código público copiado.')">
+            Copiar código
           </button>
-          <button class="btn btn-ghost active__btn" *ngIf="identityService.isDemoMode()"
-                  (click)="releaseCurrent()">Liberar la cuenta</button>
-          <button class="btn btn-ghost active__btn" *ngIf="!identityService.isDemoMode()"
-                  (click)="clear()">Borrar identidad</button>
+          <button class="btn btn-ghost active__btn" (click)="clear()">Cerrar y borrar identidad</button>
         </div>
-
-        <p class="vc-note" *ngIf="identityService.isDemoMode()">
-          En modo demo las firmas las resuelve el worker en el backend: no hay clave
-          privada en este navegador.
-        </p>
 
         <!-- Respaldo de una sola vez: existe sólo mientras dure esta pantalla,
              recién creada la identidad, y no se guarda en ningún lado. Es la
              contracara de que la clave sea no exportable. -->
         <ng-container *ngIf="pemBackup() as pem">
           <div class="vc-note vc-note--bad backup">
-            <strong>Guardá esto ahora.</strong>&ngsp;
-            <span>Es la única vez que vas a ver tu clave privada: el navegador la
-              almacena de forma no exportable, así que ni la app ni vos pueden volver a
-              leerla. Copiala a un archivo <code class="vc-code">.pem</code> en un lugar
-              seguro.</span>
+            <strong>Guardá tu clave secreta ahora.</strong>&ngsp;
+            <span>Es la única vez que la vas a ver. Copiala y guardala en un lugar
+              seguro: si borrás los datos de este navegador, es la única forma de no
+              perder tu identidad.</span>
           </div>
           <pre class="vc-code-block backup__pem">{{ pem }}</pre>
           <div class="vc-actions active__cta">
-            <button class="btn btn-secondary active__btn" (click)="copy(pem, 'PEM copiado.')">Copiar PEM</button>
+            <button class="btn btn-secondary active__btn" (click)="copy(pem, 'Clave secreta copiada.')">Copiar clave secreta</button>
             <button class="btn btn-ghost active__btn" (click)="pemBackup.set(null)">Ya la guardé</button>
           </div>
         </ng-container>
 
-        <p class="vc-note" *ngIf="!identityService.isDemoMode() && !pemBackup()">
-          <strong>Tu clave privada no es exportable.</strong>&ngsp;
-          <span>El navegador firma con ella pero no puede entregarla, ni a esta app ni a
-            ningún script. Borrar los datos del sitio la elimina para siempre — y no
-            hace falta dársela a ningún minero: cada uno genera la suya al arrancar y se
-            vincula a la tuya con un token de un solo uso.</span>
+        <p class="vc-note" *ngIf="!pemBackup()">
+          <strong>Tu clave secreta está protegida.</strong>&ngsp;
+          <span>Tu navegador la usa para firmar, pero nunca la entrega: ni a esta app,
+            ni a tus mineros, ni a nadie. Ojo: si borrás los datos del sitio, se borra
+            con ellos.</span>
         </p>
       </div>
 
-      <!-- ── cuentas demo ────────────────────────────────────────────────── -->
-      <section class="vc-section">
-        <h3 class="vc-h3 vc-h3--sm">Cuentas demo</h3>
-        <p class="vc-lead demo__lead">
-          Las cuentas del despliegue de demo, una por worker. Se reservan por sesión.
-        </p>
-
-        <div class="vc-table-wrap" *ngIf="accounts().length; else sinCuentas">
-          <table class="table demo__table">
-            <thead>
-              <tr>
-                <th>Cuenta</th>
-                <th>Minero</th>
-                <th>Modo</th>
-                <th>Estado</th>
-                <th class="num"></th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr *ngFor="let a of accounts()">
-                <td class="demo__user">{{ a.username }}</td>
-                <td class="mono demo__worker">{{ a.worker_id }}</td>
-                <td>
-                  <span class="tag" [ngClass]="modeCls(a.mode)">{{ a.mode }}</span>
-                </td>
-                <td class="demo__state" [class.mine]="isMine(a)">{{ stateLabel(a) }}</td>
-                <td class="num">
-                  <button class="btn btn-ghost demo__btn" *ngIf="isMine(a)"
-                          (click)="release(a)">Liberar</button>
-                  <button class="btn btn-ghost demo__btn" *ngIf="!isMine(a)"
-                          [disabled]="a.status === 'occupied' || busy()"
-                          (click)="use(a)">Usar</button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        <ng-template #sinCuentas>
-          <p class="vc-empty">{{ loadingAccounts() ? 'Cargando cuentas…' : 'No se pudieron leer las cuentas demo.' }}</p>
-        </ng-template>
-      </section>
-
-      <!-- ── identidad propia ────────────────────────────────────────────── -->
-      <section class="vc-section--divided own">
+      <!-- ── crear identidad ─────────────────────────────────────────────── -->
+      <section class="vc-section own">
         <div class="card elev-sm vc-plain own__card">
-          <span class="card-kicker">Identidad propia</span>
-          <h4 class="own__title">Generar un par de claves</h4>
+          <span class="card-kicker">{{ identityService.identity() ? 'Otra identidad' : 'Empezá acá' }}</span>
+          <h4 class="own__title">Crear mi identidad</h4>
           <p class="own__body">
-            ECDSA P-256 generado en tu navegador. La privada queda guardada de forma no
-            exportable: vas a poder respaldarla una sola vez, y borrar los datos del
-            sitio la elimina para siempre.
+            Elegí un nombre y listo. Tu clave secreta se genera y se guarda sólo en este
+            navegador: vas a poder respaldarla una única vez.
           </p>
 
           <div class="field own__field">
@@ -150,9 +98,9 @@ import { AccountsService, DemoAccount } from '../../core/services/accounts.servi
                    (change)="acknowledged.set($any($event.target).checked)">
             <span class="dot own__box"></span>
             <span class="own__ack-text">
-              Entiendo que mi clave privada queda guardada en este navegador de forma no
-              exportable, que sólo voy a poder verla una vez para respaldarla, y que
-              borrar los datos del sitio la elimina para siempre.
+              Entiendo que mi clave secreta vive sólo en este navegador, que voy a poder
+              verla una única vez para respaldarla y que, si borro los datos del sitio,
+              la pierdo.
             </span>
           </label>
 
@@ -167,12 +115,13 @@ import { AccountsService, DemoAccount } from '../../core/services/accounts.servi
         </div>
 
         <div class="card elev-sm vc-plain own__card">
-          <span class="card-kicker">Tu clave privada nunca viaja</span>
-          <h4 class="own__title">Los mineros no la necesitan</h4>
+          <span class="card-kicker">Por qué es seguro</span>
+          <h4 class="own__title">Nadie puede votar por vos</h4>
           <p class="own__body">
-            Cada minero genera su propia identidad al arrancar y se vincula a la tuya con
-            un token de enrolamiento de un solo uso. Lo que firmás con tu clave son las
-            acciones de administración: registrar, cambiar de modo, fijar política.
+            Cada cosa que hacés —proponer una ley, sumar un minero, fundar un equipo—
+            va firmada con tu clave secreta, y esa clave nunca sale de tu navegador.
+            Ni siquiera tus mineros la necesitan: cada uno tiene la suya propia,
+            vinculada a vos.
           </p>
         </div>
       </section>
@@ -182,19 +131,12 @@ import { AccountsService, DemoAccount } from '../../core/services/accounts.servi
     .active { margin-top: 40px; padding: 26px; }
     .active__top { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 14px; }
     .active__label { margin: 18px 0 8px; }
+    .active__hint { margin-top: 8px; }
     .active__cta { margin-top: 18px; gap: 12px; }
     .active__btn { font-size: 13px; }
 
     .backup { margin-top: 20px; }
     .backup__pem { margin-top: 12px; white-space: pre; word-break: normal; overflow-x: auto; }
-
-    .demo__lead { margin: 6px 0 22px; font-size: 13.5px; }
-    .demo__table { min-width: 720px; }
-    .demo__user { font-size: 13.5px; color: var(--color-neutral-100); }
-    .demo__worker { font-size: 12.5px; color: var(--color-neutral-300); }
-    .demo__state { font-size: 13px; color: var(--color-neutral-300); }
-    .demo__state.mine { color: var(--color-accent-300); }
-    .demo__btn { font-size: 12.5px; }
 
     .own { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
     .own__card { padding: 24px; }
@@ -217,14 +159,10 @@ import { AccountsService, DemoAccount } from '../../core/services/accounts.servi
     .own__submit { align-self: flex-start; margin-top: 18px; min-height: 40px; padding: 0 20px; }
   `]
 })
-export class IdentityComponent implements OnInit {
+export class IdentityComponent {
   identityService = inject(IdentityService);
-  accountsService = inject(AccountsService);
   private snackBar = inject(MatSnackBar);
 
-  accounts = signal<DemoAccount[]>([]);
-  loadingAccounts = signal(true);
-  busy = signal(false);
   generating = signal(false);
 
   /**
@@ -249,101 +187,6 @@ export class IdentityComponent implements OnInit {
 
   canRegister = computed(() => this.nameValid() && this.acknowledged());
 
-  ngOnInit() {
-    this.loadAccounts();
-  }
-
-  // -- cuentas demo ---------------------------------------------------------
-
-  private loadAccounts() {
-    this.accountsService.listAccounts().subscribe({
-      next: (accounts) => {
-        this.accounts.set(accounts);
-        this.loadingAccounts.set(false);
-      },
-      // Sin reintento automático: la pantalla sigue siendo útil sin la tabla
-      // (podés generar claves propias), y un bucle de reintentos contra un
-      // backend caído sólo llena la consola.
-      error: () => this.loadingAccounts.set(false),
-    });
-  }
-
-  /** La cuenta que tiene reservada esta sesión. */
-  isMine(account: DemoAccount): boolean {
-    return this.accountsService.selectedAccount()?.username === account.username;
-  }
-
-  stateLabel(account: DemoAccount): string {
-    if (this.isMine(account)) return 'tu sesión';
-    return account.status === 'occupied' ? 'ocupada' : 'libre';
-  }
-
-  modeCls(mode: string): string {
-    return mode === 'pool-coordinator' ? 'tag-accent'
-      : mode === 'standalone' ? 'tag-outline' : 'tag-neutral';
-  }
-
-  use(account: DemoAccount) {
-    if (account.status === 'occupied') {
-      this.snackBar.open('Esa cuenta ya está en uso por otra sesión.', 'Cerrar', { duration: 3000 });
-      return;
-    }
-    this.busy.set(true);
-    this.accountsService.reserveAccount(account.username).subscribe({
-      next: (res) => {
-        this.busy.set(false);
-        if (res.status !== 'reserved' && res.status !== 'already_reserved') return;
-        this.accountsService.setSelectedAccount(account);
-        this.identityService.identity.set({
-          pubkey: account.pubkey,
-          username: account.username,
-          isDemo: true,
-        });
-        this.snackBar.open(`Entraste como "${account.username}".`, 'Cerrar', { duration: 2500 });
-        this.loadAccounts();
-      },
-      error: (err) => {
-        this.busy.set(false);
-        this.snackBar.open(
-          err?.status === 409
-            ? 'Esa cuenta ya está en uso por otra sesión.'
-            : 'No se pudo tomar la cuenta. Probá de nuevo.',
-          'Cerrar', { duration: 3000 });
-        this.loadAccounts();
-      },
-    });
-  }
-
-  release(account: DemoAccount) {
-    this.busy.set(true);
-    this.accountsService.releaseAccount(account.username).subscribe({
-      next: () => {
-        this.busy.set(false);
-        this.accountsService.setSelectedAccount(null);
-        this.identityService.clearIdentity();
-        this.snackBar.open(`Cuenta "${account.username}" liberada.`, 'Cerrar', { duration: 2500 });
-        this.loadAccounts();
-      },
-      error: () => {
-        this.busy.set(false);
-        this.snackBar.open('No se pudo liberar la cuenta.', 'Cerrar', { duration: 3000 });
-      },
-    });
-  }
-
-  /** Suelta la cuenta demo activa desde la ficha de arriba. */
-  releaseCurrent() {
-    const current = this.accountsService.selectedAccount();
-    if (current) {
-      this.release(current);
-      return;
-    }
-    // Sin reserva en esta sesión no hay nada que devolver; se sale y listo.
-    this.identityService.clearIdentity();
-  }
-
-  // -- identidad propia -----------------------------------------------------
-
   async register() {
     this.nameTouched.set(true);
     if (!this.canRegister()) return;
@@ -353,14 +196,14 @@ export class IdentityComponent implements OnInit {
       const name = this.displayName().trim();
       const { pemBackup } = await this.identityService.generateKeypair(name);
       this.pemBackup.set(pemBackup);
-      this.snackBar.open(`Identidad creada para ${name}. Guardá tu clave privada.`,
+      this.snackBar.open(`¡Listo, ${name}! Tu identidad está creada. Guardá tu clave secreta.`,
                          'Cerrar', { duration: 6000 });
       this.displayName.set('');
       this.acknowledged.set(false);
       this.nameTouched.set(false);
     } catch (err: any) {
       console.error(err);
-      this.snackBar.open('No se pudo generar: ' + err.message, 'Cerrar', { duration: 3000 });
+      this.snackBar.open(friendlyError(err, 'No se pudo crear la identidad. Probá de nuevo.'), 'Cerrar', { duration: 4000 });
     } finally {
       this.generating.set(false);
     }

@@ -7,7 +7,6 @@ from common.blockchain.proposers import (
     STANDING_TEAM_OWNER,
     assess_proposer,
 )
-from common.demo_accounts import DEMO_ACCOUNTS
 
 A = "pk-ana"
 B = "pk-beto"
@@ -115,17 +114,3 @@ def test_store_usa_el_modo_que_reporta_el_minero(store):
     store.r.set("worker:status:w-ana", json.dumps({"mode": "pool-worker"}))
     assert not store.proposer_standing(A).allowed
 
-
-def test_store_cuentas_demo(store):
-    """Custodiales: sin worker:owner en Redis, el minero sale de la tabla fija."""
-    pk = {u: c["pubkey"] for u, c in DEMO_ACCOUNTS.items()}
-    assert store.proposer_standing(pk["valentin"]).role == STANDING_STANDALONE
-    assert store.proposer_standing(pk["gustavo"]).role == STANDING_TEAM_OWNER
-    assert not store.proposer_standing(pk["matt"]).allowed
-
-
-def test_store_equipo_demo_a_nombre_del_usuario(store):
-    """El API anota el equipo de una cuenta demo con su usuario, no su pubkey."""
-    matt = DEMO_ACCOUNTS["matt"]
-    _equipo(store.r, "t-demo", "matt", matt["worker_id"])
-    assert store.proposer_standing(matt["pubkey"]).role == STANDING_TEAM_OWNER

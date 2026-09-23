@@ -21,9 +21,6 @@ export class ApiService {
   private getOwnerId(): string {
     const id = this.identityService.identity();
     if (!id) return 'default';
-    if (id.isDemo) {
-      return id.username || 'default';
-    }
     return id.pubkey;
   }
 
@@ -135,14 +132,11 @@ export class ApiService {
    * guardado. Antes alcanzaba con `X-Owner-Id`, que lo elige quien llama y
    * contiene una pubkey que está en cada bloque de la cadena: cualquiera que
    * supiera a quién imitar podía sacarle un minero de su equipo a otro.
-   *
-   * En modo demo no se firma —la privada la tiene el backend, no el navegador—
-   * y esas cuentas siguen el camino custodial de siempre.
    */
   private async signedHeaders(resourceId: string, action: string): Promise<HttpHeaders> {
     const headers = this.ownerHeaders();
     const id = this.identityService.identity();
-    if (!id || id.isDemo) return headers;
+    if (!id) return headers;
 
     const timestamp = new Date().toISOString();
     const signature = await this.identityService.sign(`${resourceId}|${action}|${timestamp}`);

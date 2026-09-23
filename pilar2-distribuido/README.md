@@ -119,7 +119,7 @@ en la topología por compatibilidad, pero el reparto de trabajo real va por HTTP
 | [`worker/`](worker/) modo `standalone` | Mina el espacio completo por su cuenta y publica el nonce directo al NCT (modo competitivo) |
 | [`voxchain_api/routers/teams.py`](voxchain_api/routers/teams.py) | **Equipos**: capa de nombres sobre el modo cooperativo. Crear un equipo promueve un minero propio a `pool-coordinator`; unirse pone un minero en `pool-worker` apuntando a él |
 | [`worker/`](worker/) modo `pool-auto` | Pool de infraestructura anónimo: los pares eligen coordinator por mini-PoW (`pool.election`) |
-| [`voxchain_api/`](voxchain_api/) | API REST (FastAPI): propuestas, cadena, cuentas demo, estado de workers, equipos, deliberación y disponibilidad |
+| [`voxchain_api/`](voxchain_api/) | API REST (FastAPI): propuestas, cadena, estado de workers, equipos, deliberación y disponibilidad |
 | [`voxchain-frontend/`](voxchain-frontend/) | SPA en Angular; firma en el navegador las propuestas y las decisiones de deliberación |
 | `common/` | Paquete compartido: `blockchain`, `storage` (Redis), `messaging` (RabbitMQ), health, logging, métricas, config |
 

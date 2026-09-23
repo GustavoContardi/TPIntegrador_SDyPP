@@ -12,4 +12,3 @@ resources:
   - worker-modes-configmap.yaml
   - worker-rbac.yaml
   - backend-proxy-rbac.yaml
-  - demo-deployments.yaml

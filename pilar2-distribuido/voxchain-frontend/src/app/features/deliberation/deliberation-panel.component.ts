@@ -4,6 +4,7 @@ import { ApiService } from '../../core/services/api.service';
 import { IdentityService } from '../../core/services/identity.service';
 import { Deliberation, DeliberationDecision, DeliberationVoter } from '../../core/models/deliberation.model';
 import { actionLabel, categoryLabel } from '../../core/models/law.model';
+import { friendlyDuration, friendlyError } from '../../core/utils/format';
 
 /**
  * La ley anunciada y la pausa para decidir (AGENT.md 3.12).
@@ -24,39 +25,39 @@ import { actionLabel, categoryLabel } from '../../core/models/law.model';
   template: `
     <div class="card elev-sm vc-soft--75 vc-edge dp" *ngIf="deliberation() as d">
       <div class="vc-live__top">
-        <span class="card-kicker">Ley en deliberación</span>
-        <span class="tag tag-accent mono">{{ countdown() }}</span>
+        <span class="card-kicker">Se decide quién la respalda</span>
+        <span class="tag tag-accent mono" title="Tiempo para decidir">{{ countdown() }}</span>
       </div>
       <h3 class="mono vc-live__id">{{ d.law_id }}</h3>
-      <p class="vc-note-sm">
-        Los convocados deciden si aportan cómputo. Quien no responde no mina.
-        La dificultad ya está fijada sobre el más grande del área: si se baja,
-        los demás tienen que resolverla sin él.
+      <p class="vc-note-sm dp__lead">
+        Antes de votar, cada equipo y cada minero independiente convocado decide si
+        pone su poder de cómputo a favor de esta ley. Quien no responde, no participa.
+        Si el más grande se baja, el resto tiene que alcanzar sin él.
       </p>
 
       <div class="vc-live__grid">
         <div><p class="vc-label">Área</p><p class="vc-kv">{{ label(d.category) }}</p></div>
-        <div><p class="vc-label">Acción</p><p class="vc-kv">{{ actionLabel(d.action) }}</p></div>
-        <div><p class="vc-label">Dificultad</p><p class="vc-kv mono">{{ d.n_zeros_required }} ceros</p></div>
-        <div><p class="vc-label">Plazo de la ventana</p><p class="vc-kv mono">{{ d.window_seconds }} s</p></div>
+        <div><p class="vc-label">Se vota</p><p class="vc-kv">{{ actionLabel(d.action) }}</p></div>
+        <div><p class="vc-label">Dificultad</p><p class="vc-kv">nivel {{ d.n_zeros_required }}</p></div>
+        <div><p class="vc-label">Duración de la votación</p><p class="vc-kv">{{ duration(d.window_seconds) }}</p></div>
       </div>
 
       <ul class="vc-roster" *ngIf="d.voters.length; else nadie">
         <li *ngFor="let v of d.voters" [class.coord]="v.biggest">
           <code>{{ v.name }}</code>
-          <span class="vc-note-sm">{{ v.kind }} · {{ v.hashrate | number:'1.0-0' }} H/s</span>
+          <span class="vc-note-sm">{{ kindLabel(v) }} · {{ share(d, v) }}% del poder</span>
           <span class="tag tag-outline" *ngIf="v.biggest">el más grande</span>
           <span class="tag vc-push" [ngClass]="tagOf(v)">{{ decisionLabel(v) }}</span>
           <ng-container *ngIf="mine(v)">
             <button class="btn btn-primary dp__btn" [disabled]="busy()"
-                    (click)="decide(d, v, 'accept')">Aporto</button>
+                    (click)="decide(d, v, 'accept')">La respaldo</button>
             <button class="btn btn-secondary dp__btn" [disabled]="busy()"
-                    (click)="decide(d, v, 'reject')">No aporto</button>
+                    (click)="decide(d, v, 'reject')">No la respaldo</button>
           </ng-container>
         </li>
       </ul>
       <ng-template #nadie>
-        <p class="vc-empty">Nadie convocado: si nadie responde, la ley vuelve a la cola.</p>
+        <p class="vc-empty">Nadie fue convocado todavía. Si nadie responde, la ley vuelve a esperar su turno.</p>
       </ng-template>
 
       <p class="vc-note vc-note--bad dp__err" *ngIf="error() as e">{{ e }}</p>
@@ -64,6 +65,7 @@ import { actionLabel, categoryLabel } from '../../core/models/law.model';
   `,
   styles: [`
     .dp { margin-top: 40px; padding: 26px; }
+    .dp__lead { margin-top: 10px; }
     .dp__btn { padding: 4px 12px; font-size: 12.5px; }
     .dp__err { margin-top: 16px; }
   `]
@@ -105,17 +107,34 @@ export class DeliberationPanelComponent implements OnInit, OnDestroy {
   mine(v: DeliberationVoter): boolean {
     const id = this.identityService.identity();
     if (!id || !v.owner) return false;
-    return v.owner === (id.isDemo ? id.username : id.pubkey);
+    return v.owner === id.pubkey;
   }
 
   decisionLabel(v: DeliberationVoter): string {
-    if (v.decision === 'accept') return 'aporta';
-    if (v.decision === 'reject') return 'no aporta';
+    if (v.decision === 'accept') return 'la respalda';
+    if (v.decision === 'reject') return 'no la respalda';
     // Sin respuesta todavía: si tiene una por defecto, es la que va a contar.
-    if (v.default_decision === 'accept') return 'sin responder · por defecto aporta';
-    if (v.default_decision === 'reject') return 'sin responder · por defecto no aporta';
+    if (v.default_decision === 'accept') return 'sin responder · por defecto la respalda';
+    if (v.default_decision === 'reject') return 'sin responder · por defecto no';
     return 'sin responder';
   }
+
+  kindLabel(v: DeliberationVoter): string {
+    return v.kind === 'equipo' ? 'equipo' : 'minero independiente';
+  }
+
+  /**
+   * Su parte del poder de cómputo convocado, en porcentaje.
+   *
+   * Los hashes por segundo no le dicen nada a nadie; "tiene el 40 % del poder"
+   * sí, y es lo que explica por qué importa que el más grande se baje.
+   */
+  share(d: Deliberation, v: DeliberationVoter): number {
+    const total = d.voters.reduce((acc, x) => acc + (x.hashrate || 0), 0);
+    return total ? Math.round(((v.hashrate || 0) / total) * 100) : 0;
+  }
+
+  duration = friendlyDuration;
 
   tagOf(v: DeliberationVoter): string {
     return (v.decision ?? v.default_decision) === 'accept' ? 'tag-accent' : 'tag-neutral';
@@ -128,7 +147,7 @@ export class DeliberationPanelComponent implements OnInit, OnDestroy {
       next: () => { this.busy.set(false); this.refresh(); },
       error: (err) => {
         this.busy.set(false);
-        this.error.set(err?.error?.detail ?? 'No se pudo registrar tu decisión');
+        this.error.set(friendlyError(err, 'No se pudo registrar tu decisión. Probá de nuevo.'));
       },
     });
   }

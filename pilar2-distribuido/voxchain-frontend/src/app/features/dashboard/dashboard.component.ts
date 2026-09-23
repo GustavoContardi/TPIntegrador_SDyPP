@@ -6,6 +6,7 @@ import { EventsService } from '../../core/services/events.service';
 import { Block } from '../../core/models/block.model';
 import { Law, actionLabel, categoryLabel } from '../../core/models/law.model';
 import { Window } from '../../core/models/window.model';
+import { friendlyDate } from '../../core/utils/format';
 
 /**
  * Panel: el estado de la red de un vistazo.
@@ -25,15 +26,15 @@ import { Window } from '../../core/models/window.model';
         <h6 class="vc-kicker">Resumen</h6>
         <h1 class="vc-title">Panel</h1>
         <p class="vc-lead">
-          Dónde está parada la red ahora mismo: cuánto se selló, cuánto espera turno y
-          qué se está minando en este momento.
+          La red de un vistazo: qué leyes rigen, cuáles esperan su turno y qué se
+          está votando en este momento.
         </p>
       </div>
 
       <div class="vc-stats stats">
         <div class="card elev-sm vc-stat">
           <p class="vc-stat__value">{{ blocks().length }}</p>
-          <p class="vc-stat__label">bloques sellados</p>
+          <p class="vc-stat__label">decisiones selladas</p>
         </div>
         <div class="card elev-sm vc-stat">
           <p class="vc-stat__value">{{ promulgated() }}</p>
@@ -47,28 +48,24 @@ import { Window } from '../../core/models/window.model';
           <p class="vc-stat__value" [class.vc-stat__value--accent]="window()">
             {{ window() ? '1' : '0' }}
           </p>
-          <p class="vc-stat__label">ventanas abiertas</p>
+          <p class="vc-stat__label">votaciones en curso</p>
         </div>
       </div>
 
       <div class="card elev-sm vc-soft--75 vc-edge live" *ngIf="window() as w; else reposo">
         <div class="vc-live__top">
-          <span class="card-kicker">Se está minando ahora</span>
+          <span class="card-kicker">Votación en curso</span>
           <span class="tag tag-accent">abierta</span>
         </div>
         <h3 class="mono vc-live__id">{{ w.law_id }}</h3>
         <div class="vc-live__grid">
           <div>
-            <p class="vc-label">Ventana</p>
-            <p class="vc-kv mono">{{ w.voting_window_id }}</p>
-          </div>
-          <div>
-            <p class="vc-label">Acción</p>
+            <p class="vc-label">Se vota</p>
             <p class="vc-kv">{{ actionLabel(w.action) }}</p>
           </div>
           <div>
             <p class="vc-label">Dificultad</p>
-            <p class="vc-kv mono">{{ w.n_zeros_required }} ceros</p>
+            <p class="vc-kv">nivel {{ w.n_zeros_required }}</p>
           </div>
           <div>
             <p class="vc-label">Área</p>
@@ -82,10 +79,10 @@ import { Window } from '../../core/models/window.model';
 
       <ng-template #reposo>
         <div class="card elev-sm vc-soft--75 live">
-          <span class="card-kicker">Red en reposo</span>
+          <span class="card-kicker">Sin votaciones en curso</span>
           <p class="vc-live__idle">
-            No hay ninguna ley en disputa. Se abre una ventana en cuanto haya una
-            propuesta con mineros dispuestos a minar su área.
+            No hay ninguna ley en juego ahora. La próxima votación arranca en cuanto
+            alguien proponga una ley y haya mineros dispuestos a respaldarla.
           </p>
           <div class="vc-actions vc-live__cta">
             <a class="btn btn-primary vc-live__btn" routerLink="/propose">Proponer una ley</a>
@@ -94,24 +91,23 @@ import { Window } from '../../core/models/window.model';
       </ng-template>
 
       <section class="vc-section">
-        <h3 class="vc-h3 vc-h3--sm sec__title">Últimos bloques</h3>
+        <h3 class="vc-h3 vc-h3--sm sec__title">Últimas decisiones</h3>
         <div class="recent" *ngIf="recent().length; else sinBloques">
           <div class="recent__row" *ngFor="let b of recent()">
-            <code class="mono recent__hash" [title]="b.block_hash">{{ b.block_hash.slice(0, 16) }}…</code>
             <span class="mono recent__law">{{ b.law_id }}</span>
             <span class="tag" [class.tag-outline]="b.action === 'derogacion'"
                   [class.tag-accent]="b.action !== 'derogacion'">
               {{ actionLabel(b.action) }}
             </span>
-            <span class="vc-note-sm">selló {{ b.winning_node_or_pool }}</span>
-            <span class="mono vc-push recent__ts">{{ b.timestamp }}</span>
+            <span class="vc-note-sm">sellada por {{ b.winning_node_or_pool }}</span>
+            <span class="vc-push recent__ts">{{ date(b.timestamp) }}</span>
           </div>
         </div>
         <ng-template #sinBloques>
-          <p class="vc-empty">Todavía no se selló ningún bloque.</p>
+          <p class="vc-empty">Todavía no se selló ninguna decisión.</p>
         </ng-template>
         <div class="vc-actions recent__more" *ngIf="recent().length">
-          <a class="btn btn-secondary recent__btn" routerLink="/chain">Ver la cadena completa</a>
+          <a class="btn btn-secondary recent__btn" routerLink="/chain">Ver el historial completo</a>
         </div>
       </section>
     </main>
@@ -129,8 +125,7 @@ import { Window } from '../../core/models/window.model';
       display: flex; flex-wrap: wrap; align-items: center; gap: 14px;
       padding: 15px 0; border-top: 1px solid var(--color-divider);
     }
-    .recent__hash { font-size: 12.5px; color: var(--color-neutral-100); }
-    .recent__law { font-size: 13px; color: var(--color-neutral-300); }
+    .recent__law { font-size: 13px; color: var(--color-neutral-100); }
     .recent__ts { font-size: 12px; color: var(--color-neutral-500); }
     .recent__more { margin-top: 24px; }
     .recent__btn { font-size: 13px; }
@@ -173,6 +168,7 @@ export class DashboardComponent {
   }
 
   actionLabel = actionLabel;
+  date = friendlyDate;
 
   private load() {
     this.api.getChain().subscribe({

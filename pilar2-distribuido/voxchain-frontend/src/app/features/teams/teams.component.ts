@@ -8,6 +8,7 @@ import {
   categoryLabel,
 } from '../../core/models/law.model';
 import { IdentityService } from '../../core/services/identity.service';
+import { friendlyError } from '../../core/utils/format';
 import { DeliberationDecision } from '../../core/models/deliberation.model';
 import {
   Team,
@@ -46,17 +47,17 @@ import {
             Equipos <span class="mono head__count">{{ teams().length }}</span>
           </h3>
           <p class="head__body">
-            Un equipo reparte el espacio de nonces entre todos sus mineros: cada uno
-            barre un tramo distinto y el trabajo se divide de verdad. Además elige
-            <strong class="head__strong">qué áreas de ley vota</strong>: sólo aporta
-            cómputo a esas ventanas.
+            La unión hace la fuerza: un equipo reparte el trabajo entre todos sus
+            mineros y pesa mucho más en cada votación que cualquiera por su cuenta.
+            Además elige <strong class="head__strong">qué áreas de ley respalda</strong>
+            y deja pasar el resto.
           </p>
         </div>
         <button class="btn btn-secondary head__btn" *ngIf="canFound() && !creating()"
                 (click)="openCreate()">Fundar equipo</button>
         <p class="vc-note-sm head__already" *ngIf="myTeam() as mine">
           Fundaste <strong>{{ mine.name }}</strong>.<br>
-          Cada identidad funda un solo equipo.
+          Cada identidad puede fundar un equipo.
         </p>
       </div>
 
@@ -64,7 +65,7 @@ import {
       <div class="card elev-sm vc-soft panel" *ngIf="creating()">
         <span class="card-kicker">Fundar un equipo</span>
         <p class="panel__sub">
-          Uno de tus mineros pasa a ser el coordinador: reparte el trabajo y además mina.
+          Tu minero pasa a liderar el equipo: reparte el trabajo entre los miembros y además mina.
         </p>
 
         <div class="field panel__field">
@@ -74,38 +75,38 @@ import {
         </div>
 
         <div class="field panel__field" *ngIf="freeWorkers().length">
-          <label for="vc-coord">Minero que va a coordinar</label>
+          <label for="vc-coord">Minero que va a liderar</label>
           <select id="vc-coord" class="input" [value]="coordinatorWorkerId()"
                   (change)="coordinatorWorkerId.set($any($event.target).value)">
             <option *ngFor="let w of freeWorkers()" [value]="w.worker_id">
-              {{ w.worker_id }}{{ w.running ? '' : ' (detenido)' }}
+              {{ w.worker_id }}{{ w.running ? '' : ' (apagado)' }}
             </option>
-            <option value="__new__" *ngIf="canRegisterAnother()">Registrar un minero nuevo…</option>
+            <option value="__new__" *ngIf="canRegisterAnother()">Sumar un minero nuevo…</option>
           </select>
         </div>
 
         <p class="vc-note-sm panel__hint" *ngIf="!freeWorkers().length && canRegisterAnother()">
-          Todavía no tenés ningún minero, así que lo damos de alta ahora: elegí un
-          identificador y queda registrado junto con el equipo.
+          Todavía no tenés ningún minero, así que lo sumamos ahora: elegile un nombre
+          y queda listo junto con el equipo.
         </p>
         <p class="vc-note-sm panel__hint" *ngIf="!freeWorkers().length && !canRegisterAnother()">
           Tu minero <code class="vc-code">{{ myWorkers()[0].worker_id }}</code> ya está en
-          un equipo. Cada identidad registra un minero solo, así que sacalo de ahí antes
+          un equipo. Cada identidad puede tener un minero, así que sacalo de ahí antes
           de fundar el tuyo.
         </p>
 
         <div class="field panel__field" *ngIf="needsNewWorker()">
-          <label for="vc-new-worker">ID del minero nuevo</label>
+          <label for="vc-new-worker">Nombre del minero nuevo</label>
           <input id="vc-new-worker" class="input" placeholder="Ej: minero-gustavo-1"
                  [value]="newWorkerId()" (input)="newWorkerId.set($any($event.target).value)">
-          <p class="vc-note-sm panel__hint">Se registra a tu nombre y se levanta solo.</p>
+          <p class="vc-note-sm panel__hint">Queda a tu nombre y se enciende solo.</p>
         </div>
 
         <div class="panel__agenda">
-          <p class="vc-label">¿Qué áreas de ley vota el equipo?</p>
+          <p class="vc-label">¿Qué áreas de ley respalda el equipo?</p>
           <p class="vc-note-sm panel__hint">
-            Sin elegir ninguna vota todas. Si elegís algunas, cuando entre una ley de
-            otra área tu equipo no va a aportar un solo hash.
+            Si no elegís ninguna, participa en todas. Si elegís algunas, tu equipo se
+            queda afuera de las votaciones de las demás áreas.
           </p>
           <div class="vc-actions">
             <button type="button" class="tag tag-btn" *ngFor="let c of categories()"
@@ -128,22 +129,22 @@ import {
       <div class="card elev-sm vc-soft panel" *ngIf="joining() as team">
         <span class="card-kicker">Unirse a "{{ team.name }}"</span>
         <p class="panel__sub">
-          Tu minero va a pedirle fragmentos al coordinador del equipo en vez de minar solo.
+          Tu minero va a trabajar en equipo: el líder le asigna su parte y juntos pesan más.
         </p>
 
         <p class="vc-note" *ngIf="!team.coordinator_online">
-          El coordinador de este equipo (<code class="vc-code">{{ team.coordinator_worker_id }}</code>)
-          todavía no está corriendo. Podés unirte igual: tu minero queda asignado y
-          empieza a pedirle trabajo en cuanto los dos estén encendidos.
+          El líder de este equipo (<code class="vc-code">{{ team.coordinator_worker_id }}</code>)
+          todavía no está encendido. Podés unirte igual: tu minero empieza a trabajar
+          en cuanto los dos estén encendidos.
         </p>
 
         <p class="vc-note vc-note--warn">
           <ng-container *ngIf="team.categories?.length; else minaTodo">
-            Ojo: este equipo sólo vota <strong>{{ labels(team.categories) }}</strong>. Tu
-            minero va a quedarse quieto en las ventanas de otras áreas.
+            Ojo: este equipo sólo respalda <strong>{{ labels(team.categories) }}</strong>.
+            En las votaciones de otras áreas tu minero se queda quieto.
           </ng-container>
           <ng-template #minaTodo>
-            Este equipo vota todas las áreas: tu minero va a trabajar en cada ventana.
+            Este equipo participa en todas las áreas: tu minero va a trabajar en cada votación.
           </ng-template>
         </p>
 
@@ -152,15 +153,15 @@ import {
           <select id="vc-join" class="input" [value]="joinWorkerId()"
                   (change)="joinWorkerId.set($any($event.target).value)">
             <option *ngFor="let w of freeWorkers()" [value]="w.worker_id">
-              {{ w.worker_id }}{{ w.running ? '' : ' (detenido)' }}
+              {{ w.worker_id }}{{ w.running ? '' : ' (apagado)' }}
             </option>
           </select>
         </div>
         <ng-template #sinLibres>
           <p class="vc-note-sm panel__hint">
             <ng-container *ngIf="canRegisterAnother(); else sacaloDeAhi">
-              No tenés ningún minero registrado. Registrá uno con
-              <strong>Registrar minero</strong> y volvé.
+              Todavía no tenés ningún minero. Sumá uno con
+              <strong>Sumar mi minero</strong> y volvé.
             </ng-container>
             <ng-template #sacaloDeAhi>
               Tu minero ya está en un equipo. Sacalo de ahí antes de sumarlo a éste.
@@ -177,8 +178,8 @@ import {
       </div>
 
       <p class="vc-empty teams__empty" *ngIf="!teams().length">
-        Todavía no hay ningún equipo. El primero que funde uno se lleva la ventaja de
-        repartir el trabajo mientras el resto mina de a uno.
+        Todavía no hay ningún equipo. Quien funde el primero se lleva la ventaja: su
+        gente reparte el trabajo mientras el resto mina de a uno.
       </p>
 
       <!-- ── las tarjetas ────────────────────────────────────────────────── -->
@@ -189,10 +190,10 @@ import {
           <div class="vc-row team__head">
             <h4 class="team__name">{{ team.name }}</h4>
             <span class="tag tag-accent" *ngIf="isMyTeam(team)">lo fundaste vos</span>
-            <span class="tag tag-neutral" *ngIf="!team.coordinator_online">sin arrancar</span>
+            <span class="tag tag-neutral" *ngIf="!team.coordinator_online">apagado</span>
           </div>
           <p class="vc-note-sm team__coord">
-            Coordinado por <code class="mono team__code">{{ team.coordinator_worker_id }}</code>
+            Liderado por <code class="mono team__code">{{ team.coordinator_worker_id }}</code>
           </p>
 
           <div class="vc-rule vc-rule--short"></div>
@@ -204,7 +205,7 @@ import {
             </span>
             <span class="team__stat" *ngIf="team.miners_connected !== null && team.miners_connected !== undefined">
               <span class="mono team__num" [class.team__num--live]="team.miners_connected">{{ team.miners_connected }}</span>
-              <span class="vc-label">con keep-alive</span>
+              <span class="vc-label">conectados</span>
             </span>
           </div>
 
@@ -215,13 +216,13 @@ import {
               <span class="tag team__role"
                     [class.tag-accent]="m.role === 'coordinator'"
                     [class.tag-neutral]="m.role !== 'coordinator'">
-                {{ m.role === 'coordinator' ? 'Coordinador' : 'Minero' }}
+                {{ m.role === 'coordinator' ? 'Líder' : 'Miembro' }}
               </span>
             </li>
           </ul>
 
           <div class="vc-actions team__agenda">
-            <span class="vc-label">Vota</span>
+            <span class="vc-label">Respalda</span>
             <ng-container *ngIf="team.categories?.length; else votaTodo">
               <span class="tag tag-outline" *ngFor="let c of team.categories">{{ label(c) }}</span>
             </ng-container>
@@ -254,14 +255,14 @@ import {
             <div class="vc-actions team__edit-cta">
               <button class="btn btn-secondary team__btn" (click)="editing.set(null)">Cancelar</button>
               <button class="btn btn-primary team__btn" (click)="saveAgenda(team)" [disabled]="busy()">
-                {{ busy() ? 'Guardando…' : 'Guardar agenda' }}
+                {{ busy() ? 'Guardando…' : 'Guardar áreas' }}
               </button>
             </div>
           </div>
 
           <p class="vc-note" *ngIf="!team.coordinator_online && !isMyTeam(team)">
-            El coordinador todavía no está corriendo. Podés unirte igual: tu minero queda
-            asignado y empieza a pedirle trabajo en cuanto los dos estén encendidos.
+            El líder todavía no está encendido. Podés unirte igual: tu minero empieza a
+            trabajar en cuanto los dos estén encendidos.
           </p>
 
           <ng-container *ngIf="hasIdentity()">
@@ -367,9 +368,9 @@ export class TeamsComponent {
   /** Frase que dice, en criollo, qué implica la agenda elegida. */
   agendaSummary(selected: string[]): string {
     if (!selected.length) {
-      return 'Sin áreas elegidas: el equipo mina toda ventana que se abra.';
+      return 'Sin áreas elegidas: el equipo participa en todas las votaciones.';
     }
-    return `El equipo sólo va a minar leyes de: ${this.labels(selected)}. Las demás las deja pasar.`;
+    return `El equipo sólo va a respaldar leyes de: ${this.labels(selected)}. Las demás las deja pasar.`;
   }
 
   private toggle(current: string[], value: string): string[] {
@@ -397,15 +398,15 @@ export class TeamsComponent {
       next: (updated) => {
         this.snack.open(
           updated.categories.length
-            ? `"${team.name}" ahora vota ${this.labels(updated.categories)}.`
-            : `"${team.name}" vuelve a votar todas las áreas.`,
+            ? `"${team.name}" ahora respalda ${this.labels(updated.categories)}.`
+            : `"${team.name}" vuelve a participar en todas las áreas.`,
           'Cerrar', { duration: 4000 });
         this.editing.set(null);
         this.busy.set(false);
         this.changed.emit();
       },
       error: (err) => {
-        this.snack.open('No se pudo cambiar la agenda: ' + this.detail(err),
+        this.snack.open(friendlyError(err, 'No se pudieron cambiar las áreas. Probá de nuevo.'),
           'Cerrar', { duration: 5000 });
         this.busy.set(false);
       },
@@ -414,13 +415,13 @@ export class TeamsComponent {
 
   /** Respuestas por defecto posibles en una deliberación. */
   readonly defaultOptions: { value: DeliberationDecision | ''; label: string }[] = [
-    { value: '', label: 'no mina' },
-    { value: 'accept', label: 'aporta' },
-    { value: 'reject', label: 'no aporta (veto)' },
+    { value: '', label: 'no participa' },
+    { value: 'accept', label: 'la respalda' },
+    { value: 'reject', label: 'la rechaza (veto)' },
   ];
 
   defaultLabel(decision: string | undefined): string {
-    return this.defaultOptions.find((o) => o.value === (decision || ''))?.label ?? 'no mina';
+    return this.defaultOptions.find((o) => o.value === (decision || ''))?.label ?? 'no participa';
   }
 
   /**
@@ -433,13 +434,13 @@ export class TeamsComponent {
     this.busy.set(true);
     this.api.setTeamDefaultDecision(team.team_id, decision).subscribe({
       next: () => {
-        this.snack.open(`"${team.name}": si no respondés, ${this.defaultLabel(decision)}.`,
+        this.snack.open(`"${team.name}": si no respondés a tiempo, ${this.defaultLabel(decision)}.`,
           'Cerrar', { duration: 4000 });
         this.busy.set(false);
         this.changed.emit();
       },
       error: (err) => {
-        this.snack.open('No se pudo guardar: ' + this.detail(err), 'Cerrar', { duration: 5000 });
+        this.snack.open(friendlyError(err, 'No se pudo guardar. Probá de nuevo.'), 'Cerrar', { duration: 5000 });
         this.busy.set(false);
       },
     });
@@ -484,8 +485,7 @@ export class TeamsComponent {
   isMyTeam(team: Team): boolean {
     const id = this.identityService.identity();
     if (!id) return false;
-    const owner = id.isDemo ? id.username : id.pubkey;
-    return team.owner === owner;
+    return team.owner === id.pubkey;
   }
 
   /** Ids de todos mis mineros, estén donde estén. */
@@ -559,20 +559,20 @@ export class TeamsComponent {
       this.api.createTeam(name, workerId, this.newCategories(), registration).subscribe({
         next: (team) => {
           this.snack.open(
-            `Equipo "${team.name}" fundado. ${workerId} pasa a coordinarlo.`,
+            `¡Equipo "${team.name}" fundado! ${workerId} pasa a liderarlo.`,
             'Cerrar', { duration: 4000 });
           this.creating.set(false);
           this.busy.set(false);
           this.changed.emit();
         },
         error: (err) => {
-          this.snack.open('No se pudo fundar el equipo: ' + this.detail(err),
+          this.snack.open(friendlyError(err, 'No se pudo fundar el equipo. Probá de nuevo.'),
             'Cerrar', { duration: 5000 });
           this.busy.set(false);
         },
       });
     } catch (err: any) {
-      this.snack.open('Falló la firma: ' + err.message, 'Cerrar', { duration: 5000 });
+      this.snack.open(friendlyError(err, 'No pudimos firmar con tu identidad. Probá de nuevo.'), 'Cerrar', { duration: 5000 });
       this.busy.set(false);
     }
   }
@@ -597,7 +597,7 @@ export class TeamsComponent {
         this.changed.emit();
       },
       error: (err) => {
-        this.snack.open('No se pudo unir: ' + this.detail(err), 'Cerrar', { duration: 5000 });
+        this.snack.open(friendlyError(err, 'No se pudo unir al equipo. Probá de nuevo.'), 'Cerrar', { duration: 5000 });
         this.busy.set(false);
       },
     });
@@ -614,7 +614,7 @@ export class TeamsComponent {
         this.changed.emit();
       },
       error: (err) => {
-        this.snack.open('No se pudo salir: ' + this.detail(err), 'Cerrar', { duration: 5000 });
+        this.snack.open(friendlyError(err, 'No se pudo salir del equipo. Probá de nuevo.'), 'Cerrar', { duration: 5000 });
         this.busy.set(false);
       },
     });
@@ -623,27 +623,23 @@ export class TeamsComponent {
   dissolve(team: Team) {
     if (!confirm(
       `¿Disolver "${team.name}"?\n\n` +
-      `Sus ${team.member_count} minero(s) vuelven a modo competitivo: siguen ` +
-      `minando la ventana en curso, pero cada uno por su cuenta.`)) {
+      `${team.member_count === 1 ? 'Su minero vuelve' : `Sus ${team.member_count} mineros vuelven`} ` +
+      `a minar por su cuenta.`)) {
       return;
     }
     this.busy.set(true);
     this.api.dissolveTeam(team.team_id).subscribe({
       next: (res) => {
         this.snack.open(
-          `Equipo disuelto. ${(res.released || []).length} minero(s) volvieron a competitivo.`,
+          `Equipo disuelto. Sus mineros vuelven a minar por su cuenta.`,
           'Cerrar', { duration: 4000 });
         this.busy.set(false);
         this.changed.emit();
       },
       error: (err) => {
-        this.snack.open('No se pudo disolver: ' + this.detail(err), 'Cerrar', { duration: 5000 });
+        this.snack.open(friendlyError(err, 'No se pudo disolver el equipo. Probá de nuevo.'), 'Cerrar', { duration: 5000 });
         this.busy.set(false);
       },
     });
-  }
-
-  private detail(err: any): string {
-    return err?.error?.detail || err?.message || 'error desconocido';
   }
 }

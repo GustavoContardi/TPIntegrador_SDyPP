@@ -1,10 +1,8 @@
-import { Injectable, signal, computed, inject } from '@angular/core';
-import { AccountsService } from './accounts.service';
+import { Injectable, signal } from '@angular/core';
 
 export interface Identity {
   pubkey: string;
-  username?: string; // nombre para mostrar, o usuario de la cuenta demo
-  isDemo?: boolean;
+  username?: string; // nombre para mostrar
 }
 
 /** Lo que devuelve crear una identidad: la identidad y su copia de respaldo. */
@@ -27,13 +25,8 @@ const DB_KEY = 'signing-key';
 })
 export class IdentityService {
   identity = signal<Identity | null>(null);
-  isDemoMode = computed(() => {
-    const id = this.identity();
-    return id?.isDemo === true;
-  });
 
   private storageKey = 'voxchain_identity';
-  private accountsService = inject(AccountsService);
 
   /**
    * La clave de firma, que vive en IndexedDB y nunca en JavaScript.
@@ -46,7 +39,6 @@ export class IdentityService {
 
   constructor() {
     this.loadFromStorage();
-    this.syncWithDemoAccount();
   }
 
   private loadFromStorage() {
@@ -66,7 +58,6 @@ export class IdentityService {
     this.identity.set({
       pubkey: stored.pubkey,
       ...(stored.username ? { username: stored.username } : {}),
-      ...(stored.isDemo ? { isDemo: true } : {}),
     });
 
     // Migración de identidades viejas: hasta ahora la privada se guardaba
@@ -89,19 +80,6 @@ export class IdentityService {
     } catch (err) {
       console.error('no se pudo migrar la clave a IndexedDB', err);
       return null;
-    }
-  }
-
-  private syncWithDemoAccount() {
-    // Si hay una cuenta demo seleccionada, su pubkey manda.
-    const demoAccount = this.accountsService.selectedAccount();
-    if (demoAccount) {
-      this.identity.set({
-        pubkey: demoAccount.pubkey,
-        username: demoAccount.username,
-        isDemo: true
-      });
-      this.signingKey = Promise.resolve(null);
     }
   }
 
@@ -146,7 +124,6 @@ export class IdentityService {
     const name = displayName?.trim();
     const identity: Identity = {
       pubkey: arrayBufferToBase64(pubkeyRaw),
-      isDemo: false,
       ...(name ? { username: name } : {}),
     };
     this.identity.set(identity);
@@ -165,11 +142,6 @@ export class IdentityService {
   async sign(message: string): Promise<string> {
     const id = this.identity();
     if (!id) throw new Error('no identity');
-
-    // En modo demo la privada la tiene el backend, no el navegador.
-    if (id.isDemo) {
-      throw new Error('Demo mode: signing is handled by backend');
-    }
 
     const key = await this.signingKey;
     if (!key) {

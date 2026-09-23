@@ -73,26 +73,30 @@ def _message(ok: bool, category: str, eligible: int, live: int, required: int,
     diciendo cosas distintas cuando una de las dos se olvida de actualizarse.
     """
     area = category_label(category)
-    # "derogar leyes de Salud" se lee mejor que "leyes de Salud (derogacion)", y
+    # "derogaciones de Salud" se lee mejor que "leyes de Salud (derogacion)", y
     # es el dato que le falta al ciudadano para entender por qué su derogación
-    # espera mientras las promulgaciones de la misma área salen.
-    que = {ACTION_DEROGACION: f"derogar leyes de {area}",
-           ACTION_PROMULGACION: f"promulgar leyes de {area}"}.get(
+    # espera mientras las leyes nuevas de la misma área salen.
+    que = {ACTION_DEROGACION: f"derogaciones de {area}",
+           ACTION_PROMULGACION: f"leyes nuevas de {area}"}.get(
                action, f"leyes de {area}")
+    # Sin jerga a propósito: esto lo lee quien propone, que no sabe ni tiene
+    # por qué saber qué es un quórum, una ventana o un minero elegible.
     if ok:
-        return f"Sistema operativo: {eligible} minero(s) disponible(s) para {que}."
+        mineros = "minero listo" if eligible == 1 else "mineros listos"
+        return f"Hay {eligible} {mineros} para respaldar {que}."
     if live == 0:
-        base = ("Sistema no disponible en este momento: no hay mineros "
-                "conectados a la red.")
+        base = "En este momento no hay mineros encendidos en la red."
     else:
-        base = (f"Sistema no disponible para {que}: hay {live} minero(s) "
-                f"conectado(s), pero ninguno está dispuesto a minar eso "
-                f"(se necesita{'n' if required != 1 else ''} {required}).")
-    cola = (f" Hay {queued} ley(es) esperando en la cola."
-            if queued else "")
-    return (f"{base} Tu ley será pospuesta: queda encolada y su ventana se abre "
-            f"sola en cuanto haya equipos que puedan resolverla.{cola}")
-
+        encendidos = ("minero encendido" if live == 1
+                      else "mineros encendidos")
+        base = (f"Hay {live} {encendidos}, pero por ahora ninguno respalda "
+                f"{que}.")
+    cola = ""
+    if queued:
+        cola = (" Ya hay 1 ley esperando su turno." if queued == 1
+                else f" Ya hay {queued} leyes esperando su turno.")
+    return (f"{base} Tu ley no se pierde: queda esperando y su votación "
+            f"arranca sola en cuanto haya mineros disponibles.{cola}")
 
 @router.get("/availability", response_model=SystemAvailability)
 async def get_availability(

@@ -215,7 +215,6 @@ _RUTAS_LECTURA = [
     ("/api/laws/next", 2),
     ("/api/windows/active", 2),
     ("/api/health", 1),
-    ("/api/accounts", 1),
     ("/api/workers/status", 1),
 ]
 

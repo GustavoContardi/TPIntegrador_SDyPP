@@ -2,25 +2,20 @@ import { Component, computed, effect, inject, signal, untracked } from '@angular
 import { CommonModule } from '@angular/common';
 import { ApiService } from '../../core/services/api.service';
 import { EventsService } from '../../core/services/events.service';
-import { LAW_CATEGORIES, Law, LawCategory, actionLabel, categoryLabel } from '../../core/models/law.model';
+import {
+  LAW_CATEGORIES, Law, LawCategory, actionLabel, categoryLabel, lawStatusLabel,
+} from '../../core/models/law.model';
+import { friendlyDate } from '../../core/utils/format';
 
 /** Los estados por los que puede pasar una ley, en el orden de su vida. */
 const FILTROS: { key: string; label: string }[] = [
   { key: 'all', label: 'Todas' },
-  { key: 'pending_queue', label: 'En cola' },
-  { key: 'in_window', label: 'En ventana' },
-  { key: 'promulgated', label: 'Promulgadas' },
+  { key: 'pending_queue', label: 'Esperando turno' },
+  { key: 'in_window', label: 'En votación' },
+  { key: 'promulgated', label: 'Vigentes' },
   { key: 'repealed', label: 'Derogadas' },
   { key: 'discarded', label: 'Descartadas' },
 ];
-
-const ETIQUETAS: Record<string, string> = {
-  pending_queue: 'en cola',
-  in_window: 'en ventana',
-  promulgated: 'promulgada',
-  repealed: 'derogada',
-  discarded: 'descartada',
-};
 
 /**
  * Todas las leyes de la red, filtrables por estado.
@@ -43,9 +38,9 @@ const ETIQUETAS: Record<string, string> = {
           <h6 class="vc-kicker">Registro</h6>
           <h1 class="vc-title">Leyes</h1>
           <p class="vc-lead">
-            Todo lo que la red llegó a considerar: lo que espera turno, lo que se está
-            minando ahora y lo que ya quedó sellado — o descartado porque nadie gastó
-            cómputo en sostenerlo.
+            Todo lo que se propuso en la red: lo que espera su turno, lo que se está
+            votando ahora, lo que ya rige y lo que se descartó porque nadie lo
+            respaldó.
           </p>
         </div>
         <button class="btn btn-secondary head__btn" (click)="loadLaws()">Actualizar</button>
@@ -64,25 +59,21 @@ const ETIQUETAS: Record<string, string> = {
           <thead>
             <tr>
               <th>Ley</th>
-              <th>Autor</th>
               <th>Área</th>
-              <th>Acción</th>
+              <th>Tipo</th>
               <th>Estado</th>
-              <th>Propuesta</th>
+              <th>Propuesta el</th>
             </tr>
           </thead>
           <tbody>
             <tr *ngFor="let l of visible()">
               <td class="mono laws__id">{{ l.law_id }}</td>
-              <td class="mono laws__author" [title]="l.author_pubkey">
-                {{ l.author_pubkey.slice(0, 12) }}…
-              </td>
               <td><span class="tag tag-outline">{{ label(l.category) }}</span></td>
               <td class="laws__action">{{ actionLabel(l.action) }}</td>
               <td>
                 <span class="tag" [ngClass]="statusCls(l.status)">{{ statusLabel(l.status) }}</span>
               </td>
-              <td class="mono laws__date">{{ l.created_at }}</td>
+              <td class="laws__date">{{ date(l.created_at) }}</td>
             </tr>
           </tbody>
         </table>
@@ -101,11 +92,10 @@ const ETIQUETAS: Record<string, string> = {
     .filters__count { margin-left: 6px; font-size: 11.5px; }
 
     .laws { margin-top: 24px; }
-    .laws__table { min-width: 880px; white-space: nowrap; }
+    .laws__table { min-width: 720px; white-space: nowrap; }
     .laws__id { font-size: 13px; color: var(--color-neutral-100); }
-    .laws__author { font-size: 12px; color: var(--color-neutral-500); }
     .laws__action { font-size: 13px; color: var(--color-neutral-300); }
-    .laws__date { font-size: 12px; color: var(--color-neutral-500); }
+    .laws__date { font-size: 12.5px; color: var(--color-neutral-400); }
     .laws__empty { margin-top: 24px; }
   `]
 })
@@ -144,11 +134,8 @@ export class LawsComponent {
   }
 
   actionLabel = actionLabel;
-
-  /** El estado en castellano; el crudo del backend si es uno que no conocemos. */
-  statusLabel(status: string): string {
-    return ETIQUETAS[status] ?? status;
-  }
+  statusLabel = lawStatusLabel;
+  date = friendlyDate;
 
   /** Vigente o en juego lleva el acento; lo que ya no está en pie, gris. */
   statusCls(status: string): string {

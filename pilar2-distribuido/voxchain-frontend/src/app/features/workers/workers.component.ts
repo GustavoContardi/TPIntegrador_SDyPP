@@ -10,6 +10,7 @@ import {
   isOwnedBy,
 } from '../../core/models/worker.model';
 import { TeamsComponent } from '../teams/teams.component';
+import { friendlyError, modeLabel } from '../../core/utils/format';
 
 interface PoolPolicy {
   decision: string;
@@ -43,8 +44,8 @@ interface PoolHealth {
           <h6 class="vc-kicker">Cómputo</h6>
           <h1 class="vc-title">Minería</h1>
           <p class="vc-lead">
-            Tus mineros y los equipos de la red, en un solo lugar: con quién minás y con
-            qué minás son la misma decisión vista de dos lados.
+            Poné tu computadora a trabajar por las leyes en las que creés. Minando solo o
+            en equipo, cada minero suma poder a la hora de decidir.
           </p>
         </div>
         <div class="head__side">
@@ -53,9 +54,9 @@ interface PoolHealth {
             <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true">
               <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"></path>
             </svg>
-            Registrar minero
+            Sumar mi minero
           </button>
-          <p class="vc-note-sm head__note" *ngIf="canRegisterWorker()">Cada identidad registra uno solo.</p>
+          <p class="vc-note-sm head__note" *ngIf="canRegisterWorker()">Cada identidad puede tener un minero.</p>
           <p class="vc-note-sm head__note" *ngIf="myWorker() as mine">
             Tu minero es <code class="vc-code">{{ mine.worker_id }}</code>.
           </p>
@@ -65,11 +66,11 @@ interface PoolHealth {
       <div class="vc-stats stats">
         <div class="card elev-sm vc-stat">
           <p class="vc-stat__value">{{ workers().length }}</p>
-          <p class="vc-stat__label">mineros registrados</p>
+          <p class="vc-stat__label">mineros en la red</p>
         </div>
         <div class="card elev-sm vc-stat">
           <p class="vc-stat__value vc-stat__value--accent">{{ runningCount() }}</p>
-          <p class="vc-stat__label">corriendo</p>
+          <p class="vc-stat__label">encendidos ahora</p>
         </div>
         <div class="card elev-sm vc-stat">
           <p class="vc-stat__value">{{ teams().length }}</p>
@@ -83,24 +84,23 @@ interface PoolHealth {
 
       <!-- ── alta de minero ──────────────────────────────────────────────── -->
       <div class="card elev-sm vc-soft panel" *ngIf="showRegisterForm()">
-        <span class="card-kicker">Registrar un nodo propio</span>
+        <span class="card-kicker">Sumar tu minero</span>
         <p class="panel__sub">
-          Registrar un ID de minero lo asocia a tu clave pública, y cada acción de
-          administración sobre él (cambiar el modo, configurar la política, moverlo de
-          equipo) se firma con tu clave. El minero genera su propia identidad al
-          arrancar: tu clave privada no se comparte con él ni con nadie.
+          Tu minero queda a tu nombre: sólo vos podés sumarlo a un equipo, sacarlo o
+          darlo de baja. Arranca minando por su cuenta y en unos segundos ya está
+          aportando a la red.
         </p>
         <div class="field panel__field">
-          <label for="vc-worker-id">ID del minero</label>
+          <label for="vc-worker-id">Nombre del minero</label>
           <input id="vc-worker-id" class="input" placeholder="Ej: minero-ciudadano-1"
                  [value]="newWorkerId()" (input)="newWorkerId.set($any($event.target).value)">
-          <p class="vc-note-sm panel__hint">Elegí un nombre único para identificar tu contenedor.</p>
+          <p class="vc-note-sm panel__hint">Elegí un nombre único: así lo van a ver los demás en la red.</p>
         </div>
         <div class="vc-actions panel__actions">
           <button class="btn btn-secondary" (click)="cancelRegister()">Cancelar</button>
           <button class="btn btn-primary" (click)="confirmRegister()"
                   [disabled]="!newWorkerId().trim() || registering()">
-            {{ registering() ? 'Registrando…' : 'Registrar minero' }}
+            {{ registering() ? 'Sumando…' : 'Sumar minero' }}
           </button>
         </div>
       </div>
@@ -116,10 +116,9 @@ interface PoolHealth {
             <thead>
               <tr>
                 <th>Minero</th>
-                <th>Clave pública</th>
-                <th>Modo</th>
+                <th>Cómo mina</th>
                 <th>Equipo</th>
-                <th>Política</th>
+                <th>Qué respalda</th>
                 <th>Estado</th>
                 <th class="num">Acciones</th>
               </tr>
@@ -130,14 +129,11 @@ interface PoolHealth {
                   <code>{{ w.worker_id }}</code>
                   <span class="tag tag-accent net__mine" *ngIf="isWorkerOwned(w)">mío</span>
                 </td>
-                <td class="mono net__key" [title]="w.pubkey || ''">
-                  {{ w.pubkey ? w.pubkey.slice(0, 12) + '…' : '—' }}
-                </td>
-                <td><span class="tag" [ngClass]="modeCls(w.mode)">{{ w.mode }}</span></td>
+                <td><span class="tag" [ngClass]="modeCls(w.mode)">{{ modeLabel(w.mode) }}</span></td>
                 <td class="net__team">
                   <ng-container *ngIf="w.team_id; else solo">
                     <a href="#seccion-equipos" (click)="scrollToTeams($event)">{{ w.team_name }}</a>
-                    <span class="net__role">{{ w.team_role === 'coordinator' ? 'coordina' : 'mina' }}</span>
+                    <span class="net__role">{{ w.team_role === 'coordinator' ? 'líder' : 'miembro' }}</span>
                   </ng-container>
                   <ng-template #solo><span class="vc-muted">por su cuenta</span></ng-template>
                 </td>
@@ -145,22 +141,22 @@ interface PoolHealth {
                 <td>
                   <span class="vc-state" [class.online]="w.running">
                     <span class="dot" [class.online]="w.running"></span>
-                    {{ w.running ? 'corriendo' : 'sin arrancar' }}
+                    {{ w.running ? 'encendido' : 'apagado' }}
                   </span>
                   <span class="vc-note-sm net__pending" *ngIf="!w.running && isWorkerOwned(w)">
-                    registrado, falta levantarlo
+                    todavía no se encendió
                   </span>
                 </td>
                 <td class="num">
                   <span class="net__actions">
                     <button class="btn btn-ghost net__btn" *ngIf="isWorkerOwned(w) && w.team_id"
                             (click)="backToSolo(w)" [disabled]="switching()"
-                            title="Sacarlo del equipo y devolverlo a modo competitivo">Volver a competitivo</button>
+                            title="Sacarlo del equipo para que vuelva a minar por su cuenta">Minar por su cuenta</button>
                     <button class="btn btn-ghost net__btn" *ngIf="isWorkerOwned(w) && !w.team_id"
                             (click)="scrollToTeams($event)">Sumar a un equipo</button>
                     <button class="btn btn-ghost net__btn"
                             *ngIf="w.mode === 'pool-coordinator' && isWorkerOwned(w)"
-                            (click)="openPolicyDialog(w)">Política</button>
+                            (click)="openPolicyDialog(w)">Qué respalda</button>
                     <button class="btn btn-ghost net__btn net__danger"
                             *ngIf="isDynamicWorker(w) && isWorkerOwned(w)"
                             (click)="confirmUnregister(w)">Dar de baja</button>
@@ -177,71 +173,70 @@ interface PoolHealth {
 
       <!-- ── política del pool ───────────────────────────────────────────── -->
       <div class="card elev-sm vc-soft panel" *ngIf="selectedPoolCoordinator() as pool">
-        <span class="card-kicker">Política de voto de {{ pool.worker_id }}</span>
+        <span class="card-kicker">Qué respalda {{ pool.worker_id }}</span>
         <p class="panel__sub" *ngIf="poolHealth() as h">
-          {{ h.miners }} minero(s) conectados · política actual
-          <code class="vc-code">{{ h.voting_policy.decision }}</code>
+          {{ h.miners }} {{ h.miners === 1 ? 'minero conectado' : 'mineros conectados' }} ·
+          hoy {{ policySummary(h.voting_policy) }}
         </p>
 
         <div class="field panel__field">
-          <label for="vc-decision">Decisión</label>
+          <label for="vc-decision">Postura del equipo</label>
           <select id="vc-decision" class="input" [value]="policyDecision()"
                   (change)="policyDecision.set($any($event.target).value)">
-            <option value="accept">Aceptar todas</option>
-            <option value="reject">Rechazar específica</option>
+            <option value="accept">Respaldar todas las leyes</option>
+            <option value="reject">Rechazar algunas</option>
           </select>
         </div>
 
         <ng-container *ngIf="policyDecision() === 'reject'">
           <div class="field panel__field">
-            <label for="vc-pol-action">Acción a rechazar</label>
+            <label for="vc-pol-action">¿Qué rechaza?</label>
             <select id="vc-pol-action" class="input" [value]="policyAction()"
                     (change)="policyAction.set($any($event.target).value)">
-              <option value="">Rechazar todas</option>
-              <option value="promulgacion">Promulgación</option>
-              <option value="derogacion">Derogación</option>
+              <option value="">Todo</option>
+              <option value="promulgacion">Leyes nuevas</option>
+              <option value="derogacion">Derogaciones</option>
             </select>
           </div>
           <div class="field panel__field">
-            <label for="vc-pol-law">ID de ley a rechazar (opcional)</label>
-            <input id="vc-pol-law" class="input" placeholder="Vacío para rechazar sólo por acción"
+            <label for="vc-pol-law">Una ley puntual (opcional)</label>
+            <input id="vc-pol-law" class="input" placeholder="Ej: ley-3f2a91bc"
                    [value]="policyLawId()" (input)="policyLawId.set($any($event.target).value)">
           </div>
         </ng-container>
 
         <div class="vc-actions panel__actions">
           <button class="btn btn-secondary" (click)="cancelPolicy()">Cancelar</button>
-          <button class="btn btn-primary" (click)="confirmPolicy()">Guardar política</button>
+          <button class="btn btn-primary" (click)="confirmPolicy()">Guardar</button>
         </div>
       </div>
 
       <!-- ── modos ───────────────────────────────────────────────────────── -->
       <section class="vc-section--divided">
-        <h3 class="vc-h3 vc-h3--sm modes__title">Modos de minero</h3>
+        <h3 class="vc-h3 vc-h3--sm modes__title">Tres formas de minar</h3>
         <div class="modes">
           <div>
-            <p class="modes__code"><code class="vc-code">standalone</code></p>
-            <h5 class="vc-h5">Competitivo</h5>
+            <p class="modes__code"><span class="tag tag-outline">por su cuenta</span></p>
+            <h5 class="vc-h5">Solo contra todos</h5>
             <p class="modes__body">
-              Trabaja por su cuenta, suscrito a los desafíos del NCT. Barre el espacio de
-              nonces completo y compite contra toda la red. Sumar mineros acá no acelera
-              nada: todos hacen el mismo trabajo.
+              Tu minero compite contra toda la red y decidís vos qué leyes respalda. Total
+              independencia, pero tu poder es sólo el de tu computadora.
             </p>
           </div>
           <div>
-            <p class="modes__code"><code class="vc-code">pool-coordinator</code></p>
-            <h5 class="vc-h5">Coordinador del equipo</h5>
+            <p class="modes__code"><span class="tag tag-accent">lidera un equipo</span></p>
+            <h5 class="vc-h5">Líder de equipo</h5>
             <p class="modes__body">
-              Fragmenta el espacio de nonces, reparte los fragmentos entre los mineros del
-              equipo y además mina.
+              Reparte el trabajo entre los mineros del equipo y además mina. Quien funda
+              el equipo decide qué áreas y qué leyes respalda.
             </p>
           </div>
           <div>
-            <p class="modes__code"><code class="vc-code">pool-worker</code></p>
-            <h5 class="vc-h5">Minero del equipo</h5>
+            <p class="modes__code"><span class="tag tag-neutral">en equipo</span></p>
+            <h5 class="vc-h5">Parte de un equipo</h5>
             <p class="modes__body">
-              Le pide fragmentos al coordinador y mina sólo el rango que le toca. Acá sí,
-              cada minero que se suma divide el trabajo.
+              Hace su parte del trabajo que le asigna el líder. Cada minero que se suma
+              hace al equipo más rápido, y le da más peso en cada votación.
             </p>
           </div>
         </div>
@@ -262,9 +257,8 @@ interface PoolHealth {
     .panel__actions { justify-content: flex-end; margin-top: 20px; gap: 12px; }
 
     .net__title { margin-bottom: 20px; }
-    .net__table { min-width: 1040px; white-space: nowrap; }
+    .net__table { min-width: 900px; white-space: nowrap; }
     .net__mine { margin-left: 8px; }
-    .net__key { font-size: 12px; color: var(--color-neutral-500); }
     .net__team { font-size: 13px; }
     .net__team a { color: var(--color-accent-300); }
     .net__role { margin-left: 6px; font-size: 11px; color: var(--color-neutral-500); }
@@ -315,13 +309,13 @@ export class WorkersComponent implements OnInit, OnDestroy {
    */
   myWorker = computed(() => {
     const id = this.identityService.identity();
-    if (!id || id.isDemo) return null;
+    if (!id) return null;
     return this.workers().find((w) => isOwnedBy(w, id)) ?? null;
   });
 
   canRegisterWorker = computed(() => {
     const id = this.identityService.identity();
-    return !!id && !id.isDemo && !this.myWorker();
+    return !!id && !this.myWorker();
   });
 
   ngOnInit() {
@@ -383,22 +377,28 @@ export class WorkersComponent implements OnInit, OnDestroy {
   getPolicyDisplay(worker: WorkerStatus): string {
     if (worker.mode !== 'pool-coordinator') return '—';
     const policy = this.poolPolicies()[worker.worker_id];
-    if (!policy) return 'leyendo…';
-    if (policy.decision === 'accept') return 'Acepta todas';
-    if (!policy.action && !policy.law_id) return 'Rechaza todas';
+    if (!policy) return 'consultando…';
+    const summary = this.policySummary(policy);
+    return summary.charAt(0).toUpperCase() + summary.slice(1);
+  }
 
+  /** La postura de un equipo en una frase ("respalda todas", "rechaza las derogaciones"). */
+  policySummary(policy: PoolPolicy | null | undefined): string {
+    if (!policy || policy.decision === 'accept') return 'respalda todas';
     let label: string;
     if (!policy.action) {
-      label = 'Rechaza todas';
+      label = policy.law_id ? 'rechaza' : 'rechaza todas';
     } else {
       const actions = policy.action.split(',').map((a) => a.trim()).sort();
       label = (actions.length === 2 && actions.includes('promulgacion') && actions.includes('derogacion'))
-        ? 'Rechaza todas'
-        : `Rechaza: ${policy.action}`;
+        ? 'rechaza todas'
+        : actions.includes('derogacion') ? 'rechaza las derogaciones' : 'rechaza las leyes nuevas';
     }
-    if (policy.law_id) label += ` (ley ${policy.law_id})`;
+    if (policy.law_id) label += ` la ${policy.law_id}`;
     return label;
   }
+
+  modeLabel = modeLabel;
 
   /**
    * Devuelve un minero a modo competitivo.
@@ -411,7 +411,7 @@ export class WorkersComponent implements OnInit, OnDestroy {
   backToSolo(worker: WorkerStatus) {
     if (worker.team_role === 'coordinator') {
       this.snackBar.open(
-        `${worker.worker_id} coordina "${worker.team_name}". Disolvé el equipo desde Equipos.`,
+        `${worker.worker_id} lidera "${worker.team_name}". Para sacarlo, disolvé el equipo.`,
         'Cerrar', { duration: 5000 });
       return;
     }
@@ -423,12 +423,12 @@ export class WorkersComponent implements OnInit, OnDestroy {
         this.snackBar.open(
           res?.left_team
             ? `${worker.worker_id} salió del equipo y vuelve a minar por su cuenta.`
-            : `${worker.worker_id} vuelve a modo competitivo.`,
+            : `${worker.worker_id} vuelve a minar por su cuenta.`,
           'Cerrar', { duration: 4000 });
       },
       error: (err) => {
         this.switching.set(false);
-        this.snackBar.open('No se pudo cambiar el modo: ' + (err.error?.detail || err.message),
+        this.snackBar.open(friendlyError(err, 'No se pudo sacar del equipo. Probá de nuevo.'),
           'Cerrar', { duration: 5000 });
       },
     });
@@ -436,7 +436,7 @@ export class WorkersComponent implements OnInit, OnDestroy {
 
   openPolicyDialog(worker: WorkerStatus) {
     if (worker.mode !== 'pool-coordinator') {
-      this.snackBar.open('Sólo los coordinadores de pool tienen política de voto.', 'Cerrar', { duration: 3000 });
+      this.snackBar.open('Sólo quien lidera un equipo elige qué respalda.', 'Cerrar', { duration: 3000 });
       return;
     }
     this.selectedPoolCoordinator.set(worker);
@@ -481,10 +481,10 @@ export class WorkersComponent implements OnInit, OnDestroy {
       next: () => {
         this.loadPoolPolicy(pool.worker_id);
         this.cancelPolicy();
-        this.snackBar.open('Política del pool actualizada.', 'Cerrar', { duration: 3000 });
+        this.snackBar.open('Listo: postura del equipo actualizada.', 'Cerrar', { duration: 3000 });
       },
       error: (err) => {
-        this.snackBar.open('No se pudo fijar la política: ' + (err.error?.detail || err.message),
+        this.snackBar.open(friendlyError(err, 'No se pudo guardar. Probá de nuevo.'),
           'Cerrar', { duration: 4000 });
       },
     });
@@ -512,8 +512,8 @@ export class WorkersComponent implements OnInit, OnDestroy {
 
   async confirmRegister() {
     const id = this.identityService.identity();
-    if (!id || id.isDemo) {
-      this.snackBar.open('Sólo las identidades propias pueden registrar nodos.', 'Cerrar', { duration: 3000 });
+    if (!id) {
+      this.snackBar.open('Necesitás una identidad para sumar un minero.', 'Cerrar', { duration: 3000 });
       return;
     }
 
@@ -529,40 +529,41 @@ export class WorkersComponent implements OnInit, OnDestroy {
       // esta identidad con el token de enrolamiento que le deja el backend.
       this.apiService.registerWorker(workerId, id.pubkey, timestamp, signature).subscribe({
         next: (res: any) => {
-          // El backend dice si además de anotarlo levantó un proceso, y dónde.
-          // Si no pudo (sin Kubernetes ni socket de Docker), el alta es sólo
-          // metadata, y prometer un despliegue que no ocurrió deja al usuario
-          // esperando un contenedor que nadie va a crear.
-          const where = res?.deployed_on === 'docker' ? 'levantado en Docker' : 'desplegado en el clúster';
+          // El backend dice si además de anotarlo lo encendió. Si no pudo, el
+          // alta es sólo un registro, y prometer un minero que nadie va a
+          // encender deja al usuario esperando. En ese caso se le da el código
+          // de activación (el token de enrolamiento), que es lo único que
+          // necesita para encenderlo por su cuenta; el detalle técnico del
+          // fallo queda en la consola.
+          if (!res?.deployed && res?.deploy_error) console.warn('Despliegue del minero:', res.deploy_error);
           this.snackBar.open(
             res?.deployed
-              ? `Minero "${workerId}" registrado y ${where}. Arranca en unos segundos.`
-              : `Minero "${workerId}" registrado. Todavía no está corriendo`
-                + (res?.deploy_error ? ` (${res.deploy_error})` : '') + ': '
-                + `levantalo con  WORKER_ENROLL_TOKEN=${res?.enrollment_token ?? ''} ./run.sh worker ${workerId}`,
+              ? `¡Listo! "${workerId}" ya es tuyo y arranca en unos segundos.`
+              : `"${workerId}" quedó registrado a tu nombre, pero todavía no está encendido.`
+                + (res?.enrollment_token ? ` Tu código de activación es ${res.enrollment_token}.` : ''),
             'Cerrar', { duration: res?.deployed ? 4000 : 15000 });
           this.cancelRegister();
           this.loadAll();
         },
         error: (err) => {
           console.error(err);
-          this.snackBar.open('Falló el registro: ' + (err.error?.detail || err.message), 'Cerrar', { duration: 4000 });
+          this.snackBar.open(friendlyError(err, 'No se pudo sumar el minero. Probá de nuevo.'), 'Cerrar', { duration: 5000 });
           this.registering.set(false);
         },
       });
     } catch (err: any) {
       console.error(err);
-      this.snackBar.open('Falló la firma: ' + err.message, 'Cerrar', { duration: 4000 });
+      this.snackBar.open(friendlyError(err, 'No pudimos firmar con tu identidad. Probá de nuevo.'), 'Cerrar', { duration: 4000 });
       this.registering.set(false);
     }
   }
 
   async confirmUnregister(worker: WorkerStatus) {
-    if (!confirm(`¿Dar de baja al minero "${worker.worker_id}"?`)) return;
+    if (!confirm(`¿Dar de baja a "${worker.worker_id}"? Deja de minar y se borra de la red.`)) return;
 
     const id = this.identityService.identity();
-    if (!id || id.isDemo) {
-      this.snackBar.open('Sólo las identidades propias pueden dar de baja nodos.', 'Cerrar', { duration: 3000 });
+    if (!id) {
+      this.snackBar.open('Necesitás una identidad para dar de baja un minero.', 'Cerrar', { duration: 3000 });
       return;
     }
 
@@ -572,17 +573,17 @@ export class WorkersComponent implements OnInit, OnDestroy {
 
       this.apiService.unregisterWorker(worker.worker_id, timestamp, signature).subscribe({
         next: () => {
-          this.snackBar.open(`Minero "${worker.worker_id}" dado de baja.`, 'Cerrar', { duration: 3000 });
+          this.snackBar.open(`"${worker.worker_id}" fue dado de baja.`, 'Cerrar', { duration: 3000 });
           this.loadAll();
         },
         error: (err) => {
           console.error(err);
-          this.snackBar.open('No se pudo dar de baja: ' + (err.error?.detail || err.message), 'Cerrar', { duration: 4000 });
+          this.snackBar.open(friendlyError(err, 'No se pudo dar de baja. Probá de nuevo.'), 'Cerrar', { duration: 4000 });
         },
       });
     } catch (err: any) {
       console.error(err);
-      this.snackBar.open('Falló la firma: ' + err.message, 'Cerrar', { duration: 4000 });
+      this.snackBar.open(friendlyError(err, 'No pudimos firmar con tu identidad. Probá de nuevo.'), 'Cerrar', { duration: 4000 });
     }
   }
 }
