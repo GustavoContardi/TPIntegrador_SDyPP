@@ -9,6 +9,7 @@ import {
   LAW_CATEGORIES,
   Law,
   LawCategory,
+  ProposerStanding,
   categoryLabel,
 } from '../../core/models/law.model';
 import { SystemAvailability } from '../../core/models/system.model';
@@ -124,6 +125,11 @@ const EMPTY_HASH = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852
 
           <div class="vc-rule"></div>
 
+          <p class="vc-note vc-note--warn" *ngIf="notAllowed() as st">
+            <strong>Tu identidad no puede proponer leyes.</strong>&ngsp;
+            <span>{{ st.reason }}</span>&ngsp;
+            <a routerLink="/workers">Ir a mineros y equipos</a>
+          </p>
           <p class="vc-note vc-note--warn" *ngIf="unavailable() as av">
             <strong>El sistema no puede abrir esta ventana todavía.</strong>&ngsp;
             <span>{{ av.message }}</span>
@@ -267,6 +273,12 @@ export class ProposeLawComponent {
   success = signal('');
   promulgatedLaws = signal<Law[]>([]);
   availability = signal<SystemAvailability | null>(null);
+  /**
+   * Si esta identidad puede proponer (fundador de equipo o dueño de un
+   * standalone). null mientras no se sabe: no se bloquea por no poder
+   * preguntar, el POST igual responde el motivo.
+   */
+  standing = signal<ProposerStanding | null>(null);
   /** El que devolvió el alta: es el que explica en qué quedó ESTA ley. */
   postponed = signal<SystemAvailability | null>(null);
   /** Arranca con la lista local para no pintar una fila vacía; el backend la pisa. */
@@ -326,6 +338,22 @@ export class ProposeLawComponent {
     });
     this.inferBaseZeros();
     this.refreshAvailability();
+    this.refreshStanding();
+  }
+
+  private refreshStanding() {
+    const id = this.identityService.identity();
+    if (!id) return;
+    this.api.getProposerStanding(id.pubkey).subscribe({
+      next: (st) => this.standing.set(st),
+      error: () => this.standing.set(null),
+    });
+  }
+
+  /** El veredicto negativo, o null si puede proponer (o no se sabe). */
+  notAllowed(): ProposerStanding | null {
+    const st = this.standing();
+    return st && !st.allowed ? st : null;
   }
 
   label(category: string): string {
@@ -426,7 +454,7 @@ export class ProposeLawComponent {
   }
 
   canSubmit(): boolean {
-    if (this.submitting()) return false;
+    if (this.submitting() || this.notAllowed()) return false;
     return this.isDerogar() ? !!this.lawIdToRepeal() : !!this.text();
   }
 

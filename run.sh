@@ -6,7 +6,7 @@
 #
 #   ./run.sh demo       levanta el sistema completo en local y sella una ley
 #   ./run.sh test       corre la suite de tests
-#   ./run.sh worker ID  levanta un minero registrado desde la UI
+#   ./run.sh worker ID  relanza a mano un minero registrado desde la UI
 #   ./run.sh miner      compila (si hay CUDA) y corre el minero de Pilar 1
 #   ./run.sh scale      experimento de escalado N transacciones con M vs 2xM
 #   ./run.sh bench      techo de cómputo de esta máquina
@@ -152,8 +152,10 @@ cmd_demo() {
   echo "Para bajarlo:  ./run.sh stop"
 }
 
-# Registrar un minero en la UI lo anota en la red, pero no lo enciende: sin
-# Kubernetes configurado no hay quien le cree un proceso. Esto es ese proceso.
+# Registrar un minero en la UI ya lo levanta solo: el API del compose tiene el
+# socket de Docker y clona worker-1 con la identidad nueva. Esto queda para
+# relanzarlo a mano (por ejemplo, si se lo borró con `docker rm`) o para un
+# compose con DOCKER_SPAWN_ENABLED=false.
 #
 # El contenedor arranca sin WORKER_MODE: el worker lee su modo de
 # `worker:desired_mode:<id>` en Redis, así que si su dueño ya lo asignó a un
@@ -259,16 +261,19 @@ cmd_limpiar() {
 cmd_stop() {
   necesita_docker
   info "Bajando el sistema local..."
-  docker compose -f "$COMPOSE" down
-  # Los mineros levantados con `./run.sh worker` son contenedores sueltos
-  # (docker compose run), así que `down` no se los lleva.
+  # Los mineros registrados desde la UI (o con `./run.sh worker`) son
+  # contenedores sueltos, así que `down` no se los lleva. Van primero: están
+  # colgados de la red del compose, y con ellos vivos `down` no puede borrarla.
+  # No se pierden: el registro sigue en Redis y el próximo `./run.sh demo` los
+  # relanza solo (el API reconcilia registrados contra contenedores).
   local sueltos
   sueltos="$(docker ps -aq --filter 'name=^voxchain-worker-' 2>/dev/null || true)"
   if [ -n "$sueltos" ]; then
-    echo "Bajando los mineros levantados a mano..."
+    echo "Bajando los mineros registrados..."
     # shellcheck disable=SC2086
     docker rm -f $sueltos >/dev/null
   fi
+  docker compose -f "$COMPOSE" down
   # El stack del experimento de escalado es aparte; se baja solo, pero por si
   # quedó algo colgado de una corrida interrumpida:
   docker compose -f "$RAIZ/pilar2-distribuido/docker-compose.scale.yml" \

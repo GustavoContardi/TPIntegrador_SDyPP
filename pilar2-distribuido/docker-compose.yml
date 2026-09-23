@@ -15,7 +15,17 @@ x-app-env: &app-env
   # importar cuántos mineros se registren. N_ZEROS pasa a ser sólo el valor
   # inicial. Con "false" vuelve al `n` fijo del enunciado original.
   DYNAMIC_DIFFICULTY: "true"
-  DIFFICULTY_TARGET_SECONDS: "30"
+  DIFFICULTY_TARGET_SECONDS: "60"
+  # Deliberación (AGENT.md 3.12): pausa entre anunciar la ley y abrir su
+  # ventana, para que cada equipo convocado decida si aporta cómputo. La
+  # dificultad y el plazo se congelan al anunciar, sobre el equipo más grande
+  # que vota esa área; el plazo es FACTOR × su tiempo esperado.
+  DELIBERATION_SECONDS: "120"
+  WINDOW_DEADLINE_FACTOR: "2"
+  WINDOW_MIN_SECONDS: "20"
+  # Pausas seguidas sin ninguna respuesta antes de descartar la ley "sin
+  # respuesta" (sin penalidad de reproposición). Corta el reanuncio infinito.
+  MAX_SILENT_DELIBERATIONS: "3"
   # Ventanas seguidas midiendo una red más chica antes de bajar `n`. Sube en el
   # acto; baja despacio, porque bajar es lo único que le sirve a un atacante
   # (conectar cómputo, dejar subir n, apagarlo y promulgar barato). El estado del
@@ -43,6 +53,12 @@ x-app-env: &app-env
   # "false": el gate cubre sólo la red vacía, y un área desierta vuelve a hacer
   # expirar la ley, que es el veto político deliberado de AGENT.md 3.10.
   QUORUM_BY_CATEGORY: "true"
+  # Quién puede proponer leyes (AGENT.md 3.2). "true": sólo el fundador de un
+  # equipo o el dueño de un minero standalone; un ciudadano sin minero o un
+  # miembro de equipo reciben 403. "false": cualquier identidad, como antes (lo
+  # necesitan los inyectores de carga, que proponen con identidades inventadas).
+  # Compartido por NCT y API.
+  RESTRICT_PROPOSERS: "true"
   NONCE_SPACE: "1250000000"
   # Techo de paralelismo de un pool: NONCE_SPACE/FRAGMENT_SIZE = 50 fragmentos.
   # Un equipo con más miembros que fragmentos NO va más rápido, así que este
@@ -91,8 +107,9 @@ services:
         condition: service_healthy
     environment:
       <<: *app-env
+      # Techos: el plazo real lo congela la deliberación.
       WINDOW_SECONDS_PROMULGACION: "120"
-      WINDOW_SECONDS_DEROGACION: "600"
+      WINDOW_SECONDS_DEROGACION: "1200"
       NCT_MODE: "primary"
       NCT_ID: "nct-primary"
       HEARTBEAT_INTERVAL: "3"
@@ -202,6 +219,16 @@ services:
       <<: *app-env
       NCT_HEALTH_URL: http://coordinator:8080/health
       PORT: "8000"
+      # Registrar un minero desde la UI lo levanta como contenedor (un clon de
+      # worker-1 con otra identidad), igual que en Kubernetes se crea un pod.
+      # Necesita el socket de Docker, que le da al API control del host: vale
+      # para este compose de desarrollo y en ningún otro lado. Con "false" se
+      # vuelve al camino manual (`./run.sh worker <id>`).
+      DOCKER_SPAWN_ENABLED: "true"
+      DOCKER_COMPOSE_PROJECT: voxchain-pilar2
+      DOCKER_WORKER_TEMPLATE_SERVICE: worker-1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "8000:8000"
 

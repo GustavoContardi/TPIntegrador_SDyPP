@@ -7,11 +7,12 @@ import { EventsService } from '../../core/services/events.service';
 import { LAW_CATEGORIES, Law, LawCategory, actionLabel, categoryLabel } from '../../core/models/law.model';
 import { SystemAvailability } from '../../core/models/system.model';
 import { Window } from '../../core/models/window.model';
+import { DeliberationPanelComponent } from '../deliberation/deliberation-panel.component';
 
 @Component({
   selector: 'app-queue',
   standalone: true,
-  imports: [CommonModule, RouterModule],
+  imports: [CommonModule, RouterModule, DeliberationPanelComponent],
   template: `
     <main class="vc-page vc-page--narrow">
       <div class="vc-head__text">
@@ -34,6 +35,10 @@ import { Window } from '../../core/models/window.model';
         <span>{{ av.message }}</span>&ngsp;
         <span *ngIf="av.since">Sin mineros desde {{ av.since | date:'HH:mm:ss' }}.</span>
       </p>
+
+      <!-- Antes de su ventana, cada ley pasa por una pausa en la que los
+           convocados deciden si aportan cómputo (AGENT.md 3.12). -->
+      <app-deliberation-panel></app-deliberation-panel>
 
       <!-- La ficha de arriba es siempre la misma pieza: si hay ventana abierta
            muestra el desafío que se está minando; si no, la ley que está a la
@@ -233,6 +238,7 @@ export class QueueComponent implements OnInit {
       promulgated: 'promulgada',
       repealed: 'derogada',
       discarded: 'descartada',
+      in_deliberation: 'en deliberación',
       in_window: 'en ventana',
       pending_queue: 'en cola',
     } as Record<string, string>)[status] ?? status;

@@ -24,6 +24,7 @@ from threading import Lock
 
 from common.blockchain.categories import normalize_category, parse_categories
 from common.blockchain.availability import policy_accepts
+from common.blockchain.deliberation import participates
 from common.blockchain.challenge import prefix_for_zeros
 from worker_pkg.pool_coordinator.election import (
     LEASE_RANK_DESIGNATED,
@@ -333,7 +334,15 @@ class PoolCoordinator:
         acá: el NCT la evalúa antes de abrir la ventana, para no abrir una que
         nadie va a minar (AGENT.md 3.11). Con dos copias de la misma decisión, la
         predicción del NCT y la conducta del pool se irían separando en silencio.
+
+        Si el desafío trae lista de participantes, viene de una deliberación
+        (AGENT.md 3.12) y la decisión ya se tomó ahí: el pool mina si su
+        fundador aceptó, aunque tuviera cargado un veto a esa ley — el "sí" en
+        la deliberación es la respuesta más reciente. La agenda no hace falta
+        mirarla: el NCT sólo convoca a quien la tiene.
         """
+        if challenge.get("participants") is not None:
+            return participates(challenge, self.pool_id)
         return policy_accepts(self._voting_policy, challenge)
 
     def handle_challenge(self, challenge: dict) -> None:

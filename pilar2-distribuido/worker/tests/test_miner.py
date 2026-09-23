@@ -80,6 +80,25 @@ def test_standalone_rechaza_por_accion():
     assert publicados == []
 
 
+def test_standalone_con_deliberacion_mina_solo_si_su_dueno_acepto():
+    """Si no responde no vota: fuera de la lista de participantes no toca un hash."""
+    bus = InMemoryBus()
+    publicados = []
+    bus.on_nonce_response(publicados.append)
+
+    sw = StandaloneWorker(bus, worker_id="w1", mine=lambda *a: (1, "h"), clock=lambda: 0)
+    sw._rejected_actions = set()
+    sw.wire()
+    base = {"action": "promulgacion", "partial_hash_base": "base",
+            "n_zeros_required": 1, "law_id": "L1"}
+    bus.publish_challenge({**base, "voting_window_id": "W1", "participants": ["w2"]})
+    assert publicados == []
+
+    bus.publish_challenge({**base, "voting_window_id": "W2",
+                           "participants": ["w1", "w2"]})
+    assert [p["voting_window_id"] for p in publicados] == ["W2"]
+
+
 def test_standalone_es_idempotente_por_ventana():
     bus = InMemoryBus()
     publicados = []

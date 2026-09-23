@@ -536,6 +536,67 @@ class TestListadoDeMineros:
         assert by_id["w2"]["team_role"] == "member"
         assert by_id["solo"]["team_id"] is None
 
+    def test_un_minero_encendido_sigue_siendo_de_su_duenio(self, api, r):
+        """Regresión: el worker reporta su clave de NODO en el estado, y se
+        devolvía como `pubkey`. La UI compara `pubkey` con la identidad para
+        saber qué minero es tuyo, así que encenderlo lo dejaba sin dueño: sin
+        "Dar de baja", y Equipos decía que no tenías minero."""
+        _own(r, "mio", GUS.pubkey)
+        r.set("worker:status:mio", json.dumps({
+            "worker_id": "mio", "mode": "standalone", "running": True,
+            "pubkey": "clave-de-nodo"}), ex=15)
+
+        listado = {w["worker_id"]: w for w in api.get("/api/workers/status").json()}
+        assert listado["mio"]["pubkey"] == GUS.pubkey
+        assert api.get("/api/workers/mio/status").json()["pubkey"] == GUS.pubkey
+
+
+class TestRelanzarContenedores:
+    """`./run.sh stop` borra los contenedores; Redis (con volumen) no se borra."""
+
+    @pytest.fixture
+    def docker(self, monkeypatch):
+        from voxchain_api.services import docker_spawner
+
+        estado = {"existentes": set(), "levantados": []}
+        monkeypatch.setattr(docker_spawner, "enabled", lambda: True)
+        monkeypatch.setattr(docker_spawner, "existing_containers",
+                            lambda: set(estado["existentes"]))
+        monkeypatch.setattr(docker_spawner, "spawn_worker",
+                            lambda wid, token: estado["levantados"].append(wid))
+        return estado
+
+    def test_relanza_los_registrados_sin_contenedor(self, r, docker):
+        from voxchain_api.routers.workers import reconcile_docker_workers
+        from voxchain_api.services.docker_spawner import container_name
+
+        _own(r, "sin-contenedor", GUS.pubkey)
+        _own(r, "con-contenedor", VALEN.pubkey)
+        r.sadd("registered_workers", "worker-1")  # precargado: lo levanta el compose
+        docker["existentes"].add(container_name("con-contenedor"))
+
+        assert reconcile_docker_workers(r) == ["sin-contenedor"]
+        # Con token nuevo, para que el minero relanzado se vuelva a enrolar.
+        assert r.get("worker:enroll:sin-contenedor")
+
+    def test_no_pisa_un_alta_en_curso(self, r, docker):
+        """Un token vigente es un contenedor que el alta acaba de levantar."""
+        from voxchain_api.routers.workers import reconcile_docker_workers
+
+        _own(r, "recien-registrado", GUS.pubkey)
+        r.set("worker:enroll:recien-registrado", "digest-del-alta")
+
+        assert reconcile_docker_workers(r) == []
+        assert r.get("worker:enroll:recien-registrado") == "digest-del-alta"
+
+    def test_sin_docker_no_hace_nada(self, r, monkeypatch):
+        from voxchain_api.routers.workers import reconcile_docker_workers
+        from voxchain_api.services import docker_spawner
+
+        monkeypatch.setattr(docker_spawner, "enabled", lambda: False)
+        _own(r, "x", GUS.pubkey)
+        assert reconcile_docker_workers(r) == []
+
 
 class TestNoInventarWorkersVivos:
     """Un worker que nunca reportó no puede pasar por vivo.
@@ -891,6 +952,67 @@ class TestElAltaDiceLaVerdad:
             _registro_firmado("minero-nuevo"), r)
         assert resp["deployed"] is False
         assert r.sismember("registered_workers", "minero-nuevo")
+
+    def test_con_docker_el_alta_levanta_el_contenedor(self, r, monkeypatch):
+        """En el compose local el API tiene el socket y levanta el minero solo."""
+        from voxchain_api.routers import workers as workers_router
+        from voxchain_api.services import docker_spawner
+
+        monkeypatch.setattr(workers_router, "K8S_ENABLED", False)
+        monkeypatch.setattr(docker_spawner, "enabled", lambda: True)
+        levantados = []
+        monkeypatch.setattr(docker_spawner, "spawn_worker",
+                            lambda wid, token: levantados.append((wid, token)))
+
+        alta = _registro_firmado("minero-docker")
+        alta.deploy = True
+        resp = workers_router.persist_worker_registration(alta, r)
+
+        assert resp["deployed"] is True
+        assert resp["deployed_on"] == "docker"
+        # El token viaja por el env del contenedor, no por la respuesta.
+        assert "enrollment_token" not in resp
+        assert [wid for wid, _ in levantados] == ["minero-docker"]
+        assert r.get("worker:enroll:minero-docker")
+
+    def test_si_docker_falla_cae_al_camino_manual(self, r, monkeypatch):
+        """El minero ya quedó registrado: se dice por qué no arrancó y cómo arrancarlo."""
+        from voxchain_api.routers import workers as workers_router
+        from voxchain_api.services import docker_spawner
+
+        def falla(*_):
+            raise docker_spawner.DockerSpawnError("sin plantilla")
+
+        monkeypatch.setattr(workers_router, "K8S_ENABLED", False)
+        monkeypatch.setattr(docker_spawner, "enabled", lambda: True)
+        monkeypatch.setattr(docker_spawner, "spawn_worker", falla)
+
+        alta = _registro_firmado("minero-sin-docker")
+        alta.deploy = True
+        resp = workers_router.persist_worker_registration(alta, r)
+
+        assert resp["deployed"] is False
+        assert "sin plantilla" in resp["deploy_error"]
+        assert resp["enrollment_token"]
+        assert r.sismember("registered_workers", "minero-sin-docker")
+
+    def test_fundar_con_minero_nuevo_devuelve_el_token(self, api, r, monkeypatch):
+        """Regresión: la respuesta hacía `{**modelo}` y el alta daba 500
+        aunque el equipo quedaba creado."""
+        from voxchain_api.routers import workers as workers_router
+
+        monkeypatch.setattr(workers_router, "K8S_ENABLED", False)
+        yo = _Identidad()
+        alta = yo.registro("minero-fundador")
+
+        resp = api.post("/api/teams", json={
+            "name": "Los del token", "worker_id": "minero-fundador",
+            "new_worker": alta.model_dump(),
+        }, headers={"X-Owner-Id": yo.pubkey})
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["enrollment_token"]
+        assert resp.json()["coordinator_worker_id"] == "minero-fundador"
 
 
 class TestUnMineroPorIdentidad:

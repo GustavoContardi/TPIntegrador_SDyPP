@@ -2,7 +2,10 @@ import { Injectable, inject } from '@angular/core';
 import { HttpClient, HttpHeaders } from '@angular/common/http';
 import { Observable, from, switchMap } from 'rxjs';
 import { Block } from '../models/block.model';
-import { Law, LawCategory, LawProposalRequest, LawProposalResponse } from '../models/law.model';
+import { Deliberation, DeliberationDecision, DeliberationVoter } from '../models/deliberation.model';
+import {
+  Law, LawCategory, LawProposalRequest, LawProposalResponse, ProposerStanding,
+} from '../models/law.model';
 import { SystemAvailability } from '../models/system.model';
 import { Window } from '../models/window.model';
 import { Team, WorkerRegistration, WorkerStatus } from '../models/worker.model';
@@ -73,6 +76,16 @@ export class ApiService {
 
   proposeLaw(proposal: LawProposalRequest): Observable<LawProposalResponse> {
     return this.http.post<LawProposalResponse>(`${this.apiUrl}/laws`, proposal);
+  }
+
+  /**
+   * ¿Puede esta identidad proponer? Va en el path y no como query porque una
+   * pubkey en base64 trae `+`, que HttpParams deja sin escapar y el backend
+   * leería como espacio.
+   */
+  getProposerStanding(pubkey: string): Observable<ProposerStanding> {
+    return this.http.get<ProposerStanding>(
+      `${this.apiUrl}/laws/proposer/${encodeURIComponent(pubkey)}`);
   }
 
   /**
@@ -223,5 +236,35 @@ export class ApiService {
   dissolveTeam(teamId: string): Observable<any> {
     return this.signed(teamId, 'dissolve-team', (headers) =>
       this.http.delete(`${this.apiUrl}/teams/${teamId}`, { headers }));
+  }
+
+  /**
+   * Qué responde el equipo en una deliberación si el fundador no lo hace.
+   * '' = sin respuesta por defecto: si no responde, el equipo no mina.
+   */
+  setTeamDefaultDecision(teamId: string, decision: DeliberationDecision | ''): Observable<Team> {
+    return this.signed(teamId, 'set-default-decision', (headers) =>
+      this.http.put<Team>(`${this.apiUrl}/teams/${teamId}/default-decision`,
+        { default_decision: decision }, { headers }));
+  }
+
+  // Deliberación (AGENT.md 3.12)
+  //
+  // La ley anunciada antes de su ventana, o null. Mientras dure la pausa, el
+  // fundador de cada equipo convocado y el dueño de cada standalone deciden si
+  // aportan cómputo; quien no responde, no mina.
+  getDeliberation(): Observable<Deliberation | null> {
+    return this.http.get<Deliberation | null>(`${this.apiUrl}/deliberation`);
+  }
+
+  /**
+   * Responde por un convocado. La ley y la decisión van dentro de lo firmado,
+   * así que una firma de "sí" no sirve para un "no" ni para otra ley.
+   */
+  decideDeliberation(lawId: string, voterId: string,
+                     decision: DeliberationDecision): Observable<DeliberationVoter> {
+    return this.signed(voterId, `deliberate:${lawId}:${decision}`, (headers) =>
+      this.http.post<DeliberationVoter>(`${this.apiUrl}/deliberation/${lawId}/decision`,
+        { voter_id: voterId, decision }, { headers }));
   }
 }

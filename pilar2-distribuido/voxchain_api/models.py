@@ -38,6 +38,10 @@ class Window(BaseModel):
     result: Optional[str] = None
     winning_nonce: Optional[int] = None
     winning_node_or_pool: Optional[str] = None
+    # Quiénes aceptaron minar esta ventana en la deliberación (AGENT.md 3.12):
+    # ids del coordinador de cada equipo o del standalone. None = ventana sin
+    # deliberación, abierta a cualquiera.
+    participants: Optional[list[str]] = None
 
 
 class Block(BaseModel):
@@ -104,6 +108,17 @@ class LawProposalResponse(Law):
     """
 
     availability: Optional[SystemAvailability] = None
+
+
+class ProposerStandingResponse(BaseModel):
+    """Si una identidad puede proponer leyes (AGENT.md 3.2)."""
+
+    allowed: bool
+    #: ``team_owner`` o ``standalone`` si puede; ``None`` si no, o si la
+    #: restricción está apagada (``RESTRICT_PROPOSERS=false``).
+    role: Optional[str] = None
+    #: Por qué no puede, listo para mostrar. Vacío si puede.
+    reason: str = ""
 
 
 class HealthResponse(BaseModel):
@@ -207,6 +222,9 @@ class Team(BaseModel):
     # entra una ley de un área que no eligió, ni el coordinador ni sus mineros
     # aportan un solo hash a esa ventana.
     categories: list[str] = []
+    # Respuesta por defecto en las deliberaciones (AGENT.md 3.12): lo que vale
+    # si el fundador no responde durante la pausa. '' = no mina.
+    default_decision: str = ""
     members: list[TeamMember] = []
     member_count: int = 0
     # Mineros que el coordinator tiene efectivamente registrados por HTTP. Es un
@@ -235,10 +253,71 @@ class TeamMembershipRequest(BaseModel):
     worker_id: str
 
 
+class TeamDefaultDecisionRequest(BaseModel):
+    """'accept', 'reject' o '' (sin respuesta por defecto: si no responde, no mina)."""
+
+    default_decision: str = ""
+
+
 class TeamCategoriesRequest(BaseModel):
     """Cambio de agenda del equipo. Lista vacía = vuelve a votar todas."""
 
     categories: list[str] = []
+
+
+class DeliberationVoter(BaseModel):
+    """Un convocado a decidir: un equipo entero o un standalone."""
+
+    voter_id: str
+    kind: str  # 'equipo' | 'standalone'
+    name: str
+    owner: str = ""
+    team_id: str = ""
+    hashrate: float = 0.0
+    # 'accept' | 'reject' | None (todavía no respondió: si no responde, no mina)
+    decision: Optional[str] = None
+    # Lo que va a contar si no responde: 'accept', 'reject' o '' (no mina).
+    default_decision: str = ""
+    # El más grande: sobre él se congeló la dificultad.
+    biggest: bool = False
+
+
+class Deliberation(BaseModel):
+    """La ley anunciada, antes de su ventana (AGENT.md 3.12).
+
+    Sólo la ley y su área: ni id de ventana ni desafío, que recién existen al
+    abrirse, para que nadie pueda empezar a minar durante la pausa.
+    """
+
+    law_id: str
+    action: str
+    category: str
+    started_at: str
+    decide_until: str
+    seconds_left: float
+    n_zeros_required: int
+    window_seconds: float
+    voters: list[DeliberationVoter] = []
+
+
+class DeliberationDecisionRequest(BaseModel):
+    """La respuesta de un convocado: ``accept`` aporta cómputo, ``reject`` no."""
+
+    voter_id: str
+    decision: str
+
+
+class DeliberationResult(BaseModel):
+    """Cómo terminó la última deliberación de una ley."""
+
+    law_id: str
+    outcome: str  # 'open' | 'discard' | 'requeue' | 'unanswered'
+    accepted: list[str] = []
+    rejected: list[str] = []
+    silent: list[str] = []
+    # Los que no respondieron y contó su respuesta por defecto.
+    defaulted: list[str] = []
+    decided_at: str = ""
 
 
 class SSEEvent(BaseModel):

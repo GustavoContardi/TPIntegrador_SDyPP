@@ -543,6 +543,23 @@ class TestAgendaTematica:
         # y fuera de la agenda no mina ni las promulgaciones
         assert coordinator._check_voting_policy(self._challenge("salud")) is False
 
+    def test_con_deliberacion_mina_solo_si_su_fundador_acepto(self, coordinator):
+        """La lista de participantes manda (AGENT.md 3.12): quien no aceptó, no mina."""
+        ch = {**self._challenge("general"), "participants": ["otro-pool"]}
+        coordinator.handle_challenge(ch)
+        assert len(coordinator._pending_fragments) == 0
+
+        ch = {**self._challenge("general", wid="win-2"),
+              "participants": ["test-pool"]}
+        coordinator.handle_challenge(ch)
+        assert len(coordinator._pending_fragments) > 0
+
+    def test_el_si_en_la_deliberacion_gana_al_veto_cargado(self, coordinator):
+        # El veto puntual fue la respuesta anticipada; el "sí" es la última.
+        coordinator.set_voting_policy({"decision": "reject", "law_id": "L1"})
+        ch = {**self._challenge("general"), "participants": ["test-pool"]}
+        assert coordinator._check_voting_policy(ch) is True
+
     def test_una_categoria_desconocida_no_tira_la_politica(self, coordinator):
         # La política puede venir de un backend más nuevo. Quedarse sin minar por
         # un slug que no reconocemos sería peor que ignorarlo.

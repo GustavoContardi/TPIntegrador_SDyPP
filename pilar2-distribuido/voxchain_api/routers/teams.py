@@ -28,10 +28,12 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 
 from common.blockchain import parse_categories, validate_category
+from common.blockchain.deliberation import DECISIONS
 from voxchain_api.models import (
     CreateTeamRequest,
     Team,
     TeamCategoriesRequest,
+    TeamDefaultDecisionRequest,
     TeamMember,
     TeamMembershipRequest,
 )
@@ -41,6 +43,7 @@ from voxchain_api.routers.workers import (
     ADMIN_JOIN_TEAM,
     ADMIN_LEAVE_TEAM,
     ADMIN_SET_CATEGORIES,
+    ADMIN_SET_DEFAULT_DECISION,
     authorize_owner_action,
     authorize_worker_action,
     get_owner_id,
@@ -48,6 +51,7 @@ from voxchain_api.routers.workers import (
     get_signature_timestamp,
     get_rabbitmq_publisher,
     get_redis_reader,
+    owner_of,
     persist_worker_registration,
 )
 from voxchain_api.services.redis_reader import RedisReader
@@ -106,7 +110,8 @@ def _roster(store: TeamsStore, redis_client, team: dict) -> list[TeamMember]:
             role=role,
             mode=status.get("mode", "unknown"),
             running=bool(status.get("running", False)),
-            pubkey=status.get("pubkey"),
+            # La del dueño, no la que reporta el worker (que es la de nodo).
+            pubkey=owner_of(redis_client, worker_id) or status.get("pubkey"),
             node_pubkey=_node_pubkey(redis_client, worker_id),
         ))
     return roster
@@ -169,6 +174,7 @@ def _hydrate(store: TeamsStore, redis_client, team: dict) -> Team:
         name=team.get("name", team["team_id"]),
         owner=team.get("owner", ""),
         categories=parse_categories(team.get("categories")),
+        default_decision=team.get("default_decision", ""),
         coordinator_worker_id=coordinator_id,
         coordinator_url=coordinator_url,
         created_at=team.get("created_at", ""),
@@ -270,7 +276,10 @@ async def create_team(
              team["team_id"], owner_id, worker_id, agenda or "todas")
     hidratado = _hydrate(store, redis_client, store.get_team(team["team_id"]))
     if enrollment_token:
-        hidratado = {**hidratado, "enrollment_token": enrollment_token}
+        # `_hydrate` devuelve el modelo, no un dict: desempaquetarlo con `**`
+        # tiraba un TypeError *después* de crear el equipo, así que el usuario
+        # veía un 500 y el equipo quedaba creado igual.
+        hidratado = hidratado.model_copy(update={"enrollment_token": enrollment_token})
     return hidratado
 
 
@@ -401,6 +410,41 @@ async def set_team_categories(
     await push_voting_policy(team["coordinator_worker_id"], agenda, redis_client)
 
     log.info("equipo %s cambió su agenda a %s", team_id, agenda or "todas")
+    return _hydrate(store, redis_client, store.get_team(team_id))
+
+
+@router.put("/{team_id}/default-decision", response_model=Team)
+async def set_team_default_decision(
+    team_id: str,
+    request: TeamDefaultDecisionRequest,
+    owner_id: str = Depends(get_owner_id),
+    signature: Optional[str] = Depends(get_signature),
+    timestamp: Optional[str] = Depends(get_signature_timestamp),
+    store: TeamsStore = Depends(get_teams_store),
+    redis: RedisReader = Depends(get_redis_reader),
+):
+    """Qué responde el equipo en una deliberación si el fundador no está (AGENT.md 3.12).
+
+    Es una respuesta dada de antemano, no una excepción a "quien no responde no
+    vota": la de la pausa la pisa. Vale sólo para las leyes a las que el equipo
+    es convocado, así que "aportar" es "aportar en mis áreas". Sólo la fija
+    quien fundó el equipo, igual que la agenda.
+    """
+    decision = request.default_decision or ""
+    if decision and decision not in DECISIONS:
+        raise HTTPException(status_code=400,
+                            detail=f"Usá una de {list(DECISIONS)} o vacío")
+    team = store.get_team(team_id)
+    if not team:
+        raise HTTPException(status_code=404, detail="El equipo no existe")
+    redis_client = redis.store.r
+    authorize_owner_action(redis_client, team_id, ADMIN_SET_DEFAULT_DECISION,
+                           team.get("owner", ""), owner_id, signature, timestamp)
+    try:
+        store.set_default_decision(team_id, decision)
+    except TeamError as exc:
+        raise _as_http(exc) from exc
+    log.info("equipo %s: respuesta por defecto '%s'", team_id, decision or "ninguna")
     return _hydrate(store, redis_client, store.get_team(team_id))
 
 

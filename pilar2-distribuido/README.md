@@ -1,8 +1,9 @@
 # Pilar 2 — Infraestructura de servicios distribuidos (VoxChain Reborn)
 
 VoxChain Reborn no es una blockchain de dinero: es **gobierno por consenso de esfuerzo
-computacional**. Cualquiera con un par de claves propone, promulga o deroga
-**leyes**; el consenso se mide en hashes (Proof of Work), no en votos nominales.
+computacional**: se promulgan y derogan **leyes**, y el consenso se mide en
+hashes (Proof of Work), no en votos nominales. Propone quien responde por
+cómputo en la red (el fundador de un equipo o el dueño de un minero standalone).
 El NCT sólo coordina ventanas de votación, no arbitra contenido.
 
 > La fuente de verdad del dominio es [`AGENT.md`](../AGENT.md) (raíz del repo).
@@ -34,7 +35,7 @@ nonce válido ⇔ md5(partial_hash_base + str(nonce)) empieza con n ceros
  └───────┬───────┘            │        │       NCT primary        │
          │                    │        │  - cola round-robin autor│
          │ respuesta_nonce    │        │  - abre/cierra ventana   │
-         │ (cola) red→NCT     │        │  - dificultad fija n/n+1 │
+         │ (cola) red→NCT     │        │  - dificultad n/n+1      │
          │                    │        │  - verifica nonce, sella │
          │                    │        │  - publica heartbeats    │
          │                    │        └──────────────────────────┘
@@ -71,8 +72,16 @@ cuarto que toque al NCT):
 | # | Nombre            | Tipo            | Dirección   | Contenido |
 |---|-------------------|-----------------|-------------|-----------|
 | 1 | `propuestas`      | cola            | nodo → NCT  | `law_id, author_pubkey, text_hash, created_at, action, category` |
-| 2 | `desafio_activo`  | exchange *topic*| NCT → red   | `voting_window_id, law_id, n_zeros_required, deadline, partial_hash_base, action, category` |
+| 2 | `desafio_activo`  | exchange *topic*| NCT → red   | `voting_window_id, law_id, n_zeros_required, deadline, partial_hash_base, action, category, participants` |
 | 3 | `respuesta_nonce` | cola            | red → NCT   | `voting_window_id, nonce, winning_node_or_pool, block_hash_candidato` |
+
+**Deliberación** (AGENT.md 3.12): antes de publicar el desafío, el NCT anuncia
+la ley en Redis (`nct:deliberation`, sólo la ley y su área) y espera
+`DELIBERATION_SECONDS` a que los convocados respondan por el API
+(`POST /api/deliberation/<law_id>/decision`, firmado). La dificultad y el plazo
+se congelan en el anuncio sobre el convocado más grande del área. El desafío
+sale después con `participants`: sólo minan los que aceptaron. No agrega un
+flujo de RabbitMQ: el anuncio y las respuestas viajan por Redis y el API.
 
 **Failover del NCT** (AGENT.md 4):
 
@@ -109,8 +118,9 @@ en la topología por compatibilidad, pero el reparto de trabajo real va por HTTP
 | [`worker/`](worker/) modo `pool-worker` | Pide rangos al coordinator y los mina invocando el minero de Pilar 1 (GPU/CPU) |
 | [`worker/`](worker/) modo `standalone` | Mina el espacio completo por su cuenta y publica el nonce directo al NCT (modo competitivo) |
 | [`voxchain_api/routers/teams.py`](voxchain_api/routers/teams.py) | **Equipos**: capa de nombres sobre el modo cooperativo. Crear un equipo promueve un minero propio a `pool-coordinator`; unirse pone un minero en `pool-worker` apuntando a él |
-| [`voxchain_api/`](voxchain_api/) | API REST (FastAPI): propuestas, cadena, cuentas demo, estado de workers |
-| [`voxchain-frontend/`](voxchain-frontend/) | SPA en Angular; firma las propuestas en el navegador |
+| [`worker/`](worker/) modo `pool-auto` | Pool de infraestructura anónimo: los pares eligen coordinator por mini-PoW (`pool.election`) |
+| [`voxchain_api/`](voxchain_api/) | API REST (FastAPI): propuestas, cadena, cuentas demo, estado de workers, equipos, deliberación y disponibilidad |
+| [`voxchain-frontend/`](voxchain-frontend/) | SPA en Angular; firma en el navegador las propuestas y las decisiones de deliberación |
 | `common/` | Paquete compartido: `blockchain`, `storage` (Redis), `messaging` (RabbitMQ), health, logging, métricas, config |
 
 > El diseño original tenía un servicio `transaction-pool/` separado (TrP). Su rol
@@ -248,20 +258,36 @@ minero CPU de Pilar 1, que vive fuera de este directorio.
   silencio. Con `false` vuelve al `n` fijo del enunciado original.
 - **Registrar mineros no abarata leyes**: los standalone son redundantes entre sí
   (todos barren desde 0 el mismo rango), así que la red vale lo que su buscador
-  independiente más rápido. Un equipo grande sí agrega, y ahí `n` sube. Si no hay workers GPU, el pool coordinator **loguea** la
-  necesidad de escalar CPU pero **no** reduce el prefijo (se documenta como
-  pregunta abierta porque P5 lo sugería; reducirlo rompería el consenso).
+  independiente más rápido. Un equipo grande sí agrega, y ahí `n` sube.
+- **Ante ausencia de GPUs, baja el prefijo.** La medición de la red pondera cada
+  minero por su hashrate reportado, o por `HPS_GPU`/`HPS_CPU` según `has_gpu` si
+  todavía no midió. Si se van las GPU, la red medida cae y `n` baja, de a un
+  cero y con la histéresis de siempre. Sin `DYNAMIC_DIFFICULTY` no hay
+  reducción: `n` queda fijo y las ventanas pueden vencer.
 - **Ley pendiente → `discarded`** (3.2): si la ventana vence sin nonce, la ley se
   descarta y **no** se reencola; su `text_hash` queda marcado para detectar
-  reproposición.
+  reproposición. **Excepción:** si al vencer la red está por debajo del quórum,
+  la ley vuelve a la cola (`expired_no_quorum`) sin marcar el texto.
+- **Deliberación antes de cada ventana** (3.12): el NCT anuncia la ley y espera
+  `DELIBERATION_SECONDS` a que los equipos y standalone convocados decidan, con
+  una respuesta firmada, si aportan cómputo. Sólo minan los que aceptaron.
+  Dificultad y plazo se congelan al anunciar sobre el convocado más grande, para
+  que su "no" encarezca la ley en vez de abaratarla. Si nadie acepta y alguien
+  veta, la ley se descarta; si nadie responde, vuelve a la cola.
+- **Quién propone** (3.2): sólo el fundador de un equipo o el dueño de un minero
+  standalone (`RESTRICT_PROPOSERS`). Se verifica en el API (403 con el motivo) y
+  otra vez en el NCT, porque a la cola `propuestas` se puede llegar sin pasar
+  por el API. Regla en `common/blockchain/proposers.py`.
 - **Categorías de ley y agenda de equipos** (3.10): toda ley declara un área de
   gobierno (`economia`, `salud`, …, `general` por defecto) que su autor **firma**
   junto con el resto de la propuesta, y que una derogación **hereda** de la ley
   original. Cada equipo declara la agenda de áreas que vota: si entra una ley de
   otra área, su coordinador no fragmenta el espacio de nonces y el equipo entero
   no aporta un solo hash. La categoría **no** entra en el `partial_hash_base`: el
-  desafío que resuelve el minero de Pilar 1 no cambia. Consecuencia buscada: una
-  ley que no le interesa a ningún equipo expira como cualquier ley pendiente.
+  desafío que resuelve el minero de Pilar 1 no cambia. Una ley que no le
+  interesa a ningún equipo **espera en la cola** por el quórum por área
+  (`QUORUM_BY_CATEGORY=true`); con `false` vuelve a expirar como veto por
+  abstención.
 - **Reproposición por hash exacto del texto** (3.5): idéntica a una descartada →
   cooldown mayor (`reproposed_identical`); distinta → propuesta nueva. Misma `n`.
 - **Sellado y encadenamiento**: `block_hash = sha256(contenido)`, cada bloque
@@ -270,17 +296,18 @@ minero CPU de Pilar 1, que vive fuera de este directorio.
 - **El minero no se reimplementa** (Pilar 1): el worker lo invoca como subproceso
   y cae a CPU si no hay GPU. El "puente" es: `n` ceros ⇒ prefijo de `n` caracteres
   `'0'`.
-- **Seguridad** (DOC.md): cero secretos en el repo; URLs y credenciales por
+- **Seguridad**: cero secretos en el repo; URLs y credenciales por
   variables de entorno; las **claves privadas nunca** se persisten ni viajan por
-  RabbitMQ (sólo `author_pubkey`).
+  RabbitMQ (sólo `author_pubkey`). En el navegador, la clave del ciudadano es un
+  `CryptoKey` no extraíble en IndexedDB (AGENT.md 3.1).
 - **Tolerancia a fallos del NCT** (4): cada NCT que no es líder corre un
   `NCTHeartbeatMonitor`; si el líder deja de emitir durante `HEARTBEAT_TIMEOUT`,
   intenta tomar el lease de liderazgo en Redis. **El arbitraje es atómico en
   Redis, no una elección distribuida por PoW**: los NCT son homogéneos y sin
   ventaja de cómputo entre sí, así que gana quien detectó la caída antes. La
   ventana en curso se pierde por diseño (se prefiere descartarla antes que
-  arriesgar un sellado doble). Cubierto por `tests/test_bully.py` y
-  `tests/test_failover_y_cierre.py`.
+  arriesgar un sellado doble). Cubierto por `nct-coordinator/tests/test_bully.py`
+  y `nct-coordinator/tests/test_failover_y_cierre.py`.
 - **El modo cooperativo se administra por equipos, no por URL**: para poner un
   minero en `pool-worker` hay que decirle la URL del coordinador, y esa URL un
   usuario no la puede averiguar (en Kubernetes los pods de un Deployment no
@@ -290,9 +317,14 @@ minero CPU de Pilar 1, que vive fuera de este directorio.
   consecuencia `POST /api/workers/{id}/switch-mode` **sólo acepta `standalone`**:
   si se pudiera cambiar el modo por un lado y la membresía por otro, la lista de
   miembros del equipo mentiría. Ver [`docs/workers.md`](../docs/workers.md).
-- **Elección del coordinator del pool**: ahí sí hay mini-PoW
-  (`POOL_ELECTION_N_ZEROS`, 2 ceros por defecto), porque los candidatos son
-  mineros y el criterio de esfuerzo es coherente con el resto del sistema.
+- **Elección del coordinator del pool** (AGENT.md 4.2): en un **equipo** el
+  coordinador lo designa su fundador, y la elección por lease en Redis sólo
+  garantiza que haya uno vivo si el pod se reinicia. En el **pool de
+  infraestructura** (`pool-auto`), donde no hay a quién designar, hay mini-PoW
+  (`POOL_ELECTION_N_ZEROS`, 2 ceros por defecto) por el exchange
+  `pool.election`: los candidatos son mineros y el criterio de esfuerzo es
+  coherente con el resto del sistema. Con Redis, los dos se disputan el mismo
+  lease `pool:leader:<pool_id>`.
 
 ## Limitaciones conocidas
 

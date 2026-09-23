@@ -170,3 +170,45 @@ def test_e2e_ley_sin_equipo_que_la_vote_expira(bus, store):
 
     assert store.chain_length() == 0
     assert store.get_law("ley-humedales")["status"] == LawStatus.DISCARDED
+
+
+@pytest.mark.integration
+def test_e2e_deliberacion_mina_solo_quien_acepto(bus, store):
+    """Deliberación extremo a extremo (AGENT.md 3.12).
+
+    La ley se anuncia, un standalone acepta y el otro no. Al terminar la pausa
+    se abre la ventana, los dos reciben el desafío, pero sólo el que aceptó
+    mina: el bloque es suyo y el otro no gastó un hash.
+    """
+    import json
+
+    reloj = {"t": 1000.0}
+    for wid in ("a-favor", "en-contra"):
+        store.r.set(f"worker:status:{wid}",
+                    json.dumps({"worker_id": wid, "mode": "standalone"}), ex=15)
+    nct = NCTCoordinator(bus, store, n_zeros=2, window_seconds_promulgacion=300,
+                         window_seconds_derogacion=300, cooldown_new=1,
+                         cooldown_reproposed=2, clock=lambda: reloj["t"],
+                         min_workers_for_window=1, deliberation_seconds=120)
+    nct.wire()
+    mineros = {}
+    for wid in ("a-favor", "en-contra"):
+        mineros[wid] = StandaloneWorker(bus, worker_id=wid, mine=cpu_mine,
+                                        clock=lambda: 0)
+        mineros[wid]._rejected_actions = set()
+        mineros[wid].wire()
+
+    bus.publish_proposal({"law_id": "ley-x", "author_pubkey": "ciudadano-A",
+                          "text_hash": "h-x", "created_at": "2026-06-16T00:00:00Z",
+                          "category": "general"})
+    assert store.chain_length() == 0
+    assert store.get_law("ley-x")["status"] == LawStatus.IN_DELIBERATION
+
+    store.set_deliberation_decision("ley-x", "a-favor", "accept")
+    reloj["t"] += 120
+    nct.tick()
+
+    assert store.chain_length() == 1
+    assert store.get_chain()[0].winning_node_or_pool == "a-favor"
+    assert mineros["en-contra"]._solved == set()
+    assert store.get_law("ley-x")["status"] == LawStatus.PROMULGATED

@@ -4,6 +4,7 @@
 - ``categories``: áreas temáticas de las leyes (sobre las que los equipos deciden
   a qué ventanas aportan cómputo).
 - ``availability``: quórum de mineros elegibles para abrir una ventana.
+- ``proposers``: quién puede proponer una ley (fundador de equipo o standalone).
 - ``block``: modelo de bloque y cálculo de su hash.
 - ``chain``: validación de la cadena de punta a punta.
 """
@@ -34,6 +35,12 @@ from .availability import (
     assess,
     eligible_workers,
 )
+from .proposers import (
+    STANDING_STANDALONE,
+    STANDING_TEAM_OWNER,
+    ProposerStanding,
+    assess_proposer,
+)
 from .block import Block, seal_block
 from .chain import validate_chain, validate_chain_links, ChainValidationError
 from .compression import compress_text, decompress_text
@@ -59,6 +66,10 @@ __all__ = [
     "Availability",
     "assess",
     "eligible_workers",
+    "STANDING_STANDALONE",
+    "STANDING_TEAM_OWNER",
+    "ProposerStanding",
+    "assess_proposer",
     "Block",
     "seal_block",
     "validate_chain",

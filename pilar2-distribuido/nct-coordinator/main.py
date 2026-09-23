@@ -91,6 +91,8 @@ def main() -> None:
         heartbeat_interval=config.HEARTBEAT_INTERVAL,
         require_signatures=config.REQUIRE_SIGNATURES,
         proposal_max_age=config.PROPOSAL_MAX_AGE_SECONDS,
+        # Sólo proponen el fundador de un equipo o el dueño de un standalone.
+        restrict_proposers=config.RESTRICT_PROPOSERS,
         # Verificación de coherencia n ↔ espacio antes de abrir cada ventana.
         nonce_space=config.NONCE_SPACE,
         turn_quota_windows=config.TURN_QUOTA_WINDOWS,
@@ -103,6 +105,12 @@ def main() -> None:
         difficulty_target_seconds=config.DIFFICULTY_TARGET_SECONDS,
         difficulty_decay_windows=config.DIFFICULTY_DECAY_WINDOWS,
         hps_cpu=config.HPS_CPU, hps_gpu=config.HPS_GPU,
+        # Pausa previa a cada ventana para que los convocados decidan si
+        # aportan cómputo, con dificultad y plazo congelados (AGENT.md 3.12).
+        deliberation_seconds=config.DELIBERATION_SECONDS,
+        window_deadline_factor=config.WINDOW_DEADLINE_FACTOR,
+        window_min_seconds=config.WINDOW_MIN_SECONDS,
+        max_silent_deliberations=config.MAX_SILENT_DELIBERATIONS,
         # on_stepdown se conecta después de crear el monitor (ver abajo).
     )
 

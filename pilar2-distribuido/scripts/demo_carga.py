@@ -14,6 +14,13 @@ pico seguido de una línea plana el resto de la exposición. Todos los paneles
 del dashboard usan `rate(...[1m])`, así que lo que se ve lindo es un caudal
 sostenido con escalones, no una ráfaga.
 
+Requiere RESTRICT_PROPOSERS=false
+---------------------------------
+Propone con identidades inventadas (una por ley, para esquivar el cooldown), y
+ninguna tiene minero propio: con la restricción de proponentes activa (AGENT.md
+3.2, el default) el API las rechaza todas con 403. Apagarla en el ConfigMap
+`voxchain-config` antes de la demo y volver a prenderla después.
+
 Perfiles
 --------
     escalera  (default)  calentamiento → bajo → medio → ráfaga → medio → bajada

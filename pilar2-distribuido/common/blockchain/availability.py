@@ -114,6 +114,52 @@ def policy_accepts(policy: dict, challenge: dict) -> bool:
     return True
 
 
+def prevetoed(policy: dict, law_id) -> bool:
+    """¿Este equipo/minero dejó cargado un veto a **esta** ley puntual?
+
+    Es el veto por ``law_id`` de siempre (``decision: reject`` sin acción). Con
+    deliberación (AGENT.md 3.12) deja de ser una razón para no convocarlo y pasa
+    a ser su respuesta anticipada: un "no" que ya dijo antes de que la ley
+    saliera.
+    """
+    return (bool(policy) and bool(law_id)
+            and policy.get("decision", "accept") != "accept"
+            and not policy.get("action")
+            and policy.get("law_id") == law_id)
+
+
+def policy_convokes(policy: dict, challenge: dict) -> bool:
+    """¿Se convoca a este equipo/minero a deliberar sobre esta ley?
+
+    Igual que ``policy_accepts`` salvo por el veto a una ley puntual, que acá
+    **no** excluye. La diferencia importa por la dificultad: se calcula sobre
+    los convocados, y si un veto puntual sacara al equipo de la cuenta, el más
+    grande podría vetar de antemano para que la ley saliera con la dificultad
+    de los chicos — exactamente lo contrario de lo que su "no" tiene que lograr.
+    La agenda y el veto a una acción entera sí excluyen: son la forma de decir
+    "esto no me toca", no "a esta ley digo que no".
+    """
+    if prevetoed(policy, challenge.get("law_id")):
+        policy = {**policy, "decision": "accept"}
+    return policy_accepts(policy, challenge)
+
+
+#: Modo de un minero que corre solo. Un worker viejo que no reporta modo se lee
+#: así, que es lo que era antes de que existieran los equipos.
+STANDALONE_MODE = "standalone"
+
+
+def deliberates(worker: dict) -> bool:
+    """¿Un minero que no está en ningún equipo tiene quién decida por él?
+
+    Sólo el standalone: su dueño responde. El pool de infraestructura
+    (``pool-auto``) es anónimo, y un pool-worker o coordinador sin equipo
+    registrado no tiene a nadie que hable por el conjunto. Con "si no responde,
+    no vota", ninguno de ellos mina nunca, así que tampoco se los cuenta.
+    """
+    return (worker.get("mode") or STANDALONE_MODE) == STANDALONE_MODE
+
+
 @dataclass(frozen=True)
 class Availability:
     """Foto del quórum para una categoría concreta."""
@@ -168,7 +214,7 @@ def _team_policy(equipo: dict) -> dict:
 
 
 def eligible_workers(workers: list[dict], teams: list[dict],
-                     challenge: dict) -> list[dict]:
+                     challenge: dict, *, convocation: bool = False) -> list[dict]:
     """Mineros que realmente aportarían cómputo a **esta** ventana.
 
     ``challenge`` es la ventana que se está por abrir: ``category``, ``action`` y
@@ -189,7 +235,13 @@ def eligible_workers(workers: list[dict], teams: list[dict],
 
     Un equipo puede tener miembros que ya no estén vivos: se cuentan sólo los
     que aparecen en ``workers``.
+
+    Con ``convocation=True`` (deliberación, AGENT.md 3.12) se cuentan los que se
+    **convocarían** a decidir: el veto a la ley puntual no excluye
+    (``policy_convokes``) y los mineros sueltos sin dueño que responda
+    (``deliberates``) no cuentan, porque nunca van a minar.
     """
+    acepta = policy_convokes if convocation else policy_accepts
     desafio = dict(challenge)
     desafio["category"] = normalize_category(desafio.get("category"))
     vivos = {w.get("worker_id"): w for w in workers if w.get("worker_id")}
@@ -211,16 +263,19 @@ def eligible_workers(workers: list[dict], teams: list[dict],
         if wid in politica_por_worker:
             politica = politica_por_worker[wid]
         else:
+            if convocation and not deliberates(worker):
+                continue
             politica = {"categories": worker.get("categories"),
                         "rejected_actions": worker.get("rejected_actions")}
-        if policy_accepts(politica, desafio):
+        if acepta(politica, desafio):
             elegibles.append(worker)
     return elegibles
 
 
 def assess(workers: list[dict], teams: list[dict], challenge, *,
            minimum: int = MIN_WORKERS_FOR_WINDOW,
-           by_category: bool = QUORUM_BY_CATEGORY) -> Availability:
+           by_category: bool = QUORUM_BY_CATEGORY,
+           convocation: bool = False) -> Availability:
     """Evalúa el quórum para abrir una ventana.
 
     ``challenge`` es la ventana a abrir (``category``, ``action``, ``law_id``).
@@ -235,6 +290,10 @@ def assess(workers: list[dict], teams: list[dict], challenge, *,
     ``by_category=False`` cuenta toda la población viva sin mirar políticas: el
     gate pasa a cubrir sólo la red vacía y un área desierta vuelve a expirar
     como veto político (AGENT.md 3.10).
+
+    ``convocation=True`` mide a los que se convocarían a deliberar (ver
+    ``eligible_workers``): con deliberación, un veto puntual ya no deja a la ley
+    esperando, la lleva a votación para que se caiga.
     """
     desafio = ({"category": challenge} if isinstance(challenge, str)
                else dict(challenge or {}))
@@ -245,7 +304,8 @@ def assess(workers: list[dict], teams: list[dict], challenge, *,
         return Availability(ok=True, category=area, action=accion,
                             live=len(workers), eligible=len(workers),
                             required=0)
-    elegibles = (eligible_workers(workers, teams, desafio) if by_category
+    elegibles = (eligible_workers(workers, teams, desafio, convocation=convocation)
+                 if by_category
                  else [w for w in workers if w.get("worker_id")])
     return Availability(ok=len(elegibles) >= minimum, category=area,
                         action=accion, live=len(workers),

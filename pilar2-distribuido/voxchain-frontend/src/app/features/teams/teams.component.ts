@@ -8,6 +8,7 @@ import {
   categoryLabel,
 } from '../../core/models/law.model';
 import { IdentityService } from '../../core/services/identity.service';
+import { DeliberationDecision } from '../../core/models/deliberation.model';
 import {
   Team,
   WorkerRegistration,
@@ -97,7 +98,7 @@ import {
           <label for="vc-new-worker">ID del minero nuevo</label>
           <input id="vc-new-worker" class="input" placeholder="Ej: minero-gustavo-1"
                  [value]="newWorkerId()" (input)="newWorkerId.set($any($event.target).value)">
-          <p class="vc-note-sm panel__hint">Se registra a tu nombre y se despliega en el clúster.</p>
+          <p class="vc-note-sm panel__hint">Se registra a tu nombre y se levanta solo.</p>
         </div>
 
         <div class="panel__agenda">
@@ -225,6 +226,21 @@ import {
               <span class="tag tag-outline" *ngFor="let c of team.categories">{{ label(c) }}</span>
             </ng-container>
             <ng-template #votaTodo><span class="tag tag-neutral">todas las áreas</span></ng-template>
+          </div>
+
+          <!-- Qué cuenta en una deliberación si el fundador no responde
+               (AGENT.md 3.12). Sólo el fundador la cambia. -->
+          <div class="vc-actions team__agenda">
+            <span class="vc-label">Si no respondés</span>
+            <ng-container *ngIf="isMyTeam(team); else soloVer">
+              <button type="button" class="tag tag-btn" *ngFor="let o of defaultOptions"
+                      [class.tag-accent]="(team.default_decision || '') === o.value"
+                      [class.tag-outline]="(team.default_decision || '') !== o.value"
+                      [disabled]="busy()" (click)="setDefault(team, o.value)">{{ o.label }}</button>
+            </ng-container>
+            <ng-template #soloVer>
+              <span class="tag tag-neutral">{{ defaultLabel(team.default_decision) }}</span>
+            </ng-template>
           </div>
 
           <div class="team__edit" *ngIf="editing() === team.team_id">
@@ -391,6 +407,39 @@ export class TeamsComponent {
       error: (err) => {
         this.snack.open('No se pudo cambiar la agenda: ' + this.detail(err),
           'Cerrar', { duration: 5000 });
+        this.busy.set(false);
+      },
+    });
+  }
+
+  /** Respuestas por defecto posibles en una deliberación. */
+  readonly defaultOptions: { value: DeliberationDecision | ''; label: string }[] = [
+    { value: '', label: 'no mina' },
+    { value: 'accept', label: 'aporta' },
+    { value: 'reject', label: 'no aporta (veto)' },
+  ];
+
+  defaultLabel(decision: string | undefined): string {
+    return this.defaultOptions.find((o) => o.value === (decision || ''))?.label ?? 'no mina';
+  }
+
+  /**
+   * Fija qué responde el equipo si el fundador no está durante una
+   * deliberación. "no mina" y "no aporta" no son lo mismo: el primero no vota
+   * (si nadie responde, la ley vuelve a la cola) y el segundo es un veto.
+   */
+  setDefault(team: Team, decision: DeliberationDecision | '') {
+    if ((team.default_decision || '') === decision) return;
+    this.busy.set(true);
+    this.api.setTeamDefaultDecision(team.team_id, decision).subscribe({
+      next: () => {
+        this.snack.open(`"${team.name}": si no respondés, ${this.defaultLabel(decision)}.`,
+          'Cerrar', { duration: 4000 });
+        this.busy.set(false);
+        this.changed.emit();
+      },
+      error: (err) => {
+        this.snack.open('No se pudo guardar: ' + this.detail(err), 'Cerrar', { duration: 5000 });
         this.busy.set(false);
       },
     });

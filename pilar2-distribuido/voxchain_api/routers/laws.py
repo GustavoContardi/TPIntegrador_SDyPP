@@ -17,7 +17,12 @@ from common.blockchain import (
 )
 from common.identity import proposal_message, verify
 from voxchain_api.config import config
-from voxchain_api.models import Law, LawProposalRequest, LawProposalResponse
+from voxchain_api.models import (
+    Law,
+    LawProposalRequest,
+    LawProposalResponse,
+    ProposerStandingResponse,
+)
 from voxchain_api.routers.system import availability_for
 from voxchain_api.services.rabbitmq_publisher import RabbitMQPublisher
 from voxchain_api.services.redis_reader import RedisReader
@@ -60,6 +65,22 @@ async def get_laws(
         laws = [law for law in laws
                 if normalize_category(law.get("category")) == wanted]
     return laws
+
+
+@router.get("/proposer/{pubkey:path}", response_model=ProposerStandingResponse)
+async def get_proposer_standing(pubkey: str,
+                                redis: RedisReader = Depends(get_redis_reader)):
+    """Si esta identidad puede proponer leyes, y por qué no si no puede.
+
+    Es para que el formulario lo diga antes de que el ciudadano escriba la ley,
+    no una autorización: la que vale es la de ``POST /api/laws`` (y la del NCT).
+    ``path`` porque una pubkey en base64 puede traer ``/``.
+    """
+    if not config.RESTRICT_PROPOSERS:
+        return {"allowed": True, "role": None, "reason": ""}
+    standing = redis.store.proposer_standing(pubkey)
+    return {"allowed": standing.allowed, "role": standing.role,
+            "reason": standing.reason}
 
 
 @router.get("/next", response_model=Optional[Law])
@@ -117,6 +138,7 @@ async def propose_law(
     """
     category = _resolve_category(proposal, redis)
     _verify_proposal_signature(proposal, category)
+    _verify_proposer_standing(proposal, redis)
 
     if redis.store.is_in_cooldown(proposal.author_pubkey):
         cd = redis.store.get_cooldown(proposal.author_pubkey)
@@ -174,6 +196,21 @@ def _resolve_category(proposal: LawProposalRequest, redis: RedisReader) -> str:
         return validate_category(proposal.category)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _verify_proposer_standing(proposal: LawProposalRequest,
+                              redis: RedisReader) -> None:
+    """Sólo proponen el fundador de un equipo o el dueño de un standalone (3.2).
+
+    Va después de la firma porque es una condición sobre la identidad, y antes
+    de eso no se sabe que la propuesta venga de ella. 403 y no 401: la identidad
+    está probada, lo que le falta es el lugar en la red.
+    """
+    if not config.RESTRICT_PROPOSERS:
+        return
+    standing = redis.store.proposer_standing(proposal.author_pubkey)
+    if not standing.allowed:
+        raise HTTPException(status_code=403, detail=standing.reason)
 
 
 def _verify_proposal_signature(proposal: LawProposalRequest, category: str) -> None:

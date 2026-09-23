@@ -529,16 +529,18 @@ export class WorkersComponent implements OnInit, OnDestroy {
       // esta identidad con el token de enrolamiento que le deja el backend.
       this.apiService.registerWorker(workerId, id.pubkey, timestamp, signature).subscribe({
         next: (res: any) => {
-          // El backend dice si además de anotarlo levantó un proceso. Sin
-          // Kubernetes configurado (el compose local) el alta es sólo metadata,
-          // y prometer un despliegue que no ocurrió deja al usuario esperando
-          // un contenedor que nadie va a crear.
+          // El backend dice si además de anotarlo levantó un proceso, y dónde.
+          // Si no pudo (sin Kubernetes ni socket de Docker), el alta es sólo
+          // metadata, y prometer un despliegue que no ocurrió deja al usuario
+          // esperando un contenedor que nadie va a crear.
+          const where = res?.deployed_on === 'docker' ? 'levantado en Docker' : 'desplegado en el clúster';
           this.snackBar.open(
             res?.deployed
-              ? `Minero "${workerId}" registrado y desplegado en el clúster.`
-              : `Minero "${workerId}" registrado. Todavía no está corriendo: `
+              ? `Minero "${workerId}" registrado y ${where}. Arranca en unos segundos.`
+              : `Minero "${workerId}" registrado. Todavía no está corriendo`
+                + (res?.deploy_error ? ` (${res.deploy_error})` : '') + ': '
                 + `levantalo con  WORKER_ENROLL_TOKEN=${res?.enrollment_token ?? ''} ./run.sh worker ${workerId}`,
-            'Cerrar', { duration: res?.deployed ? 3000 : 15000 });
+            'Cerrar', { duration: res?.deployed ? 4000 : 15000 });
           this.cancelRegister();
           this.loadAll();
         },

@@ -37,6 +37,17 @@ export interface LawProposalResponse extends Law {
   availability?: SystemAvailability | null;
 }
 
+/**
+ * Si una identidad puede proponer leyes. Sólo pueden el fundador de un equipo
+ * y el dueño de un minero standalone; `reason` explica por qué no, listo para
+ * mostrar. Es un aviso: la autorización la hace el POST.
+ */
+export interface ProposerStanding {
+  allowed: boolean;
+  role: 'team_owner' | 'standalone' | null;
+  reason: string;
+}
+
 export interface LawCategory {
   value: string;
   label: string;

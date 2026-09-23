@@ -8,7 +8,7 @@
 
 ## 1. Resumen del proyecto
 
-**VoxChain Reborn** es una blockchain distribuida cuyo propósito no es transferir dinero, sino **gobernar por consenso de esfuerzo computacional**. Cualquier individuo capaz de generar un par de claves pública/privada es un participante con derecho a proponer, votar (promulgar) y derogar leyes. El consenso no se logra por votación nominal (una persona, un voto) sino por **Proof of Work**: la voluntad colectiva se mide en hashes calculados, no en cabezas contadas.
+**VoxChain Reborn** es una blockchain distribuida cuyo propósito no es transferir dinero, sino **gobernar por consenso de esfuerzo computacional**. Cualquier individuo capaz de generar un par de claves pública/privada es un participante con derecho a votar (aportar cómputo para promulgar o derogar) leyes; **proponerlas** está reservado a quien responde por cómputo en la red: el fundador de un equipo o el dueño de un minero standalone (ver 3.2). El consenso no se logra por votación nominal (una persona, un voto) sino por **Proof of Work**: la voluntad colectiva se mide en hashes calculados, no en cabezas contadas.
 
 La motivación de diseño es deliberadamente política, no solo técnica: el sistema reproduce, a propósito, la dinámica de concentración de poder de las blockchains reales (pools grandes ganan más seguido), y eso se documenta como una observación de diseño, no como un bug.
 
@@ -107,16 +107,22 @@ Un token filtrado permite, como máximo, ocupar el slot de nodo de ese minero du
 
 ### 3.2 Ciclo de vida de una ley
 
-1. Cualquier nodo propone una ley. **Proponer no tiene costo de PoW**, solo de cooldown (ver 3.4).
+1. Propone una ley —para promulgar o para derogar— **sólo el fundador de un equipo o el dueño de un minero standalone**. **Proponer no tiene costo de PoW**, solo de cooldown (ver 3.4).
+   - Son exactamente quienes responden en la deliberación (3.12): la ley la trae a la mesa quien después decide si la mina. Un ciudadano sin minero no tiene nada que aportar a la ventana que abriría; un miembro de equipo ya delegó su voz en el fundador, y si pudiera proponer por su cuenta el equipo dejaría de decidir como uno.
+   - Standalone = identidad con un minero registrado que no está en ningún equipo, **esté vivo o no** (que no mine ahora lo cubre el quórum, 3.11). Un `pool-coordinator` sin equipo registrado cuenta como dueño de equipo: es el caso del pool de las cuentas demo, que se arma por despliegue.
+   - Se verifica en el API (403 con el motivo, y `GET /api/laws/proposer/<pubkey>` para que el formulario avise antes) y en el NCT, después de la firma y antes del cooldown: a la cola `propuestas` se puede llegar sin pasar por el API. La regla vive en `common/blockchain/proposers.py`; los datos los junta `VoxChainStore.proposer_standing`.
+   - `RESTRICT_PROPOSERS=false` la apaga (NCT y API, mismo valor). Lo necesitan los inyectores de carga (`scripts/demo_carga.py`, el compose de escalado), que proponen con identidades inventadas.
+   - **No cierra Sybil** (ver 9): registrar un minero cuesta una identidad nueva. Lo que sí cambia es que un equipo grande tiene una sola voz para proponer, no una por miembro.
 2. El NCT encola la propuesta.
 3. Cuando le toca turno (round-robin + cuota, ver 3.3), el NCT verifica que haya **quórum de mineros** (ver 3.11). Sin quórum la ley **no abre ventana**: se queda en la cola y el sistema se declara no disponible.
-4. Con quórum, el NCT abre una ventana de votación con dificultad **n ceros** (promulgación). Con `DYNAMIC_DIFFICULTY=true`, `n` se recalcula en ese momento según el cómputo vivo de la red (ver 11.3).
-5. Si algún nodo o pool encuentra el nonce válido antes de que cierre la ventana → la ley se promulga y se adhiere a la cadena.
-6. Si nadie lo logra antes del cierre → la ley queda **pendiente** y se descarta. No vuelve a la cola automáticamente; alguien debe reproponerla (ver 3.5). **Excepción:** si al vencer la red está por debajo del quórum (los mineros se cayeron durante la ventana), la ley vuelve a la cola en vez de descartarse — el vencimiento no dice nada sobre la ley si nadie pudo minarla (ver 3.11).
+4. Con quórum, el NCT **anuncia** la ley (sólo la ley y su área) y abre la **deliberación** (ver 3.12): durante `DELIBERATION_SECONDS` los convocados deciden si aportan cómputo. La dificultad y el plazo se congelan en el anuncio.
+5. Al terminar la deliberación, si alguien aceptó, el NCT abre una ventana de votación con la dificultad congelada (**n ceros** para promulgar) y sólo minan quienes aceptaron. Si nadie aceptó y alguien vetó, la ley se descarta; si nadie respondió, vuelve a la cola. Con `DELIBERATION_SECONDS=0` no hay pausa: la ventana se abre en el acto y `n` se mide ahí (con `DYNAMIC_DIFFICULTY=true`, según el cómputo vivo de la red, ver 11.3).
+6. Si algún nodo o pool encuentra el nonce válido antes de que cierre la ventana → la ley se promulga y se adhiere a la cadena.
+7. Si nadie lo logra antes del cierre → la ley queda **pendiente** y se descarta. No vuelve a la cola automáticamente; alguien debe reproponerla (ver 3.5). **Excepción:** si al vencer la red está por debajo del quórum (los mineros se cayeron durante la ventana), la ley vuelve a la cola en vez de descartarse — el vencimiento no dice nada sobre la ley si nadie pudo minarla (ver 3.11).
 
 ### 3.3 Cola de ventanas
 
-- **Una sola ventana de votación activa en todo momento** (cola secuencial). No hay ventanas paralelas ni fragmentación de cómputo entre leyes distintas.
+- **Una sola ventana de votación activa en todo momento** (cola secuencial). No hay ventanas paralelas ni fragmentación de cómputo entre leyes distintas. La deliberación (3.12) ocupa el mismo lugar: mientras una ley delibera no se anuncia otra ni se abre ninguna ventana, y el turno se consume al **anunciar**, no al abrir.
 - El NCT decide qué ley entra a la siguiente ventana mediante **round-robin entre autores distintos** (no FIFO estricto, para evitar que un autor monopolice turnos consecutivos).
 - Además del round-robin, rige una **cuota de turnos por identidad**: una identidad que ya se llevó más de `TURN_QUOTA_MAX_SHARE` (default 0,5) de las últimas `TURN_QUOTA_WINDOWS` ventanas (default 10) cede el turno a otra. El round-robin evita turnos *consecutivos*; la cuota evita el monopolio *sostenido* alternando con un cómplice o con leyes propias intercaladas.
 - Antes de las dos reglas se descartan las leyes **sin quórum de mineros** (3.11): una ley que nadie puede minar se saltea y el turno pasa a la siguiente, así que postergar una ley **no bloquea la cola**. Si ninguna ley es abrible no se abre ventana y todas esperan.
@@ -144,7 +150,8 @@ Un token filtrado permite, como máximo, ocupar el slot de nodo de ese minero du
 
 ### 3.7 Duración de ventana
 
-- Variable según tipo de acción: **promulgar** y **derogar** tienen duraciones de ventana distintas (valores concretos a definir como parámetros de configuración en la implementación, documentados en el README del Pilar correspondiente).
+- Variable según tipo de acción: **promulgar** y **derogar** tienen duraciones de ventana distintas (`WINDOW_SECONDS_PROMULGACION` / `WINDOW_SECONDS_DEROGACION`).
+- Con deliberación (3.12) esos valores son el **techo**: el plazo real se congela al anunciar la ley como `WINDOW_DEADLINE_FACTOR` × el tiempo esperado del convocado más grande, con piso `WINDOW_MIN_SECONDS`.
 
 ### 3.8 Membresía de red
 
@@ -170,6 +177,8 @@ Un token filtrado permite, como máximo, ocupar el slot de nodo de ese minero du
 - **Consecuencia buscada:** una ley cuya área no vota nadie con capacidad suficiente **expira y se descarta** como cualquier ley pendiente (3.2). No es un error del sistema: es el resultado político de que las facciones elijan en qué gastan su esfuerzo.
 - **Tensión con el quórum (3.11), y cómo se resolvió.** Medir el quórum por área convierte ese veto por abstención en una **espera**: la ley no expira, se queda en la cola hasta que aparezca alguien que la mine. **Ésa es la decisión tomada** (`QUORUM_BY_CATEGORY=true`), y vale igual para promulgar y para derogar. El argumento: "nadie quiso minarla" y "nadie pudo minarla" son políticamente distintas, y una vez que la ventana venció el sistema ya no puede distinguirlas — sólo puede hacerlo antes, no abriéndola. `QUORUM_BY_CATEGORY=false` queda como vía de escape para volver al veto por abstención, pero no es el modo en que corre el sistema.
 
+- **Con deliberación (3.12)** el veto a una ley puntual deja de alejar a la ley de la votación: el equipo que lo cargó es convocado igual y su veto cuenta como respuesta anticipada. La agenda y el veto a una acción entera siguen excluyendo, porque dicen "esto no me toca", no "a esta ley digo que no".
+
 ### 3.11 Quórum de mineros para abrir una ventana
 
 - El NCT **no abre la ventana de una ley si no hay mineros que puedan minarla**. Sin este chequeo la ventana se abría con la red vacía, vencía, la ley quedaba `discarded` y su `text_hash` anotado como descartado — así que reproponerla costaba el cooldown largo de reproposición idéntica (3.5). El autor pagaba una penalización por una ausencia de infraestructura que no era suya, y el modo de falla era **mudo**: en los logs se veía igual que una ley que nadie quiso minar.
@@ -183,6 +192,26 @@ Un token filtrado permite, como máximo, ocupar el slot de nodo de ese minero du
 - El NCT publica su veredicto en `nct:availability` y el API lo sirve en `GET /api/system/availability?category=<área>`; el alta de una propuesta lo devuelve en el campo `availability`. El cliente muestra *"sistema no disponible, tu ley será pospuesta"* en vez de un éxito liso.
 - **Si medir falla** (Redis caído, datos corruptos) **se abre igual**: una falla de observación no puede paralizar el gobierno, o cualquier hipo de la infraestructura se vuelve una denegación de servicio. Es la misma decisión que toma la dificultad dinámica.
 - El quórum mide **presencia, no velocidad**: no promete que la ventana se selle. Que el cómputo alcance para `n` ceros en el plazo es asunto de la dificultad dinámica, que mira la misma población.
+- Con deliberación (3.12) el quórum cuenta a los que se **convocarían**: un veto a la ley puntual no resta (la ley va a votación y se cae ahí), y los mineros sin nadie que responda por ellos (el pool anónimo `pool-auto`) no suman, porque nunca van a minar.
+
+### 3.12 Deliberación: decidir si se aporta cómputo
+
+**Problema.** El PoW sólo cuenta a favor: una ley sale si alguien la mina. Quedarse afuera no pesaba nada salvo que nadie más pudiera minarla, así que en la práctica se promulgaba casi todo. La deliberación le da peso al "no".
+
+- Cuando a una ley le toca su turno, el NCT **no abre la ventana**: la **anuncia** (`nct:deliberation`) y abre una pausa de `DELIBERATION_SECONDS` (default 120 s).
+- Se **convoca** a cada equipo y standalone vivo cuya agenda cubre el área de la ley y que no rechaza la acción entera (`policy_convokes`). Un equipo decide como uno: responde su **fundador**; un standalone responde su **dueño**. El pool anónimo (`pool-auto`) no tiene quién responda y no se convoca.
+- **Se anuncia sólo la ley y su área.** Ni `voting_window_id` ni `partial_hash_base`, que recién existen al abrirse la ventana: con ellos se podría empezar a minar durante la pausa. Por eso, con deliberación, el id de ventana lleva además una parte **aleatoria**: el contador de ventanas es público y sin ella el desafío sería calculable de antemano.
+- **La dificultad se congela al anunciar**, calculada sobre el **convocado más grande** (el de más cómputo entre los que votan esa área, no el más grande de la red). Si ese equipo después se baja, la ley sale igual con su dificultad y los que quedan tienen que resolverla con menos cómputo. Si se recalculara al abrir, el que se bajó ya no contaría y la ley saldría más barata: exactamente lo contrario de su "no". Cada área tiene su propio trinquete (`nct:difficulty:<área>`, ver 11.3).
+- **El plazo también se congela:** `WINDOW_DEADLINE_FACTOR` (default 2) × el tiempo esperado del más grande, acotado a `[WINDOW_MIN_SECONDS, WINDOW_SECONDS_<acción>]`. `n` redondea para abajo en saltos de ×16, así que con un plazo fijo el más grande podía tardar entre 1/16 y 1 vez el objetivo y el peso de su "no" dependía del redondeo. Atado a su tiempo esperado, el veto pesa siempre igual: él sellaría en ~86% de los casos; un convocado con 1/4 de su cómputo, en ~39%; con 1/10, en ~18% (`P = 1 − e^(−factor·fracción)`).
+- **Respuestas.** Se envían firmadas al API (`POST /api/deliberation/<law_id>/decision`, firma sobre `<voter_id>|deliberate:<law_id>:<decisión>|<ts>`): la ley y la decisión van dentro de lo firmado, para que una firma de "sí" no sirva como "no" ni para otra ley. Se puede cambiar de opinión mientras dure la pausa; vale la última. Un veto puntual cargado de antemano (`pool:policy`) cuenta como "no" ya dado.
+- **Resultado**, al vencer la pausa o antes si ya respondieron todos:
+  - algún **"sí"** → se abre la ventana con lo congelado y el desafío lleva la lista `participants`: **sólo minan los que aceptaron**. Quien no respondió no vota;
+  - ningún "sí" y algún **"no"** → la ley se **descarta** como una ley pendiente (3.2), con su `text_hash` anotado (la reproposición idéntica paga 3.5): fue juzgada y perdió;
+  - **nadie respondió** → vuelve a la **cola**: no hubo decisión, así que no puede leerse como rechazo. Tras `MAX_SILENT_DELIBERATIONS` pausas **seguidas** así (default 3) la ley se descarta **sin respuesta** (`unanswered`): sin anotar su `text_hash`, así que reproponerla no paga el cooldown largo, porque nadie la juzgó. Una ventana abierta reinicia la cuenta. Sin este tope, una red ausente la reanunciaría para siempre.
+- **Respuesta por defecto.** Cada convocado puede dejar declarado qué vale si no responde durante la pausa: `accept`, `reject` o nada (no mina). El fundador la fija para su equipo (`PUT /api/teams/<id>/default-decision`, firmado) y el standalone por entorno (`STANDALONE_DEFAULT_DECISION`). No es una excepción a "quien no responde no vota": es una respuesta dada de antemano, igual que el veto puntual precargado, y la de la pausa la pisa. Por eso **no adelanta el cierre**: la pausa se cierra antes sólo si todos respondieron en ella. Sirve para que un equipo no tenga que estar conectado en cada ley, y es lo que evita que la mayoría de las pausas terminen en silencio.
+- Si la ventana abierta vence sin que los que aceptaron la resuelvan, la ley se descarta como siempre: ése es el caso en que el "no" del más grande surtió efecto.
+- Ante la caída del NCT la deliberación se pierde como la ventana (4.1), pero la ley no: el nuevo líder la devuelve a la cola.
+- `DELIBERATION_SECONDS=0` apaga todo esto y vuelve al comportamiento anterior (el stack del experimento de escalado corre así: mide cómputo, no decisiones).
 
 ---
 
@@ -293,7 +322,7 @@ Responde directamente al requisito de seguridad del TP ("Zero static keys", cred
 | `author_pubkey` | string | Clave pública del autor. |
 | `text_hash` | string | Hash SHA-256 del texto de la ley. |
 | `text_ref` | string (opcional) | Referencia a MinIO si se almacena el texto completo. |
-| `status` | enum | `pending_queue`, `in_window`, `promulgated`, `discarded`, `repealed`. |
+| `status` | enum | `pending_queue`, `in_deliberation` (anunciada, esperando decisiones, 3.12), `in_window`, `promulgated`, `discarded`, `repealed`. |
 | `category` | enum | Área de gobierno (3.10). Inmutable; una derogación conserva la de la ley original. |
 | `created_at` | timestamp | Momento de la propuesta. |
 
@@ -312,6 +341,7 @@ Responde directamente al requisito de seguridad del TP ("Zero static keys", cred
 | `result` | enum | `success` \| `expired_pending` \| `expired_no_quorum` (venció sin red que la minara: la ley vuelve a la cola, ver 3.11). |
 | `winning_nonce` | int (nullable) | Nonce ganador, si hubo éxito. |
 | `winning_node_or_pool` | string (nullable) | Identidad de quien resolvió. |
+| `participants` | lista (nullable) | Quiénes aceptaron minar en la deliberación (3.12): el id del coordinador de cada equipo o del standalone. Vacío si la ventana no pasó por deliberación. |
 
 ### 7.3 Bloque (cadena en Redis)
 
@@ -411,6 +441,9 @@ Responde directamente al requisito de seguridad del TP ("Zero static keys", cred
 - **Pérdida de estado en falla del NCT:** la ventana en curso se pierde íntegramente al caer el NCT; el cómputo invertido por la red hasta ese momento no se aprovecha.
 - **Split-brain del NCT:** si una partición de red separa al NCT primario de los standbys sin que el primario falle realmente, ambos pueden operar como líderes simultáneamente. El primario verifica en cada tick que su liderazgo en Redis sigue vigente (`renew_leadership`), y si descubre que otro NCT adquirió el liderazgo, ejecuta `step_down()`. Esta detección no es instantánea; hay una ventana de solapamiento.
 - **Leyes sin electorado:** con agendas temáticas (3.10), una ley de un área que ningún equipo vota no reúne cómputo. Con el default `QUORUM_BY_CATEGORY=true` **no expira: espera indefinidamente** en la cola (3.11) — se eligió el limbo por sobre la muerte silenciosa, porque una ley que espera puede salir cuando cambie el mapa político y una descartada no. El costo es que la cola puede acumular leyes que nadie va a minar nunca, y el sistema no las caduca. Con `false` vuelve el veto por abstención. Está buscado —es la abstención hecha mecanismo— pero significa que la promulgación ya no depende sólo del esfuerzo total de la red sino de **cómo está repartido por área**. Un área desierta es, en la práctica, un veto silencioso.
+- **El "no" es del más grande (3.12):** la dificultad se congela sobre el convocado más grande del área, así que sólo su abstención encarece la ley para los demás. Un equipo chico que se baja no cambia nada si el resto puede resolverla. No es una votación proporcional sino un **veto del mayor**; se aceptó porque es barato —reusa la dificultad por máximo y los vetos que ya existían— y le da al sistema un "no" real sin cambiar la arquitectura de minado.
+- **El cómputo es declarado:** el más grande se mide por el `hashrate_hps` que cada minero reporta. Un minero que declare un cómputo inflado se vuelve el más grande, sube la dificultad del área y, si después se abstiene, puede frenar leyes que el resto habría sellado. El trinquete y el TTL de 15 s no lo impiden; verificar el cómputo real exigiría medirlo, no preguntarlo.
+- **Una red ausente demora la cola:** una ley sin ninguna respuesta se reanuncia hasta `MAX_SILENT_DELIBERATIONS` veces antes de descartarse, así que con todos los convocados ausentes cada ley ocupa hasta `MAX_SILENT_DELIBERATIONS × DELIBERATION_SECONDS` (6 min con los defaults). La respuesta por defecto de los equipos es lo que lo evita en la práctica.
 - **Concentración de poder:** el diseño favorece estructuralmente a pools grandes sobre mineros individuales, igual que las blockchains reales de PoW. La ventaja está **acotada por la cantidad de fragmentos** (`NONCE_SPACE / FRAGMENT_SIZE`): un pool reparte tareas de a un fragmento por minero, así que un equipo con más miembros que fragmentos no va más rápido — con la config desplegada son 50, de modo que el pool más grande le saca a lo sumo 50x a un minero solo, tenga 50 miembros o un millón. Ese cociente es la perilla de la desigualdad, no `n`: ningún valor de `n` la corrige, porque el que encarece la ley para el pool grande deja al minero solo fuera del sistema. No se mitiga más allá de eso — se documenta como observación de diseño y se discute cualitativamente en el informe, sin pretender un estudio estadístico riguroso de la distribución de poder computacional en la población (fuera de alcance del TP).
 
 ---
@@ -469,7 +502,7 @@ Se exploró una válvula de escape para bootstrap y contracción de red (N expir
 
 ### 11.3 Decisión final: ajuste autónomo sobre cómputo declarado
 
-**`n` es dinámico y lo recalcula el NCT al abrir cada ventana**, para sostener constante el *tiempo* de promulgación (`DIFFICULTY_TARGET_SECONDS`, default 30 s) ante una población de mineros que cambia. Se activa con `DYNAMIC_DIFFICULTY=true`; con `false` el sistema vuelve al `n` fijo descrito arriba, que sigue siendo un modo soportado.
+**`n` es dinámico y lo recalcula el NCT al abrir cada ventana**, para sostener constante el *tiempo* de promulgación (`DIFFICULTY_TARGET_SECONDS`, default 60 s; eran 30 hasta que la deliberación ató el plazo de la ventana a este tiempo, y con 30 el más grande resolvía en segundos y el plazo caía al piso, donde pesa más la latencia que el cómputo) ante una población de mineros que cambia. Se activa con `DYNAMIC_DIFFICULTY=true`; con `false` el sistema vuelve al `n` fijo descrito arriba, que sigue siendo un modo soportado.
 
 **Por qué esto no reabre el problema de 11.2.** Aquel mecanismo medía el *comportamiento* de los actores —tiempos de resolución de ventanas—, y por eso se podía manipular haciendo vencer ventanas a propósito. Éste mide el **cómputo declarado y vivo**: `worker:status:*` con TTL de 15 s más la composición de equipos. Es un hecho observable, no una conducta, y no hay forma de "portarse mal" para moverlo.
 
@@ -481,6 +514,8 @@ Se exploró una válvula de escape para bootstrap y contracción de red (N expir
 2. *Inflar el padrón.* Se mide lo **vivo**, no lo registrado: un minero dado de alta y apagado no aporta. Registrar identidades sin poner cómputo no mueve nada.
 
 **El acoplamiento con el espacio de nonces.** `n` no se puede mover solo: el espacio tiene que contener la solución, y se dimensiona sobre la **derogación** (`n+1`), que es el caso caro. Por eso el NCT calcula `NONCE_SPACE` junto con `n` y **lo publica en el desafío** (`nonce_space`), en vez de dejar que cada minero use el valor que leyó del entorno al arrancar. Sin esto, subir `n` haría vencer todas las derogaciones y el síntoma se confundiría con falta de mineros.
+
+**Con deliberación (3.12)** la medición no es sobre toda la red sino sobre el **convocado más grande del área**, y se hace al anunciar la ley, no al abrir. Cada área tiene su propio trinquete (`nct:difficulty:<área>`): con uno solo, el `n` del área con el equipo más fuerte quedaría sostenido en todas las demás durante `DIFFICULTY_DECAY_WINDOWS` ventanas.
 
 **Lo que esto no resuelve.** La dificultad es un único número global y la brecha entre el pool más grande y un minero solo está acotada por la cantidad de fragmentos (ver 9). Ningún `n` empareja esa brecha: el valor que encarece la ley para el pool grande deja al minero individual fuera del sistema. El ajuste dinámico mantiene constante el costo *para la red*, no lo reparte.
 

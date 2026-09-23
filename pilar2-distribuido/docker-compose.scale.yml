@@ -32,6 +32,9 @@ x-app-env: &app-env
   HEALTH_PORT: "8080"
   REQUIRE_SIGNATURES: "false"
   PROPOSAL_MAX_AGE_SECONDS: "300"
+  # El experimento propone con identidades inventadas, sin minero propio: con la
+  # restricción de proponentes (AGENT.md 3.2) todas serían rechazadas.
+  RESTRICT_PROPOSERS: "false"
 
 x-miner-env: &miner-env
   # Espacio de nonces amplio a propósito: con N_ZEROS=6 la solución aparece
@@ -77,6 +80,10 @@ services:
       # corrida se contamina con un timeout que no mide capacidad de cómputo.
       WINDOW_SECONDS_PROMULGACION: "600"
       WINDOW_SECONDS_DEROGACION: "600"
+      # Sin deliberación (AGENT.md 3.12): el experimento mide capacidad de
+      # cómputo, no decisiones. Con la pausa, el pool de este stack —que no es
+      # un equipo registrado— no estaría convocado y nunca minaría.
+      DELIBERATION_SECONDS: "0"
       NCT_MODE: "primary"
       NCT_ID: "nct-primary"
       HEARTBEAT_INTERVAL: "3"

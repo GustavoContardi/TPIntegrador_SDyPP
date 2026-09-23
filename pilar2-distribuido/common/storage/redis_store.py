@@ -15,6 +15,10 @@ Esquema de claves (namespaced):
 - ``node:owner:<node_pubkey>`` ciudadano dueño de un nodo minero/pool (3.1)
 - ``nct:availability``    último veredicto de quórum de mineros del NCT
 
+Se leen además, sin escribirlas nunca, claves que mantiene el API: equipos
+(``team:*``, ``worker:team:*``), altas de mineros (``registered_workers``,
+``worker:owner:*``) y el estado que reporta cada minero (``worker:status:*``).
+
 Se asume un cliente Redis con ``decode_responses=True`` (valores como ``str``).
 Las claves privadas de los individuos **nunca** se persisten (AGENT.md 10):
 sólo circula ``author_pubkey``.
@@ -31,10 +35,15 @@ from common.blockchain.categories import (
     normalize_category,
     parse_categories,
 )
+from common.blockchain.proposers import ProposerStanding, assess_proposer
+from common.demo_accounts import demo_account_by_pubkey
 
 
 class LawStatus:
     PENDING_QUEUE = "pending_queue"
+    # Anunciada, esperando que los convocados decidan si aportan cómputo
+    # (AGENT.md 3.12). Todavía no tiene ventana ni desafío.
+    IN_DELIBERATION = "in_deliberation"
     IN_WINDOW = "in_window"
     PROMULGATED = "promulgated"
     DISCARDED = "discarded"
@@ -172,7 +181,8 @@ class VoxChainStore:
                     category: str = DEFAULT_CATEGORY,
                     result: Optional[str] = None,
                     winning_nonce: Optional[int] = None,
-                    winning_node_or_pool: Optional[str] = None) -> None:
+                    winning_node_or_pool: Optional[str] = None,
+                    participants: Optional[list] = None) -> None:
         # La categoría se copia de la ley a la ventana: es el dato con el que la
         # UI explica por qué un equipo aportó (o no) cómputo a esta ventana, y
         # no queremos que eso dependa de que la ley todavía exista con esa etiqueta.
@@ -188,6 +198,10 @@ class VoxChainStore:
             "result": result,
             "winning_nonce": winning_nonce,
             "winning_node_or_pool": winning_node_or_pool,
+            # Quiénes aceptaron minar en la deliberación (AGENT.md 3.12). Sin
+            # deliberación no se guarda: la ventana es de cualquiera.
+            "participants": (json.dumps(participants)
+                             if participants is not None else None),
         }))
 
     def get_window(self, voting_window_id: str) -> Optional[dict]:
@@ -195,6 +209,11 @@ class VoxChainStore:
         if not data:
             return None
         data["category"] = normalize_category(data.get("category"))
+        if "participants" in data:
+            try:
+                data["participants"] = json.loads(data["participants"])
+            except (ValueError, TypeError):
+                data.pop("participants")
         return data
 
     def set_window_result(self, voting_window_id: str, *, result: str,
@@ -251,7 +270,14 @@ class VoxChainStore:
         self.r.hset(f"law:{law_id}", "requested_by", author_pubkey or "")
 
     # ---- estado del trinquete de dificultad -------------------------------
-    def get_difficulty_state(self) -> dict:
+    @staticmethod
+    def _difficulty_key(scope: Optional[str]) -> str:
+        # Con deliberación la dificultad se mide por área —sobre el equipo más
+        # grande que la vota— y cada área tiene su propio trinquete: con uno
+        # solo, el `n` del área más fuerte quedaría sostenido en las demás.
+        return f"nct:difficulty:{scope}" if scope else "nct:difficulty"
+
+    def get_difficulty_state(self, scope: Optional[str] = None) -> dict:
         """Estado del trinquete (`DifficultyRatchet`), o `{}` si no hay.
 
         Vive en Redis y no en memoria del NCT para que **sobreviva al failover**.
@@ -259,16 +285,16 @@ class VoxChainStore:
         histéresis: el sucesor arrancaba sin memoria y adoptaba la medición baja
         de una.
         """
-        return self.r.hgetall("nct:difficulty") or {}
+        return self.r.hgetall(self._difficulty_key(scope)) or {}
 
-    def save_difficulty_state(self, state: dict) -> None:
+    def save_difficulty_state(self, state: dict, scope: Optional[str] = None) -> None:
         """Persiste el trinquete. Sólo lo escribe el líder, que es quien abre ventanas.
 
         Durante el solapamiento de un split-brain (AGENT.md 11.4) dos NCT podrían
         escribir; el daño está acotado porque el trinquete sólo sostiene o se
         mueve de a un cero, nunca salta.
         """
-        self.r.hset("nct:difficulty", mapping={
+        self.r.hset(self._difficulty_key(scope), mapping={
             "current": "" if state.get("current") is None else str(state["current"]),
             "low_streak": str(state.get("low_streak", 0)),
         })
@@ -309,6 +335,12 @@ class VoxChainStore:
                 continue
             equipos.append({
                 "team_id": team_id,
+                # Nombre y fundador: la deliberación los muestra, y el fundador
+                # es el único que responde por el equipo (AGENT.md 3.12).
+                "name": datos.get("name", ""),
+                "owner": datos.get("owner", ""),
+                # Lo que vale si el fundador no responde en una deliberación.
+                "default_decision": datos.get("default_decision", ""),
                 "coordinator_worker_id": datos.get("coordinator_worker_id", ""),
                 "members": sorted(self.r.smembers(f"team:members:{team_id}") or []),
                 # Agenda del equipo (AGENT.md 3.10). La dificultad la ignora
@@ -343,6 +375,61 @@ class VoxChainStore:
             return policy if isinstance(policy, dict) else {}
         except (ValueError, TypeError):
             return {}
+
+    # ---- deliberación (AGENT.md 3.12) -------------------------------------
+    #
+    # `nct:deliberation` es la ley anunciada: la escribe sólo el líder del NCT y
+    # la lee el API para mostrarla. Las respuestas van aparte, en un hash por
+    # ley, porque las escribe el API (una por convocado) y el NCT sólo las lee:
+    # así no hay dos escritores sobre la misma clave.
+    def save_deliberation(self, state: dict) -> None:
+        self.r.set("nct:deliberation", json.dumps(state))
+
+    def get_deliberation(self) -> Optional[dict]:
+        crudo = self.r.get("nct:deliberation")
+        if not crudo:
+            return None
+        try:
+            estado = json.loads(crudo)
+        except (ValueError, TypeError):
+            return None
+        return estado if isinstance(estado, dict) else None
+
+    def clear_deliberation(self) -> None:
+        self.r.delete("nct:deliberation")
+
+    def deliberation_decisions(self, law_id: str) -> dict:
+        return self.r.hgetall(f"deliberation:decisions:{law_id}") or {}
+
+    def set_deliberation_decision(self, law_id: str, voter_id: str,
+                                  decision: str) -> None:
+        self.r.hset(f"deliberation:decisions:{law_id}", voter_id, decision)
+
+    def clear_deliberation_decisions(self, law_id: str) -> None:
+        self.r.delete(f"deliberation:decisions:{law_id}")
+
+    def silent_deliberations(self, law_id: str) -> int:
+        """Pausas seguidas que esta ley pasó sin ninguna respuesta."""
+        try:
+            return int(self.r.hget(f"law:{law_id}", "silent_deliberations") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def set_silent_deliberations(self, law_id: str, count: int) -> None:
+        self.r.hset(f"law:{law_id}", "silent_deliberations", str(int(count)))
+
+    def save_deliberation_result(self, law_id: str, result: dict) -> None:
+        """Cómo terminó la última deliberación de esta ley, para mostrarlo."""
+        self.r.set(f"deliberation:result:{law_id}", json.dumps(result))
+
+    def get_deliberation_result(self, law_id: str) -> Optional[dict]:
+        crudo = self.r.get(f"deliberation:result:{law_id}")
+        if not crudo:
+            return None
+        try:
+            return json.loads(crudo)
+        except (ValueError, TypeError):
+            return None
 
     # ---- disponibilidad del sistema (quórum de mineros) -------------------
     def save_availability_state(self, state: dict) -> None:
@@ -588,3 +675,62 @@ return 1
         if not node_pubkey:
             return None
         return self.r.get(f"node:owner:{node_pubkey}")
+
+    # --- Quién puede proponer (AGENT.md 3.2) --------------------------------
+    #
+    # La decisión es de `common.blockchain.proposers`; acá sólo se juntan los
+    # datos. Todo lo que se lee lo escribe el API (equipos y altas de mineros) o
+    # el propio minero (su estado), así que el NCT lo consulta sin ser dueño de
+    # ninguna de esas claves.
+
+    def proposer_standing(self, pubkey: str) -> ProposerStanding:
+        """Si ``pubkey`` puede proponer una ley, y en calidad de qué.
+
+        Las cuentas demo no tienen ``worker:owner:*`` (son custodiales, ver
+        ``common.demo_accounts``): su minero sale de la tabla fija, y el equipo
+        que funden queda a nombre de su usuario, no de su pubkey, porque así lo
+        anota el API cuando actúan por cabecera.
+        """
+        demo = demo_account_by_pubkey(pubkey) if pubkey else None
+        owners = [pubkey] + ([demo[0]] if demo else [])
+        founded = any(self._existing_team(self.r.get(f"team:owner:{o}"))
+                      for o in owners if o)
+        worker_id = demo[1]["worker_id"] if demo else self._worker_of_owner(pubkey)
+        team_id = self._existing_team(
+            self.r.get(f"worker:team:{worker_id}")) if worker_id else None
+        team_name = (self.r.hget(f"team:{team_id}", "name") or team_id
+                     if team_id else None)
+        mode = self._reported_mode(worker_id) if worker_id else ""
+        if not mode and demo:
+            mode = demo[1].get("mode", "")
+        return assess_proposer(founded_team=founded, worker_id=worker_id,
+                               worker_team=team_name, worker_mode=mode)
+
+    def _existing_team(self, team_id: Optional[str]) -> Optional[str]:
+        """``team_id`` si el equipo sigue existiendo. Un índice colgado no cuenta."""
+        if team_id and self.r.exists(f"team:{team_id}"):
+            return team_id
+        return None
+
+    def _worker_of_owner(self, pubkey: str) -> Optional[str]:
+        """El minero que registró esta identidad (uno como máximo), o ``None``.
+
+        Mismo criterio que el alta (``worker_of_owner`` en el API): se recorre
+        ``registered_workers``, que es la fuente de verdad del alta y la baja.
+        """
+        if not pubkey:
+            return None
+        for worker_id in sorted(self.r.smembers("registered_workers") or []):
+            if self.r.get(f"worker:owner:{worker_id}") == pubkey:
+                return worker_id
+        return None
+
+    def _reported_mode(self, worker_id: str) -> str:
+        """Modo que reporta el minero si está vivo; vacío si no reporta."""
+        crudo = self.r.get(f"worker:status:{worker_id}")
+        if not crudo:
+            return ""
+        try:
+            return json.loads(crudo).get("mode") or ""
+        except (ValueError, TypeError, AttributeError):
+            return ""

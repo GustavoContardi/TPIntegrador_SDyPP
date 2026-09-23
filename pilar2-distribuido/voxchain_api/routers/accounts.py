@@ -6,39 +6,12 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
+
+from common.demo_accounts import DEMO_ACCOUNTS
 from voxchain_api.models import DemoAccount, ReleaseAccountRequest, ReserveAccountRequest
 from voxchain_api.services.redis_reader import RedisReader
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
-
-# Demo accounts configuration - these match the workers in demo-deployments.yaml
-DEMO_ACCOUNTS = {
-    "valentin": {
-        "worker_id": "worker-standalone",
-        "mode": "standalone",
-        "pubkey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEK+zAT5RDdx+IZeFJyMt5n+Sq3bofPSTONUdH0rIoafqek0B9z2+Ce+KOpF4d7HF9MMCaEdvf79DuXgTyi6w1gg==",
-    },
-    "gustavo": {
-        "worker_id": "worker-pool-coordinator",
-        "mode": "pool-coordinator",
-        "pubkey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAESZSf6/KLGtCWzykPJNwplTtLIXfV7Q8bWzCXpSt0UXdDUwRGoRMCipOtVppZ5+OK8h5Rth5HpbUFgdNa4hz+Qg==",
-    },
-    "matt": {
-        "worker_id": "worker-pool-miner-1",
-        "mode": "pool-worker",
-        "pubkey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEgjnoP4I9rGjo0m4AdnXvtiSKArLmVQwW0QPJ4/psGbysWgLDKuQZcLkRkZOqrV7405qF5mIxfDfU8xjQgHEQig==",
-    },
-    "profesor1": {
-        "worker_id": "worker-pool-miner-2",
-        "mode": "pool-worker",
-        "pubkey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEfixrZ70q1AbkT9XkjN4A+7BnasOneDR157dLyF0ITlFwLKhuFc3WfcGxupm9xY4XXZay6BIRSwzUNCJZHGFAcw==",
-    },
-    "profesor2": {
-        "worker_id": "worker-pool-miner-3",
-        "mode": "pool-worker",
-        "pubkey": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEe7p253GK4YRVqNZ2AVTfex6Wv4lIFRNTusdMlRT416cMTQr2WrvDSE3LPG4BiUXEIzwP53R0aVTp5uOfUfXmVQ==",
-    },
-}
 
 REDIS_KEY_PREFIX = "demo_account:"
 

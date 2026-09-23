@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from contextlib import asynccontextmanager
 
 import time
@@ -20,6 +21,7 @@ from voxchain_api.config import config
 from voxchain_api.routers import (
     accounts,
     chain,
+    deliberation,
     health,
     laws,
     system,
@@ -42,15 +44,34 @@ async def lifespan(app: FastAPI):
     # Start SSE polling task
     sse_task = asyncio.create_task(sse_polling_task(app))
     app.state.sse_task = sse_task
+    docker_task = asyncio.create_task(docker_workers_task(app))
 
     yield
 
     # Shutdown
-    sse_task.cancel()
-    try:
-        await sse_task
-    except asyncio.CancelledError:
-        pass
+    for task in (sse_task, docker_task):
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
+async def docker_workers_task(app: FastAPI):
+    """En el compose local, mantiene un contenedor por cada minero registrado.
+
+    Es lo que hace que `./run.sh stop` + `./run.sh demo` devuelva los mineros de
+    la UI tal como estaban. Sin socket de Docker (Kubernetes, tests) no hace nada.
+    """
+    await asyncio.sleep(5)
+    while True:
+        try:
+            await asyncio.to_thread(workers.reconcile_docker_workers,
+                                    app.state.redis.store.r)
+        except Exception:  # noqa: BLE001
+            logging.getLogger("voxchain.api").warning(
+                "falló la reconciliación de mineros en Docker", exc_info=True)
+        await asyncio.sleep(15)
 
 
 app = FastAPI(
@@ -93,6 +114,7 @@ app.include_router(accounts.router)
 app.include_router(chain.router)
 app.include_router(laws.router)
 app.include_router(windows.router)
+app.include_router(deliberation.router)
 app.include_router(health.router)
 app.include_router(workers.router)
 app.include_router(teams.router)

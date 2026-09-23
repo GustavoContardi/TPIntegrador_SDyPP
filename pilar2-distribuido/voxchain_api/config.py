@@ -28,6 +28,10 @@ class Config:
     MIN_WORKERS_FOR_WINDOW: int = 1
     # Ídem: tiene que coincidir con el del NCT.
     QUORUM_BY_CATEGORY: bool = True
+    # Quién puede proponer (AGENT.md 3.2). Lo aplica también el NCT, que es la
+    # verificación autoritativa; acá sirve para responder un 403 con el motivo
+    # en vez de aceptar una propuesta que el NCT va a descartar en silencio.
+    RESTRICT_PROPOSERS: bool = True
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -39,6 +43,7 @@ class Config:
             REQUIRE_SIGNATURES=_as_bool(os.getenv("REQUIRE_SIGNATURES"), False),
             MIN_WORKERS_FOR_WINDOW=int(os.getenv("MIN_WORKERS_FOR_WINDOW") or 1),
             QUORUM_BY_CATEGORY=_as_bool(os.getenv("QUORUM_BY_CATEGORY"), True),
+            RESTRICT_PROPOSERS=_as_bool(os.getenv("RESTRICT_PROPOSERS"), True),
         )
 
 

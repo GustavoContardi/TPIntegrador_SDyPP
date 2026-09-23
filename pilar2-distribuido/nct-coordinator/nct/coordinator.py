@@ -5,6 +5,11 @@ sola ventana activa a la vez, orden round-robin por autor, dificultad fija n/n+1
 verificación de nonce contra el desafío y sellado del bloque en Redis. No arbitra
 contenido ni ajusta dificultad por carga de red.
 
+Con deliberación (AGENT.md 3.12) cada ley pasa antes por una pausa: se anuncia,
+los convocados deciden si aportan cómputo y recién ahí se abre la ventana —sólo
+para quienes aceptaron— o se descarta, o vuelve a la cola. Una deliberación o
+una ventana, nunca las dos a la vez.
+
 Es agnóstico del transporte y del backend: recibe un ``Messaging`` y un
 ``VoxChainStore``, de modo que el mismo código corre con RabbitMQ+Redis reales o
 con el bus en memoria + fakeredis en los tests.
@@ -13,6 +18,7 @@ con el bus en memoria + fakeredis en los tests.
 from __future__ import annotations
 
 import logging
+import secrets
 import time
 import uuid
 from datetime import datetime, timezone
@@ -27,6 +33,21 @@ from common.blockchain import (
     verify_nonce,
 )
 from common.blockchain.availability import Availability, assess
+from common.blockchain.deliberation import (
+    MAX_SILENT_DELIBERATIONS,
+    OUTCOME_DISCARD,
+    OUTCOME_OPEN,
+    OUTCOME_UNANSWERED,
+    REJECT,
+    WINDOW_MIN_SECONDS,
+    Convocado,
+    all_answered,
+    biggest,
+    convocados,
+    effective_decisions,
+    resolve,
+    window_seconds_for,
+)
 from common.blockchain.categories import (
     DEFAULT_CATEGORY,
     normalize_category,
@@ -71,6 +92,7 @@ class NCTCoordinator:
                  nct_id: str = "nct", is_leader: bool = True,
                  heartbeat_interval: float = 0.0, on_stepdown=None,
                  require_signatures: bool = False, proposal_max_age: int = 0,
+                 restrict_proposers: bool = False,
                  nonce_space: int = 0,
                  dynamic_difficulty: bool = False,
                  difficulty_target_seconds: float = 30.0,
@@ -79,7 +101,11 @@ class NCTCoordinator:
                  turn_quota_windows: int = TURN_QUOTA_WINDOWS,
                  turn_quota_max_share: float = TURN_QUOTA_MAX_SHARE,
                  min_workers_for_window: int = 0,
-                 quorum_by_category: bool = True):
+                 quorum_by_category: bool = True,
+                 deliberation_seconds: float = 0.0,
+                 window_deadline_factor: float = 0.0,
+                 window_min_seconds: float = WINDOW_MIN_SECONDS,
+                 max_silent_deliberations: int = MAX_SILENT_DELIBERATIONS):
         self.m = messaging
         self.store = store
         self.n_zeros = n_zeros
@@ -97,6 +123,10 @@ class NCTCoordinator:
         # migración gradual: verifica si hay firma pero acepta no firmadas.
         self.require_signatures = require_signatures
         self.proposal_max_age = proposal_max_age
+        # Quién puede proponer (AGENT.md 3.2): sólo el fundador de un equipo o
+        # el dueño de un standalone. False = cualquiera, que es lo que suponen
+        # los tests que proponen con identidades sueltas.
+        self.restrict_proposers = restrict_proposers
         # Cuota de turnos por identidad (ver `common/queue.py`). Acota el
         # monopolio de una identidad sobre las ventanas; no cierra Sybil, que
         # AGENT.md 9 deja explícitamente como limitación aceptada.
@@ -116,6 +146,19 @@ class NCTCoordinator:
         self.hps_cpu = hps_cpu
         self.hps_gpu = hps_gpu
         self._ratchet = DifficultyRatchet(difficulty_decay_windows)
+        # Un trinquete por área, para la dificultad medida sobre los convocados
+        # (deliberación). Ver `VoxChainStore.get_difficulty_state`.
+        self._ratchets_por_area: dict[str, DifficultyRatchet] = {}
+        # Deliberación (AGENT.md 3.12). 0 = apagada: la ley abre su ventana en
+        # cuanto le toca, como siempre, y los tests viejos no se enteran.
+        self.deliberation_seconds = deliberation_seconds
+        # Plazo congelado = factor × tiempo esperado del convocado más grande,
+        # con `window_seconds` de config como techo. 0 = plazo fijo de config.
+        self.window_deadline_factor = window_deadline_factor
+        self.window_min_seconds = window_min_seconds
+        # Pausas seguidas sin ninguna respuesta antes de descartar la ley sin
+        # penalidad. Sin tope, una red ausente la reanunciaría para siempre.
+        self.max_silent_deliberations = max_silent_deliberations
         # Quórum de mineros para abrir una ventana (ver
         # `common/blockchain/availability.py`). 0 = desactivado, que es el
         # comportamiento histórico y el default de los tests: sin este gate la
@@ -141,6 +184,8 @@ class NCTCoordinator:
         # ante caída del NCT la ventana se pierde, AGENT.md 4).
         self._last_author = store.get_last_author()
         self._active = None  # dict con datos de la ventana en curso, o None
+        # La ley anunciada que espera las decisiones de los convocados, o None.
+        self._deliberation = None
         self._last_heartbeat_pub = 0.0
 
     # -- registro de handlers ----------------------------------------------
@@ -200,6 +245,17 @@ class NCTCoordinator:
         if not self._signature_ok(law, author, action, text_hash, law_id,
                                   created_at, declared_category):
             return
+
+        # Quién propone (AGENT.md 3.2). Después de la firma: la condición es de
+        # la identidad, y hasta acá no sabemos que la propuesta sea suya. El API
+        # ya lo rechaza con un 403 legible; esto cubre lo que llega a la cola
+        # sin pasar por él.
+        if self.restrict_proposers:
+            standing = self.store.proposer_standing(author)
+            if not standing.allowed:
+                log.info("propuesta rechazada: autor %s no puede proponer (%s)",
+                         author[:12], standing.reason)
+                return
 
         # Cooldown del autor (3.4): no puede proponer mientras esté en cooldown.
         if self.store.is_in_cooldown(author):
@@ -336,7 +392,7 @@ class NCTCoordinator:
     def maybe_open_window(self) -> None:
         if not self.is_leader:
             return  # sólo el líder abre ventanas (el follower no toca la cola)
-        if self._active is not None:
+        if self._active is not None or self._deliberation is not None:
             return
         # La cuota mira el pasado reciente: sin este dato `select_next_law`
         # degrada al round-robin de siempre (ver `common/queue.py`).
@@ -353,7 +409,10 @@ class NCTCoordinator:
         if law is not None:
             self._publicar_disponibilidad(self._quorum(self._como_ventana(law)),
                                           law=law)
-            self.open_window(law)
+            if self.deliberation_seconds > 0:
+                self.start_deliberation(law)
+            else:
+                self.open_window(law)
             return
         # Nada abrible. Se informa sobre la ley postergada más antigua —la que
         # el ciudadano está esperando— y, con la cola vacía, sobre la red en
@@ -428,9 +487,13 @@ class NCTCoordinator:
             return None
         workers, teams = poblacion
         try:
+            # Con deliberación se cuenta a los que se convocarían: un veto a
+            # esta ley puntual ya no la deja esperando, la lleva a que se caiga
+            # en la votación (AGENT.md 3.12).
             return assess(workers, teams, challenge,
                           minimum=self.min_workers_for_window,
-                          by_category=self.quorum_by_category)
+                          by_category=self.quorum_by_category,
+                          convocation=self.deliberation_seconds > 0)
         except Exception:  # noqa: BLE001
             log.exception("no se pudo medir el quórum de mineros; abro igual")
             return None
@@ -518,31 +581,7 @@ class NCTCoordinator:
             hashrate = effective_hashrate(self.store.live_workers(),
                                           self.store.teams_composition(),
                                           self.hps_cpu, self.hps_gpu)
-            medido = difficulty_for(hashrate,
-                                    target_seconds=self.difficulty_target_seconds)
-            # Se relee en cada ventana en vez de sólo al arrancar: así un NCT
-            # recién promovido toma el estado sin necesitar un hook de promoción,
-            # y dos réplicas no divergen. Es un HGETALL por ventana, y las
-            # ventanas duran minutos.
-            self._ratchet.restore(self.store.get_difficulty_state())
-            # El `n` anterior es el del trinquete, no `self.n_zeros`: tras un
-            # reinicio este último vuelve al valor de config y loguearlo como
-            # "anterior" haría parecer que la dificultad bajó cuando no lo hizo.
-            anterior = self._ratchet.current if self._ratchet.current is not None \
-                else self.n_zeros
-            n = self._ratchet.update(medido)
-            self.store.save_difficulty_state(self._ratchet.state())
-            if n != anterior:
-                log.info("dificultad dinámica: %.0f H/s efectivos ⇒ n=%d "
-                         "(medido %d, anterior %d)", hashrate, n, medido, anterior)
-            elif medido < n:
-                # El trinquete sosteniendo: la red se achicó pero `n` no cede
-                # todavía. Es el momento que hay que poder ver en el log, porque
-                # es la defensa contra apagar mineros para promulgar barato.
-                log.info("dificultad dinámica: %.0f H/s efectivos ⇒ medido n=%d, "
-                         "sostengo n=%d (%d/%d ventanas para bajar)",
-                         hashrate, medido, n, self._ratchet._low_streak,
-                         self._ratchet.decay_windows)
+            n = self._n_con_trinquete(hashrate, self._ratchet)
             self.n_zeros = n
             # El espacio de nonces acompaña a `n` o las derogaciones vencen sin
             # solución. Viaja en el desafío para que ningún minero pueda quedar
@@ -551,6 +590,61 @@ class NCTCoordinator:
             return n
         except Exception:  # noqa: BLE001
             log.exception("no se pudo medir la red; sigo con n=%d", self.n_zeros)
+            return self.n_zeros
+
+    def _n_con_trinquete(self, hashrate: float, ratchet: DifficultyRatchet,
+                         scope: str | None = None) -> int:
+        """Mide `n` para ``hashrate`` y lo pasa por el trinquete de ``scope``.
+
+        ``scope`` None es el trinquete global de siempre; con deliberación es el
+        área de la ley, porque la dificultad se mide sobre sus convocados.
+        """
+        medido = difficulty_for(hashrate,
+                                target_seconds=self.difficulty_target_seconds)
+        # Se relee en cada ventana en vez de sólo al arrancar: así un NCT
+        # recién promovido toma el estado sin necesitar un hook de promoción,
+        # y dos réplicas no divergen. Es un HGETALL por ventana, y las
+        # ventanas duran minutos.
+        ratchet.restore(self.store.get_difficulty_state(scope))
+        # El `n` anterior es el del trinquete, no `self.n_zeros`: tras un
+        # reinicio este último vuelve al valor de config y loguearlo como
+        # "anterior" haría parecer que la dificultad bajó cuando no lo hizo.
+        anterior = ratchet.current if ratchet.current is not None \
+            else self.n_zeros
+        n = ratchet.update(medido)
+        self.store.save_difficulty_state(ratchet.state(), scope)
+        donde = f" [{scope}]" if scope else ""
+        if n != anterior:
+            log.info("dificultad dinámica%s: %.0f H/s efectivos ⇒ n=%d "
+                     "(medido %d, anterior %d)", donde, hashrate, n, medido,
+                     anterior)
+        elif medido < n:
+            # El trinquete sosteniendo: la red se achicó pero `n` no cede
+            # todavía. Es el momento que hay que poder ver en el log, porque
+            # es la defensa contra apagar mineros para promulgar barato.
+            log.info("dificultad dinámica%s: %.0f H/s efectivos ⇒ medido n=%d, "
+                     "sostengo n=%d (%d/%d ventanas para bajar)", donde,
+                     hashrate, medido, n, ratchet._low_streak,
+                     ratchet.decay_windows)
+        return n
+
+    def _n_para_convocados(self, hashrate: float, category: str) -> int:
+        """`n` de una ley en deliberación: medido sobre su convocado más grande.
+
+        Es el punto de la deliberación: si ese equipo después se baja, la ley
+        sale igual con la dificultad que él habría resuelto (AGENT.md 3.12).
+        Con dificultad fija es el `n` de config. Si medir falla se usa el
+        último `n` conocido, igual que en la ventana sin deliberación.
+        """
+        if not self.dynamic_difficulty:
+            return self.n_zeros
+        try:
+            ratchet = self._ratchets_por_area.setdefault(
+                category, DifficultyRatchet(self._ratchet.decay_windows))
+            return self._n_con_trinquete(hashrate, ratchet, scope=category)
+        except Exception:  # noqa: BLE001
+            log.exception("no se pudo medir a los convocados; sigo con n=%d",
+                          self.n_zeros)
             return self.n_zeros
 
     def _avisar_si_dificultad_incoherente(self) -> None:
@@ -570,23 +664,49 @@ class NCTCoordinator:
         elif not aviso:
             self._aviso_dificultad_emitido = False
 
-    def open_window(self, law: dict) -> None:
+    def _consumir_turno(self, law: dict) -> None:
+        """Anota que esta ley se llevó el turno (round-robin y cuota, 3.3)."""
+        self._last_author = turn_holder(law)
+        self.store.set_last_author(self._last_author)
+        self.store.push_window_author(self._last_author)
+
+    def open_window(self, law: dict, frozen: dict | None = None) -> None:
+        """Abre la ventana de ``law`` y publica su desafío.
+
+        ``frozen`` viene de una deliberación (AGENT.md 3.12): trae la
+        dificultad, el plazo y el espacio de nonces congelados al anunciar, y
+        la lista de quienes aceptaron minar. El turno ya lo consumió el anuncio.
+        """
         action = law.get("action", ACTION_PROMULGACION)
         category = normalize_category(law.get("category"))
         law_id = law["law_id"]
         window_num = self.store.next_window_number()
-        voting_window_id = f"W{window_num}-{law_id}"
-        n_zeros_required = n_zeros_for_action(self._n_zeros_para_esta_ventana(),
-                                              action)
+        participants = None
+        if frozen is None:
+            voting_window_id = f"W{window_num}-{law_id}"
+            n_zeros_required = n_zeros_for_action(
+                self._n_zeros_para_esta_ventana(), action)
+            window_seconds = self.window_seconds[action]
+            nonce_space = self.nonce_space
+        else:
+            # Con la ley anunciada de antemano, un id de ventana predecible
+            # dejaría calcular el `partial_hash_base` y minar durante la pausa:
+            # el contador de ventanas es público. La parte aleatoria lo impide.
+            voting_window_id = f"W{window_num}-{law_id}-{secrets.token_hex(4)}"
+            n_zeros_required = int(frozen["n_zeros_required"])
+            window_seconds = float(frozen["window_seconds"])
+            nonce_space = int(frozen.get("nonce_space") or self.nonce_space)
+            participants = list(frozen.get("participants") or [])
         opened = self.now()
-        deadline = opened + self.window_seconds[action]
+        deadline = opened + window_seconds
         base = build_partial_hash_base(law_id, law["text_hash"],
                                        voting_window_id, action)
 
         self.store.save_window(voting_window_id=voting_window_id, law_id=law_id,
                                action=action, n_zeros_required=n_zeros_required,
                                opened_at=_iso(opened), deadline=_iso(deadline),
-                               partial_hash_base=base, category=category)
+                               partial_hash_base=base, category=category,
+                               participants=participants)
         self.store.set_law_status(law_id, LawStatus.IN_WINDOW)
         self.store.remove_from_queue(law_id)
         self.store.set_active_window(voting_window_id)
@@ -597,10 +717,10 @@ class NCTCoordinator:
             "partial_hash_base": base, "deadline_epoch": deadline,
             "author_pubkey": law.get("author_pubkey"),
             "category": category,
+            "participants": participants,
         }
-        self._last_author = turn_holder(law)
-        self.store.set_last_author(self._last_author)
-        self.store.push_window_author(self._last_author)
+        if frozen is None:
+            self._consumir_turno(law)
 
         # Verificación previa a publicar el desafío: `n` y el espacio de nonces
         # se mueven juntos o el sistema falla mudo (las ventanas vencen y parece
@@ -611,7 +731,7 @@ class NCTCoordinator:
 
         nct_windows_opened_total.inc()
 
-        self.m.publish_challenge({
+        desafio = {
             "voting_window_id": voting_window_id, "law_id": law_id,
             "n_zeros_required": n_zeros_required, "deadline": _iso(deadline),
             "partial_hash_base": base, "action": action,
@@ -624,12 +744,151 @@ class NCTCoordinator:
             # Espacio de nonces de ESTA ventana. Con dificultad dinámica cambia
             # con `n`: el minero tiene que barrer un rango que contenga la
             # solución, y su variable de entorno quedó fijada al arrancar.
-            "nonce_space": self.nonce_space,
+            "nonce_space": nonce_space,
             "published_at": opened,
-        })
-        log.info("ventana %s abierta (%s de %s, %d ceros, deadline %s)",
+        }
+        if participants is not None:
+            # Quién mina esta ventana: los que aceptaron en la deliberación.
+            # Cada minero se busca acá con su propio id (AGENT.md 3.12).
+            desafio["participants"] = participants
+        self.m.publish_challenge(desafio)
+        log.info("ventana %s abierta (%s de %s, %d ceros, deadline %s%s)",
                  voting_window_id, action, category, n_zeros_required,
-                 _iso(deadline))
+                 _iso(deadline),
+                 f", minan {participants}" if participants is not None else "")
+
+    # -- deliberación (AGENT.md 3.12) --------------------------------------
+    def start_deliberation(self, law: dict) -> None:
+        """Anuncia la ley y congela su dificultad; la ventana se abre después.
+
+        Se anuncia sólo la ley y su área: ni id de ventana ni desafío, que
+        todavía no existen. La dificultad, el plazo y el espacio de nonces se
+        fijan ahora, sobre el convocado más grande, para que bajarse después
+        no los mueva — si se recalcularan al abrir, el que se bajó ya no
+        contaría y la ley saldría más barata, lo contrario de su "no".
+        """
+        action = law.get("action", ACTION_PROMULGACION)
+        category = normalize_category(law.get("category"))
+        law_id = law["law_id"]
+        lista: list[Convocado] = []
+        poblacion = self._poblacion()
+        if poblacion is not None:
+            try:
+                lista = convocados(poblacion[0], poblacion[1],
+                                   self._como_ventana(law),
+                                   hps_cpu=self.hps_cpu, hps_gpu=self.hps_gpu)
+            except Exception:  # noqa: BLE001
+                log.exception("no se pudo armar la lista de convocados")
+        hashrate = biggest(lista)
+        n_base = self._n_para_convocados(hashrate, category)
+        n_zeros_required = n_zeros_for_action(n_base, action)
+        nonce_space = (nonce_space_for(n_base) if self.dynamic_difficulty
+                       else self.nonce_space)
+        window_seconds = window_seconds_for(
+            n_zeros_required, hashrate, factor=self.window_deadline_factor,
+            minimum=self.window_min_seconds, maximum=self.window_seconds[action])
+        started = self.now()
+        decide_until = started + self.deliberation_seconds
+
+        # Un veto que el equipo ya había dejado cargado para esta ley es su
+        # respuesta: no tiene por qué repetirla.
+        self.store.clear_deliberation_decisions(law_id)
+        for c in lista:
+            if c.prevetoed:
+                self.store.set_deliberation_decision(law_id, c.voter_id, REJECT)
+
+        estado = {
+            "law_id": law_id, "action": action, "category": category,
+            "started_at": _iso(started), "decide_until": _iso(decide_until),
+            "decide_until_epoch": decide_until,
+            "n_zeros_required": n_zeros_required,
+            "window_seconds": window_seconds, "nonce_space": nonce_space,
+            "biggest_hashrate": hashrate,
+            "convocados": [c.to_dict() for c in lista],
+        }
+        self.store.save_deliberation(estado)
+        self.store.set_law_status(law_id, LawStatus.IN_DELIBERATION)
+        self.store.remove_from_queue(law_id)
+        self._consumir_turno(law)
+        self._deliberation = estado
+        log.info("ley %s en deliberación (%s de %s): %d convocado(s), %d ceros "
+                 "congelados, ventana de %ds; deciden hasta %s", law_id, action,
+                 category, len(lista), n_zeros_required, window_seconds,
+                 _iso(decide_until))
+
+    def check_deliberation(self) -> None:
+        """Resuelve la deliberación al vencer la pausa, o antes si ya respondieron todos."""
+        estado = self._deliberation
+        if estado is None:
+            return
+        law_id = estado["law_id"]
+        votantes = [c["voter_id"] for c in estado.get("convocados", [])]
+        try:
+            decisiones = self.store.deliberation_decisions(law_id)
+        except Exception:  # noqa: BLE001
+            log.exception("no se pudieron leer las decisiones de %s", law_id)
+            return
+        if (self.now() < estado["decide_until_epoch"]
+                and not all_answered(votantes, decisiones)):
+            return
+        self._resolver_deliberacion(estado, votantes, decisiones)
+
+    def _resolver_deliberacion(self, estado: dict, votantes: list[str],
+                               decisiones: dict) -> None:
+        law_id = estado["law_id"]
+        # Respuesta por defecto: vale para quien no respondió en la pausa.
+        por_defecto = {c["voter_id"]: c.get("default_decision")
+                       for c in estado.get("convocados", [])}
+        resultado, participantes = resolve(votantes, decisiones, por_defecto)
+        efectivas = effective_decisions(votantes, decisiones, por_defecto)
+        # Rondas SEGUIDAS sin respuesta: una ventana abierta reinicia la cuenta.
+        silencios = 0
+        if resultado == OUTCOME_OPEN:
+            self.store.set_silent_deliberations(law_id, 0)
+        elif resultado != OUTCOME_DISCARD:
+            silencios = self.store.silent_deliberations(law_id) + 1
+            self.store.set_silent_deliberations(law_id, silencios)
+            if silencios >= self.max_silent_deliberations > 0:
+                resultado = OUTCOME_UNANSWERED
+        self.store.save_deliberation_result(law_id, {
+            "outcome": resultado,
+            "accepted": [v for v in votantes if efectivas.get(v) == "accept"],
+            "rejected": [v for v in votantes if efectivas.get(v) == REJECT],
+            "silent": [v for v in votantes if v not in efectivas],
+            # Los que no respondieron y contó su respuesta por defecto.
+            "defaulted": [v for v in votantes
+                          if v in efectivas and v not in decisiones],
+            "decided_at": _iso(self.now()),
+        })
+        self.store.clear_deliberation()
+        self.store.clear_deliberation_decisions(law_id)
+        self._deliberation = None
+        law = self.store.get_law(law_id)
+
+        if law and resultado == OUTCOME_OPEN:
+            self.open_window(law, frozen={**estado, "participants": participantes})
+            return
+        if law and resultado == OUTCOME_DISCARD:
+            # Se descarta como una ley que venció sin solución (3.2): fue
+            # juzgada y perdió, así que reproponerla idéntica paga el cooldown
+            # largo (3.5).
+            self.store.set_law_status(law_id, LawStatus.DISCARDED)
+            self.store.mark_text_hash_discarded(law.get("text_hash", ""))
+            log.info("ley %s descartada en deliberación: nadie aceptó y hubo "
+                     "veto (%s)", law_id,
+                     [v for v in votantes if decisiones.get(v) == REJECT])
+        elif law and resultado == OUTCOME_UNANSWERED:
+            # Nadie la juzgó: se descarta para cortar el reanuncio, pero sin
+            # anotar el texto, así que reproponerla no paga el cooldown largo.
+            self.store.set_law_status(law_id, LawStatus.DISCARDED)
+            log.info("ley %s descartada sin respuesta: %d deliberaciones "
+                     "seguidas sin que nadie respondiera", law_id, silencios)
+        elif law:
+            # Nadie respondió: no hubo decisión, así que no se lee como rechazo.
+            self.store.set_law_status(law_id, LawStatus.PENDING_QUEUE)
+            self.store.enqueue_law(law_id)
+            log.info("ley %s reencolada: ningún convocado respondió", law_id)
+        self.maybe_open_window()
 
     # -- flujo 3: respuesta_nonce (red → NCT) ------------------------------
     def handle_nonce_response(self, sol: dict) -> None:
@@ -803,9 +1062,35 @@ class NCTCoordinator:
         self._last_author = self.store.get_last_author()
         self.store.clear_active_window()
         self._active = None
+        self._recuperar_deliberacion_huerfana()
         # La ventana en curso al momento de la caída se pierde (AGENT.md 4);
         # si hay leyes pendientes en Redis, abrimos una ventana nueva.
         self.maybe_open_window()
+
+    def _recuperar_deliberacion_huerfana(self) -> None:
+        """Devuelve a la cola la ley que el líder anterior dejó en deliberación.
+
+        Igual que la ventana en curso, la deliberación se pierde con la caída
+        (AGENT.md 4); pero la ley no: sin esto quedaría `in_deliberation` para
+        siempre, fuera de la cola.
+        """
+        self._deliberation = None
+        try:
+            estado = self.store.get_deliberation()
+            if not estado:
+                return
+            law_id = estado.get("law_id")
+            self.store.clear_deliberation()
+            if law_id:
+                self.store.clear_deliberation_decisions(law_id)
+                law = self.store.get_law(law_id)
+                if law and law.get("status") == LawStatus.IN_DELIBERATION:
+                    self.store.set_law_status(law_id, LawStatus.PENDING_QUEUE)
+                    self.store.enqueue_law(law_id)
+                    log.warning("ley %s estaba en deliberación con el líder "
+                                "anterior: vuelve a la cola", law_id)
+        except Exception:  # noqa: BLE001
+            log.exception("no se pudo recuperar la deliberación huérfana")
 
     def step_down(self) -> None:
         """Líder → follower: cierra las colas de trabajo y suelta la ventana.
@@ -824,11 +1109,13 @@ class NCTCoordinator:
         self.is_leader = False
         self._unsubscribe_work_queues()
         self._active = None
+        self._deliberation = None
         if self._on_stepdown is not None:
             self._on_stepdown()
 
     # -- tick periódico para el loop de consumo ----------------------------
     def tick(self) -> None:
+        self.check_deliberation()
         self.check_deadline()
         self.maybe_open_window()
         self._maybe_publish_heartbeat()

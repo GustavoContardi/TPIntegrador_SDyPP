@@ -15,7 +15,18 @@ data:
   # importar cuántos mineros se registren. N_ZEROS pasa a ser sólo el valor
   # inicial. Con "false" vuelve al `n` fijo del enunciado original.
   DYNAMIC_DIFFICULTY: "true"
-  DIFFICULTY_TARGET_SECONDS: "30"
+  DIFFICULTY_TARGET_SECONDS: "60"
+  # Deliberación (AGENT.md 3.12): pausa entre anunciar la ley y abrir su
+  # ventana, para que cada equipo convocado decida si aporta cómputo. La
+  # dificultad y el plazo se congelan al anunciar, sobre el equipo más grande
+  # que vota esa área; el plazo es FACTOR × su tiempo esperado, acotado por
+  # WINDOW_MIN_SECONDS y WINDOW_SECONDS_<acción>.
+  DELIBERATION_SECONDS: "120"
+  WINDOW_DEADLINE_FACTOR: "2"
+  WINDOW_MIN_SECONDS: "20"
+  # Pausas seguidas sin ninguna respuesta antes de descartar la ley "sin
+  # respuesta" (sin penalidad de reproposición). Corta el reanuncio infinito.
+  MAX_SILENT_DELIBERATIONS: "3"
   # Ventanas seguidas midiendo una red más chica antes de bajar `n`. Sube en el
   # acto; baja despacio, porque bajar es lo único que le sirve a un atacante
   # (conectar cómputo, dejar subir n, apagarlo y promulgar barato). El estado del
@@ -32,8 +43,10 @@ data:
   # Anti-replay: antigüedad máxima de created_at en una propuesta firmada (segundos).
   PROPOSAL_MAX_AGE_SECONDS: "300"
   WINDOW_SECONDS_PROMULGACION: "120"
-  # 280 s esperados para derogar con n=7 no entran en 180 s.
-  WINDOW_SECONDS_DEROGACION: "600"
+  # 280 s esperados para derogar con n=7 no entran en 180 s. Con deliberación
+  # es el techo del plazo congelado: derogar cuesta n+1, hasta 16 × 60 s para
+  # el más grande, y el factor 2 lo duplica.
+  WINDOW_SECONDS_DEROGACION: "1200"
   COOLDOWN_WINDOWS_NEW: "4"
   # Cuota de turnos por identidad (AGENT.md 3.3): una identidad que se llevó
   # más de MAX_SHARE de las últimas WINDOWS ventanas cede el turno. Acota el
@@ -53,6 +66,12 @@ data:
   # "false": el gate cubre sólo la red vacía, y un área desierta vuelve a hacer
   # expirar la ley, que es el veto político deliberado de AGENT.md 3.10.
   QUORUM_BY_CATEGORY: "true"
+  # Quién puede proponer leyes (AGENT.md 3.2). "true": sólo el fundador de un
+  # equipo o el dueño de un minero standalone; un ciudadano sin minero o un
+  # miembro de equipo reciben 403. "false": cualquier identidad, como antes (lo
+  # necesitan los inyectores de carga, que proponen con identidades inventadas).
+  # Compartido por NCT y API.
+  RESTRICT_PROPOSERS: "true"
   HEARTBEAT_INTERVAL: "3"
   HEARTBEAT_TIMEOUT: "12"
   LEADER_LEASE_TTL: "15"

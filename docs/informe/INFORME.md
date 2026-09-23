@@ -29,25 +29,36 @@ mineros**, que es igual o mejor que el propio techo del hardware sobre el que se
 midió. La capa distribuida no le cuesta velocidad al sistema; el límite es la
 CPU disponible.
 
+En la etapa final se agregaron reglas de gobierno sobre la red de minado —
+categorías de ley con agenda por equipo, deliberación previa a cada ventana,
+quórum de mineros para abrirla, restricción de quién propone y dificultad
+dinámica sobre el cómputo vivo—, resumidas en la sección 1.3.
+
 ---
 
 ## 1. El sistema
 
 ### 1.1 El dominio
 
-Cualquiera con un par de claves puede proponer una ley. El Nodo Coordinador de
-Transacciones (NCT) abre una **ventana de votación** por cada propuesta, y la
-red compite por resolver:
+Proponer una ley queda reservado a quien responde por cómputo en la red: el
+fundador de un equipo o el dueño de un minero standalone (sección 1.3). El Nodo
+Coordinador de Transacciones (NCT) abre una **ventana de votación** por cada
+propuesta, y la red compite por resolver:
 
 ```
 partial_hash_base = law_id + text_hash + voting_window_id + action
 nonce válido  ⇔  md5(partial_hash_base + str(nonce))  empieza con n ceros
 ```
 
-La dificultad es **fija por configuración**: `n` ceros para promulgar y `n+1`
-para derogar. Derogar cuesta más que promulgar, y eso es una decisión de
-gobierno, no un parámetro de red — está explícitamente prohibido el ajuste
-dinámico por carga, porque cambiaría el costo del consenso sobre la marcha.
+La dificultad es `n` ceros para promulgar y `n+1` para derogar. Esa relación es
+**invariante**: derogar cuesta siempre más que promulgar, y eso es una decisión
+de gobierno, no un parámetro de red. Lo que sí se mueve es `n`: en el
+despliegue (`DYNAMIC_DIFFICULTY=true`) el NCT lo recalcula para cada ley según
+el **cómputo vivo** de la red, de modo que promulgar cueste siempre alrededor de
+`DIFFICULTY_TARGET_SECONDS`. El diseño original lo fijaba por configuración y
+prohibía cualquier ajuste autónomo; por qué se cambió de opinión, y por qué este
+ajuste no es manipulable como el que se había descartado, está en la sección
+7.1.bis. Con `DYNAMIC_DIFFICULTY=false` el sistema vuelve al `n` fijo.
 
 El NCT **no arbitra contenido**: sólo coordina ventanas. Quién gana lo decide el
 esfuerzo computacional.
@@ -56,12 +67,34 @@ esfuerzo computacional.
 
 Cada nodo tiene par de claves. Las propuestas viajan firmadas y con
 `author_pubkey`; **las claves privadas nunca se persisten ni viajan por
-RabbitMQ**. La verificación de firma es configurable (`REQUIRE_SIGNATURES`) para
-permitir una migración gradual: en modo permisivo acepta propuestas sin firma
-pero **rechaza las que traen una firma inválida**.
+RabbitMQ**. La clave del ciudadano vive en el navegador como `CryptoKey` **no
+extraíble** en IndexedDB: la aplicación puede pedirle firmas, pero no leer el
+material de la clave. La verificación de firma es configurable
+(`REQUIRE_SIGNATURES`) para permitir una migración gradual: en modo permisivo
+acepta propuestas sin firma pero **rechaza las que traen una firma inválida**.
+El despliegue actual corre en modo permisivo (`REQUIRE_SIGNATURES=false` en
+`voxchain-config.yaml`).
 
 Implementación: `pilar2-distribuido/worker/worker_pkg/identity.py` y
-`common/blockchain/signing.py`, con cobertura en `test_signatures.py`.
+`common/identity/signing.py`, con cobertura en `test_signatures.py` y
+`test_signing.py`.
+
+### 1.3 Reglas de gobierno de la etapa final
+
+Sobre el consenso básico se agregaron cinco reglas. La fuente normativa es
+`AGENT.md` §3; acá va el resumen de qué resuelve cada una.
+
+| Regla | Qué hace | Por qué |
+|---|---|---|
+| **Categorías y agenda** (AGENT.md 3.10) | Toda ley pertenece a un área (`economia`, `salud`, …, `general` por defecto), firmada por el autor y heredada por su derogación. Cada equipo declara la agenda de áreas a las que aporta cómputo; ante una ley de otra área su coordinador no fragmenta el espacio. | Un pool pasa a ser una facción con agenda propia, no infraestructura que mina todo lo que pasa. La categoría **no** entra en `partial_hash_base`, así que el minero de Pilar 1 no cambia. |
+| **Quórum de mineros** (3.11) | El NCT no abre la ventana si no hay mineros **vivos** que tomarían esa ley (aplicando agenda y vetos). La ley queda en la cola, que no se bloquea: el turno pasa a la siguiente. El veredicto se publica en `nct:availability` y el API lo expone en `GET /api/system/availability`. | Antes una ley con la red vacía vencía, se descartaba y su reproposición pagaba el cooldown largo, por una falla ajena al autor. Si la red cae **durante** la ventana, al vencer la ley vuelve a la cola (`expired_no_quorum`). |
+| **Deliberación** (3.12) | Antes de abrir la ventana el NCT **anuncia** la ley y abre una pausa (`DELIBERATION_SECONDS`, 120 s) para que cada equipo o standalone convocado responda, firmado, si aporta cómputo. Sólo minan los que aceptaron (`participants` en el desafío). Dificultad y plazo se congelan al anunciar, sobre el convocado más grande. | El PoW sólo contaba a favor; esto le da peso al "no". Si nadie acepta y alguien veta, la ley se descarta; si nadie responde, vuelve a la cola (con un tope de `MAX_SILENT_DELIBERATIONS`). |
+| **Quién propone** (3.2) | Sólo el fundador de un equipo o el dueño de un minero standalone (`RESTRICT_PROPOSERS=true`); se verifica en el API (403) y en el NCT. | Trae la ley quien después decide si la mina, y un equipo tiene una sola voz para proponer. No cierra Sybil. |
+| **Dificultad dinámica** (11.3) | `n` se recalcula sobre el cómputo vivo; sube en el acto y baja con histéresis, con un trinquete por área persistido en Redis. `NONCE_SPACE` se deriva de `n` y viaja en el desafío. | Sostener constante el tiempo de promulgación ante una población que cambia. Detalle en 7.1.bis. |
+
+Las pruebas de carga de la sección 4 son anteriores a estas reglas o corren con
+ellas apagadas: el experimento de escalado usa `DELIBERATION_SECONDS=0` y
+`RESTRICT_PROPOSERS=false` porque mide capacidad de cómputo, no decisiones.
 
 ---
 
@@ -110,17 +143,20 @@ Implementación: `pilar2-distribuido/worker/worker_pkg/identity.py` y
 ### 2.2 Despliegue: dos clústers federados
 
 ```
-GCP — GKE (clúster 1)                    Clúster GPU — k3s (clúster 2)
-┌──────────────────────────────┐         ┌───────────────────────────┐
-│ Namespace: voxchain          │         │ Namespace: g-git-push-cv  │
-│                              │         │                           │
-│ RabbitMQ (STS) ──LB:5671─────┼─────────┼──► Worker Deployment      │
-│ Redis + Sentinel (STS)       │  AMQPS  │    - HPA (2→10)           │
-│ NCT primary + standby        │  TLS    │    - tolerations GPU      │
-│ voxchain-api  :8000          │  con CA │    - CA cert montada      │
-│ voxchain-frontend :443       │  propia │                           │
-│ Prometheus + Grafana         │         │                           │
-└──────────────────────────────┘         └───────────────────────────┘
+GCP — GKE (clúster 1)                      Clúster GPU — k3s (clúster 2)
+┌──────────────────────────────┐           ┌──────────────────────────────┐
+│ Namespace: voxchain          │           │ Namespace: g-git-push-cv     │
+│                              │   AMQPS   │                              │
+│ RabbitMQ (STS) ─── LB:5671 ──┼──────────►┼ workers standalone           │
+│                              │(CA propia)│  + un pool: coordinator      │
+│ Redis + Sentinel (STS)       │           │    y 3 mineros               │
+│        └──────── LB:6379 ────┼──────────►┼ estado worker:status:*       │
+│                              │  (sin TLS)│ - CPU por defecto            │
+│ NCT primary + standby        │           │ - GPU opt-in por pod         │
+│ voxchain-api  :8000          │           │ - CA de RabbitMQ montada     │
+│ voxchain-frontend (Ingress)  │           │                              │
+│ Prometheus + Grafana         │           │                              │
+└──────────────────────────────┘           └──────────────────────────────┘
 ```
 
 La federación es la parte interesante del despliegue: los workers viven en un
@@ -130,23 +166,36 @@ por LoadBalancer con TLS y a resolver el problema de que el certificado tiene
 SANs DNS mientras los workers se conectan por IP — se resolvió con un override
 de SNI (`ssl_server_hostname` en `common/messaging/rabbitmq.py`).
 
+Los workers también escriben su estado (`worker:status:*`, con TTL) en Redis,
+que es lo único que comparten los dos clústers. Por eso Redis tiene su propio
+LoadBalancer (`redis-external`). Ese canal va autenticado con contraseña pero
+**sin TLS**, y es la principal deuda de seguridad del despliegue (sección 7.1).
+
+Los workers usan la imagen `worker-gpu`, que trae el minero CUDA compilado para
+`sm_61`, la arquitectura de la GTX 1060 del clúster k3s. La GPU es **opt-in por
+pod**: los manifests piden `nvidia.com/gpu` sólo si se descomenta el recurso
+junto con las variables `NVIDIA_*`. Sin eso, el minero detecta que no hay GPU
+utilizable (self-test del binario) y mina con CPU, que es como corren hoy los
+manifests del repositorio.
+
 ### 2.3 Componentes
 
 | Componente | Rol |
 |---|---|
 | `nct-coordinator/` | NCT: cola round-robin por autor con cuota de turnos, cooldown, apertura/cierre de ventana, verificación de nonce, sellado del bloque, heartbeats |
-| `worker/` (modo `pool-coordinator`) | Fragmenta el espacio de nonces, reparte tareas por HTTP, auto-mina, arbitra el ganador |
-| `worker/` (modo `pool-worker`) | Pide rangos al coordinator y los mina |
+| `worker/` (modo `pool-coordinator`) | Coordinador de un **equipo**: fragmenta el espacio de nonces, reparte tareas por HTTP, auto-mina, arbitra el ganador y aplica la agenda del equipo |
+| `worker/` (modo `pool-worker`) | Miembro de un equipo: pide rangos al coordinator y los mina |
+| `worker/` (modo `pool-auto`) | Pool de infraestructura anónimo: los pares eligen coordinator por mini-PoW |
 | `worker/` (modo `standalone`) | Mina el espacio completo por su cuenta (modo competitivo) |
-| `voxchain_api/` | API REST (FastAPI): propuestas, cadena, cuentas demo, estado de workers |
-| `voxchain-frontend/` | SPA en Angular; firma las propuestas en el navegador |
-| `common/` | Paquete compartido: `blockchain`, `storage` (Redis), `messaging` (RabbitMQ), health, logging, métricas |
+| `voxchain_api/` | API REST (FastAPI): propuestas, cadena, cuentas demo, estado de workers, equipos, deliberación y disponibilidad (quórum) |
+| `voxchain-frontend/` | SPA en Angular; firma las propuestas y las decisiones de deliberación en el navegador |
+| `common/` | Paquete compartido: `blockchain` (bloques, desafío, dificultad, categorías, quórum, deliberación, proponentes), `identity` (firmas), `storage` (Redis), `messaging` (RabbitMQ), health, logging, métricas |
 
 > **Nota sobre el `transaction-pool/`**: el diseño original tenía un servicio
 > separado (TrP). Terminó absorbido por el worker en modo `pool-coordinator`, que
-> cumple la misma función (fragmentar y repartir) sin un despliegue adicional. El
-> README de Pilar 2 todavía lo menciona como servicio propio; la arquitectura
-> vigente es la de este documento.
+> cumple la misma función (fragmentar y repartir) sin un despliegue adicional.
+> Las colas `tareas_trp` y `keepalive_trp` todavía se declaran por
+> compatibilidad, pero nada consume de ellas.
 
 ### 2.4 Flujos de mensajería
 
@@ -154,15 +203,22 @@ de SNI (`ssl_server_hostname` en `common/messaging/rabbitmq.py`).
 
 | # | Nombre | Tipo | Dirección | Contenido |
 |---|---|---|---|---|
-| 1 | `propuestas` | cola | nodo → NCT | `law_id, author_pubkey, text_hash, created_at, action` |
-| 2 | `desafio_activo` | exchange topic | NCT → red | `voting_window_id, law_id, n_zeros_required, deadline, partial_hash_base, action` |
+| 1 | `propuestas` | cola | nodo → NCT | `law_id, author_pubkey, text_hash, created_at, action, category` |
+| 2 | `desafio_activo` | exchange topic | NCT → red | `voting_window_id, law_id, n_zeros_required, deadline, partial_hash_base, action, category, nonce_space, participants` |
 | 3 | `respuesta_nonce` | cola | red → NCT | `voting_window_id, nonce, winning_node_or_pool, block_hash_candidato` |
 
-**Failover del NCT:**
+La **deliberación** no agrega un flujo de RabbitMQ: el anuncio vive en Redis
+(`nct:deliberation`, sólo la ley y su área) y las respuestas llegan firmadas por
+el API. `partial_hash_base` recién se publica al abrir la ventana, para que
+nadie pueda empezar a minar durante la pausa.
+
+**Failover del NCT y coordinación:**
 
 | # | Nombre | Tipo | Dirección | Contenido |
 |---|---|---|---|---|
 | 4 | `nct.heartbeat` | exchange topic | líder → standbys | `nct_id, ts, active_window_id, last_block_hash` |
+| 5 | `pool.election` | exchange topic | pares ↔ pares | claims y heartbeats del mini-PoW del pool de infraestructura |
+| 6 | `worker.command` | exchange topic | backend → worker | `switch_mode`, `stop` (alta y baja de equipos) |
 
 **Distribución interna de trabajo:** el coordinator reparte fragmentos por
 **HTTP** (`GET /work/next/<miner_id>`), no por cola, porque necesita saber qué
@@ -211,11 +267,24 @@ Dos parámetros gobiernan el comportamiento:
 
 ### 3.3 Quién coordina el pool
 
-El rol de coordinator se decide con una **mini prueba de trabajo** entre los
-candidatos (`POOL_ELECTION_N_ZEROS`, por defecto 2 ceros): quien resuelve
-primero gana el liderazgo y toma un lease en Redis, que renueva periódicamente.
-Es coherente con el resto del sistema — el mismo criterio que decide quién sella
-una ley decide quién coordina — y es barato (256 intentos en promedio).
+Hay dos topologías de pool, y en cada una el coordinator se decide distinto
+(AGENT.md 4.2):
+
+- **Equipo con dueño** (`pool-coordinator` / `pool-worker`): una persona funda
+  el equipo y **designa** cuál de sus mineros coordina. La elección por lease en
+  Redis no elige *quién* manda, sino que garantiza que haya exactamente un
+  coordinador vivo si el pod se reinicia.
+- **Pool de infraestructura** (`pool-auto`): nodos anónimos e intercambiables,
+  sin nadie a quien designar. Ahí el rol se decide con una **mini prueba de
+  trabajo** entre los candidatos (`POOL_ELECTION_N_ZEROS`, por defecto 2
+  ceros), arbitrada por el exchange `pool.election`: quien resuelve primero
+  coordina y el resto verifica su solución y se le une como minero. Es
+  coherente con el resto del sistema — el mismo criterio que decide quién sella
+  una ley decide quién coordina — y es barato (256 intentos en promedio).
+
+Cuando hay Redis, los dos mecanismos se disputan el mismo lease
+`pool:leader:<pool_id>`, así que no pueden quedar dos coordinadores activos
+sobre el mismo pool.
 
 El coordinator **además mina**: consume fragmentos de la misma cola que reparte.
 Esto importa para leer los resultados (sección 4.2).
@@ -226,6 +295,13 @@ Los mineros mandan keep-alive con `capacity` y `has_gpu`. El coordinator
 mantiene el registro con TTL y purga a los que dejan de reportar
 (`_purge_stale_miners`), exponiendo `voxchain_pool_miners_registered`. Así el
 sistema sabe en todo momento con cuánta capacidad cuenta.
+
+A nivel de red, cada worker publica además `worker:status:<id>` en Redis con
+TTL de 15 s, incluyendo `has_gpu` y el hashrate medido. De ese registro de
+cómputo **vivo** (no registrado) leen el quórum de mineros, para decidir si se
+abre la ventana, y la dificultad dinámica, para elegir `n`. Si se van las GPU,
+la red medida cae y `n` baja (con histéresis): es el mecanismo de **reducción
+del prefijo ante ausencia de GPUs**.
 
 ---
 
@@ -420,9 +496,9 @@ ventana que vence sin ganador.
 
 | Suite | Resultado |
 |---|---|
-| Completa (`./run.sh test`) | **132 passed** |
-| Como la corre CI (`-k "not integration"`) | 129 passed, 3 deselected |
-| Sólo integración (`-m integration`) | 3 passed |
+| Completa (`./run.sh test`) | **528 passed** |
+| Como la corre CI (`-k "not integration"`) | 522 passed, 6 deselected |
+| Sólo integración (`-m integration`) | 6 passed |
 
 Los tests de integración corren el flujo extremo a extremo (propuesta → ventana
 → minado → sellado) con un bus en memoria, `fakeredis` y el **minero CPU real**.
@@ -442,15 +518,21 @@ Tres mecanismos, en capas:
 1. **Reasignación de la tarea.** El coordinator trackea qué minero tiene cada
    fragmento y purga a los que dejan de mandar keep-alive
    (`_purge_stale_miners`). El fragmento vuelve a la cola de pendientes.
-2. **Reposición del pod.** El HPA del worker mantiene entre 2 y 10 réplicas al
-   70% de CPU; Kubernetes repone el pod caído.
+2. **Reposición del pod.** El Deployment repone el pod caído. Para el
+   Deployment `worker` hay además un HPA declarado (`worker-hpa`, 2→10 al 70% de
+   CPU); el pipeline `04` despliega el escenario de demo, con réplicas fijas, y
+   el HPA se aplica a mano.
 3. **Nada se pierde.** El trabajo perdido es, como mucho, un fragmento del
    espacio de nonces. La ventana sigue abierta y el resto de los mineros sigue
    barriendo.
 
-El caso extremo — que caigan **todos** los mineros — se resuelve por deadline: la
-ventana vence, la ley queda `discarded` y su `text_hash` se marca para detectar
-reproposición.
+El caso extremo — que caigan **todos** los mineros — se resuelve por deadline, y
+el quórum (sección 1.3) decide qué pasa con la ley. Si al vencer la red está por
+debajo del quórum, la ley **vuelve a la cola** (`expired_no_quorum`) sin marcar
+su `text_hash`: el vencimiento no dice nada de una ley que nadie pudo minar. Si
+había red y no alcanzó, la ley queda `discarded` y su `text_hash` se marca para
+detectar reproposición. Y si la red ya estaba vacía antes, la ventana
+directamente no se abre.
 
 ### 5.2 Si cae el NCT
 
@@ -475,7 +557,9 @@ líder abre esos consumidores; el `step_down` los cierra.
 > de regresión.
 
 La ventana en curso al momento de la caída **se pierde por diseño**: se prefiere
-descartarla antes que arriesgar un sellado doble.
+descartarla antes que arriesgar un sellado doble. Si la caída ocurre durante
+una deliberación, la pausa se pierde igual, pero la ley no: el nuevo líder la
+devuelve a la cola.
 
 ### 5.3 Sellado atómico
 
@@ -501,7 +585,7 @@ El desempate es **por orden de llegada**, no por el valor del nonce.
 | Configuraciones | ConfigMaps (`voxchain-config`, `worker-config`, `rabbitmq-config`) |
 | Certificados HTTPS | cert-manager con Let's Encrypt; TLS real en el Ingress |
 | Logging | Cloud Logging de GKE (Fluent Bit por nodo) + `RotatingFileHandler` local |
-| Monitoreo | kube-prometheus-stack: Prometheus, Grafana, Alertmanager, ServiceMonitors y 5 reglas de alerta propias |
+| Monitoreo | kube-prometheus-stack: Prometheus, Grafana, Alertmanager, ServiceMonitors y 5 reglas de alerta propias. Alertmanager no tiene receptor configurado: las alertas se ven en su UI y en Grafana, pero no notifican |
 | Sincronización NTP | documentada en el README de Pilar 3 |
 | Endpoint público de estado | `GET /api/health` → `{"api","nct","redis","workers"}` sobre Ingress TLS |
 
@@ -509,22 +593,33 @@ El desempate es **por orden de llegada**, no por el valor del nonce.
 
 | Requisito (§3) | Implementación |
 |---|---|
-| Cluster Autoscaler | node pools con min/max en el Terraform |
-| HPA | `api-hpa` (2→5), `worker-hpa` (2→10), `pool-miner-hpa` (1→10), todos al 70% de CPU |
+| Cluster Autoscaler | node pools `infra` (1→2) y `apps` (2→3) con autoscaling en el Terraform. El autoscaler de GKE agrega nodos cuando hay **pods pendientes**: el HPA sube réplicas por CPU, las que no entran quedan pendientes y eso dispara el nodo nuevo |
+| HPA | `api-hpa` (2→5) en GKE; `worker-hpa` (2→10) y `pool-miner-hpa` (1→10) declarados para el k3s. Todos por métricas **comunes** (70% de CPU); no hay HPA por métrica específica |
 | StatefulSets con PVC | Redis, Redis Sentinel y RabbitMQ |
-| Límites y securityContext | `runAsNonRoot`, `readOnlyRootFilesystem`, capabilities dropeadas, y límites de CPU/memoria en todos los workloads |
-| Tolerations / nodeSelector | separan la infraestructura (Redis, RabbitMQ) de los workloads de minado |
-| Namespaces | `voxchain`, `monitoring`, `g-git-push-cv` |
-| RBAC | `worker-rbac`, `rabbitmq-rbac` con permisos mínimos |
-| Zero static keys | Workload Identity Federation (OIDC) en los workflows; ninguna llave de service account en el repo |
-| Registros Docker | Artifact Registry en lectura pública para que el k3s externo pueda hacer pull sin `imagePullSecrets` — decisión declarada, sólo afecta a imágenes sin secretos |
+| Límites y securityContext | `runAsNonRoot` (uid 1000 apps, 999 Redis/RabbitMQ, 101 nginx), `allowPrivilegeEscalation: false`, `capabilities.drop: ALL`, seccomp `RuntimeDefault` y límites de CPU/memoria en todos los workloads. `readOnlyRootFilesystem` **no** está activado |
+| Tolerations / nodeSelector | Redis, Sentinel y RabbitMQ declaran `nodeSelector pool=infra` y la toleration al taint `pool=infra:NoSchedule`; Sentinel suma anti-affinity. Los workloads de aplicación y minado no declaran nada: el taint los mantiene fuera del pool `infra`. En el k3s no hay nodeSelector ni tolerations de GPU |
+| Namespaces | `voxchain`, `monitoring`, `ingress-nginx`, `cert-manager`, `external-secrets` en GKE; `g-git-push-cv` en el k3s |
+| RBAC | `rabbitmq-rbac` (Role mínimo para el peer discovery). `worker-rbac` y `backend-proxy-rbac` están declarados para el k3s, pero ahí nuestra ServiceAccount no puede crear Roles: el pipeline los aplica best-effort y los pods corren con la SA `default` |
+| Zero static keys | Workload Identity Federation (OIDC) en los workflows y Workload Identity para External Secrets; ninguna llave de service account en el repo. La excepción inevitable es el kubeconfig del k3s ajeno (`K3S_KUBECONFIG`), que es un token de GitHub Secrets |
+| Registros Docker | Artifact Registry en lectura pública para que el k3s externo pueda hacer pull sin `imagePullSecrets` — decisión declarada, sólo afecta a imágenes sin secretos. Los nodos de GKE hacen pull con su propia service account |
 
-**TLS interno: parcial, y es una decisión consciente.** RabbitMQ expone AMQPS
-(5671) con CA propia para los workers externos, que es donde el tráfico sale a
-internet. El tráfico interno API↔NCT y hacia Redis va sin cifrar, mitigado con
-NetworkPolicies que restringen quién puede hablar con quién dentro del clúster.
-El criterio fue **cifrar el borde y segmentar el interior**; un mTLS completo
-(service mesh) era desproporcionado para el alcance del trabajo.
+**TLS interno: parcial.** RabbitMQ expone AMQPS (5671) con CA propia para los
+workers externos, que es donde el tráfico de mensajería sale a internet. El
+criterio buscado fue **cifrar el borde y segmentar el interior**; un mTLS
+completo (service mesh) era desproporcionado para el alcance del trabajo. Pero
+hay que declarar dos puntos en los que el despliegue actual no cumple ese
+criterio:
+
+- **Redis también sale a internet y sin cifrar.** Los workers del k3s escriben
+  su estado en Redis por un LoadBalancer (`redis-external`, 6379), autenticado
+  con contraseña pero sin TLS y sin restringir las IPs de origen.
+- **La segmentación interna es sólo declarativa.** Hay NetworkPolicies para
+  Redis y RabbitMQ, pero el Terraform crea el clúster con
+  `network_policy_config { disabled = true }` y sin Dataplane V2, así que GKE
+  **no las aplica**. Hoy el tráfico interno API↔NCT↔Redis va sin cifrar y sin
+  restricción efectiva.
+
+Los dos arreglos son acotados y están en la sección 7.2.
 
 ### 6.3 Pipelines de despliegue
 
@@ -533,7 +628,7 @@ El criterio fue **cifrar el borde y segmentar el interior**; un mTLS completo
 | `01-infra` | manual | OpenTofu: VPC, GKE, node pools, Artifact Registry, WIF, ESO, kube-prometheus-stack |
 | `02-services` | push a `main` | Verifica los secretos de bootstrap, despliega Redis y RabbitMQ y los `ClusterIssuer` de cert-manager |
 | `03-apps` | push a `main` | Job `build`: las 5 imágenes (NCT, worker, worker-gpu, API, frontend). Job `deploy`: aplica manifests de apps, HPAs y monitoreo, y fija las imágenes al SHA del commit |
-| `04-gpu-workers` | push a `main` | Deploy de los workers al clúster k3s |
+| `04-gpu-workers` | push a `main` | Deploy de los workers al clúster k3s: ConfigMap con las IPs de los LoadBalancer, secretos de RabbitMQ y Redis, RBAC best-effort y el escenario de demo (1 standalone + un pool de coordinator y 3 mineros) |
 | `ci-checks` | push/PR a `main` y `dev` | **gitleaks** (falla si hay un secreto hardcodeado) + suite de tests |
 
 `01-infra` es deliberadamente **sólo manual**: un `tofu apply` disparado por un
@@ -581,19 +676,33 @@ diferencia entre "funciona" y "es reproducible" sólo se ve al recrear todo.
 
 ### 6.4 Estado actual de la infraestructura
 
-**La nube está dada de baja.** El 2026-07-14 se hizo `tofu destroy` completo del
-proyecto GCP (GKE, node pools, VPC, Artifact Registry, WIF, service accounts),
-más limpieza manual de LoadBalancers, discos PVC huérfanos y secretos.
-Facturación en US$0.
+**La nube está dada de baja.** El despliegue pasó por dos ciclos completos:
 
-Antes de la baja, el sistema **se verificó funcionando de punta a punta**: 10
-workers en el k3s conectados por AMQPS al RabbitMQ de GKE, minando y sellando
-bloques reales, con TLS de Let's Encrypt y Grafana accesible. La bitácora
-completa está en [`despliegue-gcp.md`](despliegue-gcp.md), que incluye las URLs,
-el primer bloque sellado y los problemas encontrados durante el despliegue.
+1. **Julio.** Primer despliegue en el proyecto `voxchain-unlu`. El sistema **se
+   verificó funcionando de punta a punta**: 10 workers en el k3s conectados por
+   AMQPS al RabbitMQ de GKE, minando y sellando bloques reales, con TLS de
+   Let's Encrypt y Grafana accesible. El 2026-07-14 se hizo `tofu destroy`
+   completo (GKE, node pools, VPC, Artifact Registry, WIF, service accounts),
+   más limpieza manual de LoadBalancers, discos PVC huérfanos y secretos.
+2. **Agosto.** Redespliegue **desde cero** con los pipelines (del 4 al 7 de
+   agosto, con `03-apps` en verde). Es el que destapó los tres agujeros de la
+   sección 6.3. Después se volvió a dar de baja.
+
+Mientras la infraestructura esté apagada, los pipelines `03-apps` y
+`04-gpu-workers` **fallan al autenticar** (`invalid_target`: el pool de
+Workload Identity ya no existe). No es un defecto de los workflows, sino la
+consecuencia esperada de que no haya contra qué desplegar. `ci-checks` sigue en
+verde porque no depende de GCP.
+
+La bitácora completa está en [`despliegue-gcp.md`](despliegue-gcp.md), con las
+URLs, el primer bloque sellado y los problemas encontrados durante el
+despliegue.
 
 Todo es reproducible desde el repositorio: imágenes desde los Dockerfiles,
-certificados con los scripts de `certs/`, infraestructura con `tofu apply`.
+certificados con los scripts de `certs/`, infraestructura con `tofu apply` y
+secretos con `bootstrap-secrets.sh`. Al redesplegar cambia la IP del
+LoadBalancer del Ingress, y con ella los hosts `sslip.io` de
+`voxchain-ingress.yaml` y el `GF_SERVER_ROOT_URL` de Grafana en el Terraform.
 
 > **Gotchas del redeploy** (aprendidos en el destroy): borrar los Services
 > LoadBalancer *antes* de destruir el clúster o quedan forwarding rules
@@ -615,7 +724,7 @@ consenso por esfuerzo computacional favorece a quien tiene más plata para
 comprar hardware, que es exactamente lo que un mecanismo de gobierno debería
 evitar. Es una tensión inherente al modelo, no un defecto de la implementación.
 
-El ajuste **dinámico** de `n` (7.2) mantiene constante el costo de promulgar
+El ajuste **dinámico** de `n` (7.1.bis) mantiene constante el costo de promulgar
 *para la red*, pero no lo reparte: la dificultad es un único número global, y el
 valor que encarece la ley para el pool grande deja al minero individual fuera.
 
@@ -704,24 +813,47 @@ crear de nuevo recursos que ya existen. Hoy eso no se nota — el pipeline es
 pero significa que la infraestructura tiene un único punto de verdad no
 replicado: si se pierde ese archivo, recuperar el control de los recursos
 existentes exige importarlos uno por uno. Es la mejora más barata que queda
-pendiente: un bucket de GCS y descomentar ocho líneas.
+pendiente: un bucket de GCS y descomentar ocho líneas. Hay un segundo obstáculo
+para correrlo desde CI: `grafana_admin_password` no tiene default, a propósito,
+y el workflow todavía no la inyecta como `TF_VAR_grafana_admin_password`.
 
-**De la seguridad.** El TLS interno es parcial (sección 6.2). El registry de
-imágenes es de lectura pública.
+**De la seguridad.** El TLS interno es parcial, Redis sale a internet sin
+cifrar y las NetworkPolicies no se aplican (sección 6.2). Los contenedores no
+corren con el sistema de archivos raíz de sólo lectura. El registry de imágenes
+es de lectura pública. El usuario de RabbitMQ de los workers externos se crea
+con la misma contraseña que el administrador del broker, así que el clúster
+ajeno la conoce: convendría separarlas.
 
-**Del manejo del kubeconfig en CI.** `04-gpu-workers` escribe el kubeconfig del
-clúster externo con `echo "${{ secrets.K3S_KUBECONFIG }}" | base64 -d`. GitHub
-enmascara el valor del secreto en los logs, pero enmascara la **cadena en
-base64**, no su contenido decodificado. Hoy no hay fuga porque el resultado va a
-un archivo y ningún paso lo imprime, pero un `cat` agregado para depurar, o un
-`kubectl --v=8`, expondría un token portador en un log público. El alcance
+**Del manejo del kubeconfig en CI.** `04-gpu-workers` decodifica el kubeconfig
+del clúster externo desde el secreto `K3S_KUBECONFIG`. Se pasa por variable de
+entorno y no interpolado en el script, así que no queda en la línea de comando
+del runner. Aun así, GitHub enmascara en los logs la **cadena en base64**, no su
+contenido decodificado. Hoy no hay fuga porque el resultado va a un archivo con
+permisos `600` y ningún paso lo imprime, pero un `cat` agregado para depurar, o
+un `kubectl --v=8`, expondría un token portador en un log público. El alcance
 estaría acotado — la ServiceAccount está limitada a su namespace y no puede
 crear roles ni rolebindings — pero es una fragilidad que conviene declarar.
+
+**Del minado con GPU en el sistema desplegado.** El minero CUDA está medido en
+Pilar 1 (Colab, T4) y se usó en el k3s en junio, sobre la GTX 1060 del clúster.
+Pero los manifests actuales corren en CPU por defecto (la GPU es opt-in por pod,
+sección 2.2), y ninguna de las baterías de la sección 4 incluye workers con
+GPU. La comparación CPU vs GPU dentro del sistema distribuido, y el ingreso y
+egreso de nodos GPU, quedan sin medir.
 
 **De la ventana única.** El NCT procesa una ventana de votación por vez. Esto
 simplifica enormemente el razonamiento sobre consistencia, pero pone un techo
 duro al throughput: no importa cuántos mineros haya, las leyes se sellan en
-serie. Es la limitación más importante del diseño para un uso real.
+serie. La deliberación lo baja todavía más, porque cada ley suma una pausa de
+`DELIBERATION_SECONDS` (120 s en el despliegue) antes de abrir su ventana. Es la
+limitación más importante del diseño para un uso real.
+
+**De la deliberación.** Su "no" es un **veto del mayor**, no una votación
+proporcional: la dificultad se congela sobre el convocado más grande del área,
+así que sólo su abstención encarece la ley para los demás. Y el más grande se
+mide por el hashrate que cada minero **declara**: uno que infle su cómputo se
+vuelve el más grande, sube la dificultad del área y, si después se abstiene,
+puede frenar leyes que el resto habría sellado (AGENT.md 9).
 
 ### 7.2 Mejoras posibles
 
@@ -742,7 +874,15 @@ En orden de relación valor/esfuerzo:
    los locales. Con workers federados por internet esto tendría efecto real.
 5. **Coordinator sin auto-minado** cuando el pool crece. Que reparta y nada más,
    para que atender a los mineros no compita con minar.
-6. **mTLS interno** con un service mesh, si el sistema fuera a manejar algo
+6. **Cerrar el canal de Redis y activar la segmentación.** TLS en Redis (o, como
+   mínimo, `loadBalancerSourceRanges` limitado a la IP del k3s) y
+   `network_policy_config` habilitado en el Terraform, para que las
+   NetworkPolicies que ya existen se apliquen. Sumar `readOnlyRootFilesystem`
+   con `emptyDir` para `/tmp` y los logs.
+7. **HPA por métrica específica.** Escalar los mineros por la profundidad de la
+   cola o por el cómputo vivo (`voxchain_pool_miners_registered`), con
+   prometheus-adapter o KEDA, en vez de sólo por CPU.
+8. **mTLS interno** con un service mesh, si el sistema fuera a manejar algo
    sensible de verdad.
 
 ### 7.3 Dónde aplicaría esta solución
@@ -779,14 +919,14 @@ README raíz del repositorio.
 - **Claude Code (Anthropic)** — asistente principal durante el ciclo de
   desarrollo: exploración y auditoría del código, escritura de tests, manifests
   de Kubernetes y Terraform, documentación técnica y revisión de decisiones de
-  diseño. Los archivos `AGENT.md` y `CONTEXTO.md` son el contexto de dominio que
-  se le dio al agente para trabajar con las reglas de negocio ya cerradas.
+  diseño. `AGENT.md` es el contexto de dominio que se le dio al agente para
+  trabajar con las reglas de negocio ya cerradas.
 
 <!-- TODO: si se usó alguna otra herramienta (Copilot, ChatGPT, Cursor…),
      agregarla acá y en el README raíz. -->
 
 Todo el código asistido por IA fue revisado, entendido y validado. El mecanismo
-de verificación es doble: la suite automatizada (132 tests unitarios y de
+de verificación es doble: la suite automatizada (528 tests unitarios y de
 integración, corriendo en CI sobre cada push) y las corridas reales del sistema
 desplegado.
 
@@ -810,7 +950,7 @@ El proyecto se opera enteramente desde la terminal, con `run.sh` en la raíz com
 
 ```bash
 ./run.sh demo       # levanta el sistema completo en local y sella una ley
-./run.sh test       # suite de tests (132)
+./run.sh test       # suite de tests (528)
 ./run.sh miner      # compila (si hay CUDA) y corre el minero de Pilar 1
 ./run.sh scale      # experimento de escalado M vs 2xM
 ./run.sh bench      # techo de cómputo de la máquina
@@ -844,14 +984,20 @@ ServiceMonitors para el scraping.
 | `voxchain_nct_nonce_validation_seconds` | tiempo de validación del bloque |
 | `voxchain_nct_blocks_sealed_total` | bloques sellados |
 | `voxchain_nct_is_leader` | qué NCT tiene el liderazgo |
+| `voxchain_worker_has_gpu` | si el worker tiene GPU utilizable |
 | `voxchain_pool_miners_registered` | capacidad disponible en el pool |
 | `voxchain_pool_work_distributed_total` | fragmentos repartidos |
+| `voxchain_pool_is_leader` | qué pool coordinator tiene el liderazgo |
+| `voxchain_api_http_request_duration_seconds` | latencia de la API por método y ruta |
 
 ## Anexo C — Documentos relacionados
 
 | Documento | Contenido |
 |---|---|
+| [`arquitecturaVoxChain.jpeg`](../diagrams/arquitecturaVoxChain.jpeg) | Diagrama de arquitectura |
 | [`despliegue-gcp.md`](despliegue-gcp.md) | Bitácora completa del despliegue en GCP |
+| [`../workers.md`](../workers.md) | Modos del worker, equipos y alta de mineros |
+| [`certs/README.md`](../../pilar3-despliegue/certs/README.md) | Certificados TLS del canal AMQPS |
 | [`hit1-setup.md`](hit1-setup.md) | Configuración de CUDA, arquitectura y versiones |
 | [`hit4-md5.md`](hit4-md5.md) | Implementación de MD5 en GPU |
 | [`hit6-prefix-bench.md`](hit6-prefix-bench.md) | Benchmark de prefijos del minero |

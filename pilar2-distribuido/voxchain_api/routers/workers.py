@@ -18,6 +18,7 @@ from voxchain_api.models import (
     RegisterWorkerRequest,
     EnrollNodeRequest,
 )
+from voxchain_api.services import docker_spawner
 from voxchain_api.services.redis_reader import RedisReader
 from voxchain_api.services.rabbitmq_publisher import RabbitMQPublisher
 from voxchain_api.services.teams_store import TeamsStore
@@ -422,6 +423,7 @@ ADMIN_JOIN_TEAM = "join-team"
 ADMIN_LEAVE_TEAM = "leave-team"
 ADMIN_CREATE_TEAM = "create-team"
 ADMIN_SET_CATEGORIES = "set-categories"
+ADMIN_SET_DEFAULT_DECISION = "set-default-decision"
 ADMIN_DISSOLVE_TEAM = "dissolve-team"
 
 
@@ -555,7 +557,35 @@ def _annotate_team(statuses: list[WorkerStatus], redis_client) -> list[WorkerSta
         status.team_role = ("coordinator"
                             if team.get("coordinator_worker_id") == status.worker_id
                             else "member")
-    return _annotate_node_identity(statuses, redis_client)
+    return _annotate_node_identity(_annotate_owner(statuses, redis_client), redis_client)
+
+
+def owner_of(redis_client, worker_id: str) -> Optional[str]:
+    """Pubkey del ciudadano que registró el minero, o ``None`` si no es dinámico."""
+    try:
+        owner = redis_client.get(f"worker:owner:{worker_id}")
+    except Exception:  # noqa: BLE001
+        return None
+    if isinstance(owner, bytes):
+        owner = owner.decode("utf-8")
+    return owner or None
+
+
+def _annotate_owner(statuses: list[WorkerStatus], redis_client) -> list[WorkerStatus]:
+    """``pubkey`` es la del **dueño**, también mientras el minero corre.
+
+    El estado que reporta el worker trae la clave con la que *él* firma (la de
+    nodo), y se devolvía tal cual. Como la UI decide "este minero es mío"
+    comparando ``pubkey`` con la identidad del usuario, un minero encendido
+    dejaba de ser de nadie: desaparecía "Dar de baja", Equipos decía "no tenés
+    ningún minero registrado" y registrar otro daba 409 porque el backend sí
+    sabía que era tuyo. La del nodo va en ``node_pubkey``, que es su lugar.
+    """
+    for status in statuses:
+        owner = owner_of(redis_client, status.worker_id)
+        if owner:
+            status.pubkey = owner
+    return statuses
 
 
 def _annotate_node_identity(statuses: list[WorkerStatus], redis_client) -> list[WorkerStatus]:
@@ -990,13 +1020,14 @@ def persist_worker_registration(request: RegisterWorkerRequest, redis_client) ->
     # 6. Despliegue dinámico en Kubernetes, si el alta lo pidió.
     #
     # `deployed` dice si además de anotar el minero se levantó un proceso para
-    # él. Sin Kubernetes configurado —el caso del docker-compose local— el alta
-    # es sólo metadata: el minero queda registrado y sin correr, y la UI tiene
-    # que decirlo. Antes respondía lo mismo en los dos casos y el frontend
-    # anunciaba "registrado y desplegado en el clúster" aunque no hubiera
-    # desplegado nada, así que el usuario se quedaba esperando un contenedor que
-    # nadie iba a crear.
+    # él, y `deployed_on` dónde: un pod en Kubernetes o un contenedor en el
+    # Docker local. Sin ninguno de los dos el alta es sólo metadata: el minero
+    # queda registrado y sin correr, y la UI tiene que decirlo — antes el
+    # frontend anunciaba "desplegado" aunque no hubiera desplegado nada, así que
+    # el usuario se quedaba esperando un contenedor que nadie iba a crear.
     deployed = False
+    deployed_on = None
+    deploy_error = None
     enrollment_token = ""
     if request.deploy and K8S_ENABLED:
         enrollment_token = _issue_enrollment_token(redis_client, worker_id)
@@ -1007,8 +1038,23 @@ def persist_worker_registration(request: RegisterWorkerRequest, redis_client) ->
             redis_client.delete(f"worker:enroll:{worker_id}")
             raise
         deployed = True
+        deployed_on = "kubernetes"
+    elif request.deploy and docker_spawner.enabled():
+        # El compose local monta el socket de Docker: el API levanta el
+        # contenedor del minero él mismo, en vez de pedirle al usuario que corra
+        # `./run.sh worker` a mano. Si falla no se tira el alta —el minero ya
+        # quedó registrado—; se cae al camino manual y se dice por qué.
+        enrollment_token = _issue_enrollment_token(redis_client, worker_id)
+        try:
+            docker_spawner.spawn_worker(worker_id, enrollment_token)
+            deployed = True
+            deployed_on = "docker"
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("no se pudo levantar el contenedor de %s: %s", worker_id, exc)
+            redis_client.delete(f"worker:enroll:{worker_id}")
+            deploy_error = str(exc)
 
-    # El alta sin despliegue (el compose local) también recibe token: es el que
+    # El alta sin despliegue (sin socket de Docker, o si falló) también recibe token: es el que
     # el usuario le pasa a su propio proceso vía WORKER_ENROLL_TOKEN. En ese caso
     # sí viaja en la respuesta, porque no hay Secret donde dejárselo — pero es un
     # token de slot con TTL, no una identidad.
@@ -1017,7 +1063,58 @@ def persist_worker_registration(request: RegisterWorkerRequest, redis_client) ->
 
     return {"ok": True, "worker_id": worker_id, "pubkey": pubkey,
             "deployed": deployed,
+            **({"deployed_on": deployed_on} if deployed else {}),
+            **({"deploy_error": deploy_error} if deploy_error else {}),
             **({} if deployed else {"enrollment_token": enrollment_token})}
+
+
+def reconcile_docker_workers(redis_client) -> list[str]:
+    """Relanza los mineros registrados que no tienen contenedor. Devuelve cuáles.
+
+    El registro vive en Redis, que tiene volumen y sobrevive a `./run.sh stop`;
+    los contenedores no (el stop los borra para poder bajar la red). Sin esto,
+    al volver a levantar la demo todos los mineros y equipos quedaban "sin
+    arrancar" para siempre, y la única salida era darlos de baja y registrarlos
+    de nuevo. Registrado = debe estar corriendo, igual que un Deployment de k8s.
+
+    Se saltea un minero con token de enrolamiento vigente: significa que un alta
+    lo acaba de levantar (o lo está levantando), y emitirle otro token acá
+    invalidaría el del contenedor recién creado.
+    """
+    if not docker_spawner.enabled():
+        return []
+    try:
+        registered = redis_client.smembers("registered_workers") or []
+        existing = docker_spawner.existing_containers()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("reconciliación de contenedores salteada: %s", exc)
+        return []
+
+    spawned = []
+    for worker_id in registered:
+        if isinstance(worker_id, bytes):
+            worker_id = worker_id.decode("utf-8")
+        if worker_id in ALL_REGISTERED_WORKER_IDS:
+            continue
+        if docker_spawner.container_name(worker_id) in existing:
+            continue
+        if redis_client.get(f"worker:enroll:{worker_id}"):
+            continue
+        # Se re-chequea justo antes: una baja pudo sacarlo del conjunto mientras
+        # tanto, y levantarlo igual dejaría un contenedor huérfano.
+        if not redis_client.sismember("registered_workers", worker_id):
+            continue
+        token = _issue_enrollment_token(redis_client, worker_id)
+        try:
+            docker_spawner.spawn_worker(worker_id, token)
+            spawned.append(worker_id)
+        except Exception as exc:  # noqa: BLE001
+            redis_client.delete(f"worker:enroll:{worker_id}")
+            # Lo normal al arrancar: worker-1 (la plantilla) todavía no existe.
+            logger.info("no se pudo relanzar %s todavía: %s", worker_id, exc)
+    if spawned:
+        logger.info("mineros relanzados en Docker: %s", ", ".join(spawned))
+    return spawned
 
 
 def _clear_node_binding(redis_client, worker_id: str) -> None:
@@ -1134,7 +1231,8 @@ async def unregister_worker(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to unregister worker: {e}")
 
-    # 6. Delete dynamic Kubernetes resources
+    # 6. Delete dynamic Kubernetes resources (o el contenedor del compose local)
     _delete_k8s_worker(worker_id)
+    docker_spawner.delete_worker(worker_id)
 
     return {"ok": True}

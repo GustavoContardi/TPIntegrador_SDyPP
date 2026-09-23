@@ -36,6 +36,11 @@ export interface Team {
    * leyes.
    */
   categories: string[];
+  /**
+   * Qué responde el equipo en una deliberación si el fundador no lo hace
+   * (AGENT.md 3.12): 'accept', 'reject' o '' (no responde, no mina).
+   */
+  default_decision?: string;
   members: TeamMember[];
   member_count: number;
   /** Mineros con keep-alive vivo contra el coordinador. Puede diferir de member_count. */

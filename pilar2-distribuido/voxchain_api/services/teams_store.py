@@ -203,6 +203,18 @@ class TeamsStore:
         """
         self.r.hset(f"team:{team_id}", "coordinator_url", coordinator_url)
 
+    def set_default_decision(self, team_id: str, decision: str) -> str:
+        """Fija lo que vale si el fundador no responde en una deliberación.
+
+        ``accept``, ``reject`` o vacío (sin respuesta: el equipo no mina). La
+        lee el NCT al convocar (``teams_composition``), así que no hay que
+        empujarla a ningún lado.
+        """
+        if not self.r.exists(f"team:{team_id}"):
+            raise TeamError("El equipo no existe", status_code=404)
+        self.r.hset(f"team:{team_id}", "default_decision", decision)
+        return decision
+
     def set_categories(self, team_id: str, categories) -> list[str]:
         """Cambia la agenda del equipo. Devuelve la lista normalizada.
 

@@ -20,6 +20,7 @@ import threading
 
 from common import config
 from common.blockchain.categories import parse_categories
+from common.blockchain.deliberation import normalize_decision
 from common.health import start_health_server
 from common.logging_setup import setup_logging
 from common.messaging import build_rabbitmq
@@ -127,6 +128,13 @@ class WorkerManager:
                 [a.strip() for a in
                  config.get("STANDALONE_REJECTED_ACTIONS", "").split(",") if a.strip()]
                 if self._mode == "standalone" else []),
+            # Respuesta por defecto en las deliberaciones (AGENT.md 3.12):
+            # "accept", "reject" o vacío. Es lo que vale si el dueño no responde
+            # durante la pausa; sin ella, no responder es no minar. Los mineros
+            # en equipo usan la del equipo, que la fija su fundador.
+            "default_decision": (normalize_decision(
+                config.get("STANDALONE_DEFAULT_DECISION", "").strip())
+                if self._mode == "standalone" else ""),
         }
 
     def switch_mode(self, target: str, pool_url: str = "") -> dict:

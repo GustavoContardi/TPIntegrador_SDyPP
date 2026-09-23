@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 
 from common import config
 from common.blockchain.categories import normalize_category, parse_categories
+from common.blockchain.deliberation import participates
 from common.blockchain.challenge import prefix_for_zeros
 from common.metrics import (
     observe_challenge_latency,
@@ -68,6 +69,14 @@ class StandaloneWorker:
         if not wid or wid in self._solved:
             return
         observe_challenge_latency(challenge, self.now())
+        # Con deliberación (AGENT.md 3.12) la decisión ya la tomó el dueño al
+        # responder: el desafío dice quiénes minan, y quien no respondió no.
+        if challenge.get("participants") is not None:
+            if not participates(challenge, self.worker_id):
+                log.info("%s no aceptó minar la ventana %s en la deliberación",
+                         self.worker_id, wid)
+                return
+            return self._mine(challenge, wid)
         action = challenge.get("action", "")
         if action in self._rejected_actions:
             log.info("%s rechaza ventana %s (acción=%s)", self.worker_id, wid, action)
@@ -77,6 +86,9 @@ class StandaloneWorker:
             log.info("%s no aporta cómputo a la ventana %s (categoría=%s)",
                      self.worker_id, wid, category)
             return
+        self._mine(challenge, wid)
+
+    def _mine(self, challenge: dict, wid: str) -> None:
         deadline_str = challenge.get("deadline", "")
         if deadline_str:
             try:

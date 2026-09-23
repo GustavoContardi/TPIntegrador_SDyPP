@@ -38,8 +38,26 @@ else:
 N_ZEROS = get_int("N_ZEROS", 4)
 
 # Duración de ventana por tipo de acción (AGENT.md 3.7), en segundos.
-WINDOW_SECONDS_PROMULGACION = get_int("WINDOW_SECONDS_PROMULGACION", 60)
-WINDOW_SECONDS_DEROGACION = get_int("WINDOW_SECONDS_DEROGACION", 90)
+# Con deliberación son el TECHO: el plazo real se congela al anunciar la ley
+# (WINDOW_DEADLINE_FACTOR × lo que tarda el convocado más grande).
+WINDOW_SECONDS_PROMULGACION = get_int("WINDOW_SECONDS_PROMULGACION", 120)
+WINDOW_SECONDS_DEROGACION = get_int("WINDOW_SECONDS_DEROGACION", 1200)
+
+# Deliberación (AGENT.md 3.12): segundos entre anunciar una ley (sólo la ley y
+# su área) y abrir su ventana. En ese lapso cada equipo convocado —y cada
+# standalone— decide si aporta cómputo; quien no responde no mina. 0 = apagada:
+# la ventana se abre en cuanto a la ley le toca, como antes.
+DELIBERATION_SECONDS = float(get("DELIBERATION_SECONDS", "120"))
+# Plazo de la ventana = FACTOR × tiempo esperado del convocado más grande,
+# acotado a [WINDOW_MIN_SECONDS, WINDOW_SECONDS_<acción>]. Con 2, él sella en
+# ~86% de los casos y uno con 1/4 de su cómputo en ~39%: bajarse pesa. 0 = plazo
+# fijo de config.
+WINDOW_DEADLINE_FACTOR = float(get("WINDOW_DEADLINE_FACTOR", "2"))
+WINDOW_MIN_SECONDS = float(get("WINDOW_MIN_SECONDS", "20"))
+# Pausas seguidas sin NINGUNA respuesta (ni dada ni por defecto) antes de
+# descartar la ley "sin respuesta": sin anotar su texto, así que reproponerla no
+# paga el cooldown largo. Sin tope, una red ausente la reanunciaría para siempre.
+MAX_SILENT_DELIBERATIONS = get_int("MAX_SILENT_DELIBERATIONS", 3)
 
 # Cooldown (AGENT.md 3.4 / 3.5), medido en cantidad de ventanas.
 COOLDOWN_WINDOWS_NEW = get_int("COOLDOWN_WINDOWS_NEW", N_ZEROS)
@@ -50,7 +68,10 @@ COOLDOWN_WINDOWS_REPROPOSED = get_int("COOLDOWN_WINDOWS_REPROPOSED", 2 * N_ZEROS
 # para que promulgar cueste siempre ~DIFFICULTY_TARGET_SECONDS sin importar
 # cuántos mineros haya. Con False, `n` es la constante N_ZEROS de siempre.
 DYNAMIC_DIFFICULTY = get("DYNAMIC_DIFFICULTY", "false").lower() in ("1", "true", "yes")
-DIFFICULTY_TARGET_SECONDS = float(get("DIFFICULTY_TARGET_SECONDS", "30"))
+# 60 y no 30: con deliberación el plazo sale de este tiempo, y `n` redondea
+# hacia abajo en saltos de ×16. Con un objetivo chico el más grande resolvía en
+# 2-3 s y el plazo caía al piso, donde la latencia pesa más que el cómputo.
+DIFFICULTY_TARGET_SECONDS = float(get("DIFFICULTY_TARGET_SECONDS", "60"))
 # Ventanas seguidas midiendo una red más chica antes de bajar `n`. Sube en el
 # acto; baja despacio, porque bajar es lo único que le sirve a un atacante.
 DIFFICULTY_DECAY_WINDOWS = get_int("DIFFICULTY_DECAY_WINDOWS", 3)
@@ -70,6 +91,11 @@ MIN_WORKERS_FOR_WINDOW = get_int("MIN_WORKERS_FOR_WINDOW", 1)
 # que ningún equipo vota vuelve a expirar como veto político (AGENT.md 3.10),
 # que es la semántica original. Con "true" esa ley también espera.
 QUORUM_BY_CATEGORY = get_bool("QUORUM_BY_CATEGORY", True)
+
+# Quién puede proponer (AGENT.md 3.2, `common/blockchain/proposers.py`). True:
+# sólo el fundador de un equipo o el dueño de un minero standalone. False:
+# cualquier identidad, que es lo que necesitan los inyectores de carga.
+RESTRICT_PROPOSERS = get_bool("RESTRICT_PROPOSERS", True)
 
 # Cuota de turnos por identidad (ver `common/queue.py`). Acota cuánto puede
 # monopolizar una identidad las ventanas; no cierra Sybil (AGENT.md 9).
