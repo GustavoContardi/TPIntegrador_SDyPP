@@ -151,6 +151,12 @@ services:
       WORKER_MODE: "standalone"
       WORKER_CAPACITY: "1"
       WORKER_ID: "worker-1"
+      # Los mineros de fábrica no tienen dueño que responda la deliberación
+      # (AGENT.md 3.12): sin respuesta por defecto, toda ley se reencola en
+      # silencio y el sistema local no sella nada hasta que alguien registre un
+      # minero propio y vote desde la UI. Los mineros que se dan de alta desde
+      # la UI no heredan esto (docker_spawner._OVERRIDDEN).
+      STANDALONE_DEFAULT_DECISION: "accept"
       # Dirección con la que otros mineros lo alcanzan si coordina un equipo.
       # Se explicita porque el hostname del contenedor no tiene por qué coincidir
       # con el WORKER_ID, y adivinarla mal deja al equipo sin poder formarse.
@@ -174,6 +180,12 @@ services:
       WORKER_MODE: "standalone"
       WORKER_CAPACITY: "1"
       WORKER_ID: "worker-2"
+      # Los mineros de fábrica no tienen dueño que responda la deliberación
+      # (AGENT.md 3.12): sin respuesta por defecto, toda ley se reencola en
+      # silencio y el sistema local no sella nada hasta que alguien registre un
+      # minero propio y vote desde la UI. Los mineros que se dan de alta desde
+      # la UI no heredan esto (docker_spawner._OVERRIDDEN).
+      STANDALONE_DEFAULT_DECISION: "accept"
       # Dirección con la que otros mineros lo alcanzan si coordina un equipo.
       # Se explicita porque el hostname del contenedor no tiene por qué coincidir
       # con el WORKER_ID, y adivinarla mal deja al equipo sin poder formarse.

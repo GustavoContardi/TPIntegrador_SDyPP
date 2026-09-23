@@ -49,9 +49,12 @@ SPAWNED_LABEL = "voxchain.spawned-by"
 # Variables que el clon NO hereda de la plantilla: son la identidad de
 # `worker-1`, y heredarlas haría que el minero nuevo se presentara como él.
 # WORKER_MODE tampoco: el modo lo decide `worker:desired_mode:<id>` y, sin
-# nada ahí, el default del worker ya es standalone.
+# nada ahí, el default del worker ya es standalone. Ni la respuesta por defecto
+# en deliberación: `worker-1` acepta todo porque no tiene dueño que responda
+# (ver docker-compose.yml), y el minero de un ciudadano lo decide su dueño.
 _OVERRIDDEN = {"WORKER_ID", "WORKER_ADDRESS", "WORKER_MODE",
-               "WORKER_ENROLL_TOKEN", "WORKER_PRIVKEY_PEM", "VOXCHAIN_API_URL"}
+               "WORKER_ENROLL_TOKEN", "WORKER_PRIVKEY_PEM", "VOXCHAIN_API_URL",
+               "STANDALONE_DEFAULT_DECISION"}
 
 _NO_DOCKER_NAME = re.compile(r"[^a-zA-Z0-9_.-]+")
 

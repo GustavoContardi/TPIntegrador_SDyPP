@@ -122,26 +122,67 @@ cmd_demo() {
   echo
   curl -s "$API/api/health"; echo
   echo
+  # Proponer exige responder por cómputo (AGENT.md 3.2): un minero propio o un
+  # equipo. Se crea una identidad de demo y se registra un minero a su nombre,
+  # sin desplegarlo (un minero standalone cuenta aunque esté apagado). Corre
+  # dentro del contenedor del API, que ya tiene la librería de firmas: así el
+  # host no necesita más que Docker y curl.
+  info "== Registrando una identidad de demo con minero propio =="
+  local pk
+  if ! pk="$(docker compose -f "$COMPOSE" exec -T voxchain-api python - <<'PY'
+import json, urllib.request
+from datetime import datetime, timezone
+from common.identity.signing import generate_private_key, public_key_b64, sign
+key = generate_private_key()
+pk = public_key_b64(key)
+ts = datetime.now(timezone.utc).isoformat()
+wid = "demo-" + "".join(c for c in pk[-16:].lower() if c.isalnum())
+body = {"worker_id": wid, "pubkey": pk, "timestamp": ts,
+        "signature": sign(key, f"{wid}|register|{ts}".encode())}
+req = urllib.request.Request("http://localhost:8000/api/workers/register",
+                             json.dumps(body).encode(),
+                             {"Content-Type": "application/json"})
+urllib.request.urlopen(req, timeout=10).read()
+print(pk)
+PY
+)"; then
+    rojo "No se pudo registrar la identidad de demo."
+    exit 1
+  fi
+  echo "Identidad: ${pk:0:24}..."
+  echo
   info "== Proponiendo una ley de ejemplo =="
   local texto="Ley de ejemplo generada por run.sh ($(date +%H:%M:%S))"
   curl -s -X POST "$API/api/laws" \
     -H 'Content-Type: application/json' \
-    -d "{\"text\":\"$texto\",\"author_pubkey\":\"pk-demo-$RANDOM\"}" | head -c 300
+    -d "{\"text\":\"$texto\",\"author_pubkey\":\"$pk\"}" | head -c 300
   echo; echo
+  # Antes de abrir la ventana, el NCT anuncia la ley y espera DELIBERATION_SECONDS
+  # (120 s) a que los convocados decidan si la minan (AGENT.md 3.12). Los
+  # mineros de fábrica del compose aceptan por defecto, pero una respuesta por
+  # defecto no adelanta el cierre de la pausa: el sellado llega a los ~2,5 min.
+  echo "La ley pasa primero por la deliberación (120 s) y después se mina."
   echo -n "Esperando a que los mineros la sellen "
   local antes
   antes="$(curl -s "$API/api/chain" | grep -o '"block_hash"' | wc -l)"
-  for _ in $(seq 1 60); do
+  local sellado=0
+  for _ in $(seq 1 120); do
     local ahora
     ahora="$(curl -s "$API/api/chain" | grep -o '"block_hash"' | wc -l)"
     if [ "$ahora" -gt "$antes" ]; then
       echo " ✓"
       verde "Bloque sellado. La cadena tiene $ahora bloques."
+      sellado=1
       break
     fi
     echo -n "."
-    sleep 2
+    sleep 3
   done
+  if [ "$sellado" -eq 0 ]; then
+    echo
+    rojo "La ley no se selló en 6 minutos. Revisá el NCT con:"
+    echo "  docker compose -f $COMPOSE logs coordinator"
+  fi
   echo
   info "Todo listo. Podés ver:"
   echo "  Frontend      → http://localhost:4200"
