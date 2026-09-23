@@ -30,7 +30,7 @@ Todo se corre desde la terminal, sin abrir un IDE. El único punto de entrada es
 
 ```bash
 ./run.sh demo       # levanta el sistema completo en local y sella una ley
-./run.sh test       # corre la suite de tests (528)
+./run.sh test       # corre la suite de tests (535)
 ./run.sh miner      # compila (si hay CUDA) y corre el minero de Pilar 1
 ./run.sh scale      # experimento de escalado: N transacciones con M vs 2xM
 ./run.sh bench      # techo de cómputo de esta máquina
@@ -76,7 +76,7 @@ Declaración requerida por la consigna (§6 de la checklist):
 <!-- Si se usaron otras herramientas (Copilot, ChatGPT, Cursor...), agregarlas acá. -->
 
 Todo el código generado con asistencia de IA fue revisado, entendido y validado
-por el autor: la suite de tests (528 unitarios y de integración) y las corridas
+por el autor: la suite de tests (535 unitarios y de integración) y las corridas
 de los pipelines de CI son el mecanismo de verificación. Las decisiones de
 arquitectura son propias y están justificadas en la documentación: PoW de
 gobierno, failover del NCT por lease atómico en Redis, elección del coordinator

@@ -40,7 +40,10 @@ PORT=8000 python -m voxchain_api.main
 ```
 
 Root: `GET /` → `{"service":"voxchain-api","version":"1.0.0","status":"running"}`.
-Health: `GET /api/health` → `{"api":"ok","nct":"ok","redis":"ok"}`.
+Health: `GET /api/health` → una clave por servicio: `api`, `nct`, `redis`,
+`rabbitmq`, `frontend`, `workers` y `clock` (desfase contra el reloj de Redis,
+con el valor en `clock_skew_ms`). El resultado de RabbitMQ se cachea 10 s.
+`GET /api/health/live` responde sin consultar dependencias: es el de las probes.
 Metrics: `GET /metrics` → Métricas Prometheus (Prometheus text format).
 
 ## API REST

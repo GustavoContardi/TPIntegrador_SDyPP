@@ -218,6 +218,7 @@ services:
     environment:
       <<: *app-env
       NCT_HEALTH_URL: http://coordinator:8080/health
+      FRONTEND_HEALTH_URL: http://voxchain-frontend:8080/
       PORT: "8000"
       # Registrar un minero desde la UI lo levanta como contenedor (un clon de
       # worker-1 con otra identidad), igual que en Kubernetes se crea un pod.

@@ -17,6 +17,9 @@ class Config:
     REDIS_URL: str
     RABBITMQ_URL: str
     NCT_HEALTH_URL: str
+    # Vacío: el frontend no se chequea y figura "unknown" (en local, por ejemplo,
+    # la API no tiene cómo saber dónde está).
+    FRONTEND_HEALTH_URL: str = ""
     PORT: int = 8000
     # Firma de propuestas (A-01). Si True, el API rechaza propuestas sin firma
     # válida antes de publicarlas. Debe ir alineado con el flag del NCT.
@@ -39,6 +42,7 @@ class Config:
             REDIS_URL=os.getenv("REDIS_URL", "redis://redis:6379/0"),
             RABBITMQ_URL=os.getenv("RABBITMQ_URL", "amqp://guest:guest@rabbitmq:5672/"),
             NCT_HEALTH_URL=os.getenv("NCT_HEALTH_URL", "http://coordinator:8080/health"),
+            FRONTEND_HEALTH_URL=os.getenv("FRONTEND_HEALTH_URL", ""),
             PORT=int(os.getenv("PORT", "8000")),
             REQUIRE_SIGNATURES=_as_bool(os.getenv("REQUIRE_SIGNATURES"), False),
             MIN_WORKERS_FOR_WINDOW=int(os.getenv("MIN_WORKERS_FOR_WINDOW") or 1),

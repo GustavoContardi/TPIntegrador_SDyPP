@@ -158,7 +158,7 @@ Ver [`docker-compose.scale.yml`](docker-compose.scale.yml) y la sección 4 del
 
 ### Health endpoints (JSON, sin GUI)
 
-- API: <http://localhost:8000/api/health> → `{"api","nct","redis","workers"}`
+- API: <http://localhost:8000/api/health> → `{"api","nct","redis","rabbitmq","frontend","workers","clock"}`
 - Disponibilidad para proponer:
   <http://localhost:8000/api/system/availability?category=salud&action=derogacion>
   → `{"available","live_workers","eligible_workers","queued_laws","message",…}`.

@@ -354,3 +354,8 @@ Los puntos del sistema sensibles al tiempo (deadline de ventanas, TTL de leases
 en Redis, épocas de elección del pool que usan `floor(time()/30)`) toleran el
 desvío típico de NTP (≪1 s); además los TTL críticos los arbitra un único reloj
 (el de Redis), no los relojes de los clientes.
+
+Para verificarlo sin entrar a un nodo, `GET /api/health` mide el desfase entre
+el reloj del pod de la API y el `TIME` de Redis (compensando la ida y vuelta):
+`clock` es `"ok"` por debajo de 500 ms y `"skew"` por encima, y el valor medido
+va en `clock_skew_ms`.

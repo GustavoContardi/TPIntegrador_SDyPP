@@ -125,7 +125,13 @@ class HealthResponse(BaseModel):
     api: str
     nct: str
     redis: str
+    rabbitmq: str = "unknown"
+    frontend: str = "unknown"
     workers: str = "unknown"
+    # Sincronización NTP: "ok" si el reloj de la API y el de Redis difieren en
+    # menos de CLOCK_SKEW_THRESHOLD_MS. El valor medido va aparte.
+    clock: str = "unknown"
+    clock_skew_ms: Optional[float] = None
 
 
 class WorkerStatus(BaseModel):

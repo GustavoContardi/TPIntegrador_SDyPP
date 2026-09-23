@@ -496,8 +496,8 @@ ventana que vence sin ganador.
 
 | Suite | Resultado |
 |---|---|
-| Completa (`./run.sh test`) | **528 passed** |
-| Como la corre CI (`-k "not integration"`) | 522 passed, 6 deselected |
+| Completa (`./run.sh test`) | **535 passed** |
+| Como la corre CI (`-k "not integration"`) | 529 passed, 6 deselected |
 | Sólo integración (`-m integration`) | 6 passed |
 
 Los tests de integración corren el flujo extremo a extremo (propuesta → ventana
@@ -586,8 +586,8 @@ El desempate es **por orden de llegada**, no por el valor del nonce.
 | Certificados HTTPS | cert-manager con Let's Encrypt; TLS real en el Ingress |
 | Logging | Cloud Logging de GKE (Fluent Bit por nodo) + `RotatingFileHandler` local |
 | Monitoreo | kube-prometheus-stack: Prometheus, Grafana, Alertmanager, ServiceMonitors y 5 reglas de alerta propias. Alertmanager no tiene receptor configurado: las alertas se ven en su UI y en Grafana, pero no notifican |
-| Sincronización NTP | documentada en el README de Pilar 3 |
-| Endpoint público de estado | `GET /api/health` → `{"api","nct","redis","workers"}` sobre Ingress TLS |
+| Sincronización NTP | NTP de los nodos (README de Pilar 3), verificable desde afuera: `/api/health` compara el reloj de la API con el `TIME` de Redis y reporta `clock` y `clock_skew_ms` |
+| Endpoint público de estado | `GET /api/health` → `{"api","nct","redis","rabbitmq","frontend","workers","clock"}` sobre Ingress TLS. Las probes usan `/api/health/live`, que no consulta dependencias |
 
 ### 6.2 Configuración para producción
 
@@ -926,7 +926,7 @@ README raíz del repositorio.
      agregarla acá y en el README raíz. -->
 
 Todo el código asistido por IA fue revisado, entendido y validado. El mecanismo
-de verificación es doble: la suite automatizada (528 tests unitarios y de
+de verificación es doble: la suite automatizada (535 tests unitarios y de
 integración, corriendo en CI sobre cada push) y las corridas reales del sistema
 desplegado.
 
@@ -950,7 +950,7 @@ El proyecto se opera enteramente desde la terminal, con `run.sh` en la raíz com
 
 ```bash
 ./run.sh demo       # levanta el sistema completo en local y sella una ley
-./run.sh test       # suite de tests (528)
+./run.sh test       # suite de tests (535)
 ./run.sh miner      # compila (si hay CUDA) y corre el minero de Pilar 1
 ./run.sh scale      # experimento de escalado M vs 2xM
 ./run.sh bench      # techo de cómputo de la máquina

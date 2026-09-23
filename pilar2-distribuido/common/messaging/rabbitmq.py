@@ -63,7 +63,7 @@ class RabbitMQMessaging(Messaging):
         self._io_thread: threading.Thread | None = None
 
     # -- conexión / topología ----------------------------------------------
-    def connect(self) -> None:
+    def _connection_params(self) -> pika.URLParameters:
         params = pika.URLParameters(self.url)
         if self.url.startswith("amqps://") and self.ssl_ca_path:
             import ssl
@@ -73,6 +73,33 @@ class RabbitMQMessaging(Messaging):
                     context, server_hostname=self.ssl_server_hostname)
             else:
                 params.ssl_options = pika.SSLOptions(context)
+        return params
+
+    def ping(self, timeout: float = 2.0) -> bool:
+        """¿Acepta el broker una conexión AMQP ahora? Un solo intento, acotado.
+
+        Para el endpoint de estado: abre y cierra una conexión propia sin
+        declarar topología ni reintentar, así un broker caído responde ``False``
+        en ``timeout`` segundos en vez de bloquear los 60 de ``connect()``.
+        """
+        params = self._connection_params()
+        params.connection_attempts = 1
+        params.retry_delay = 0
+        params.socket_timeout = timeout
+        params.stack_timeout = timeout
+        params.blocked_connection_timeout = timeout
+        try:
+            conn = pika.BlockingConnection(params)
+        except Exception:
+            return False
+        try:
+            conn.close()
+        except Exception:
+            pass
+        return True
+
+    def connect(self) -> None:
+        params = self._connection_params()
         last_err = None
         for attempt in range(1, self.connect_retries + 1):
             try:
