@@ -101,16 +101,19 @@ Grafana:
 `tofu output` devuelve `workload_identity_provider` (para el paso 4),
 `artifact_registry` y `get_credentials` (el comando de kubectl).
 
-> El estado de OpenTofu es **local**: el backend GCS está comentado en
-> `versions.tf`. Por eso `01-infra` todavía no sirve desde CI (arrancaría con el
-> estado vacío). Ver el informe, §7.1.
+> El estado de OpenTofu vive en `gs://voxchain-unlu-tfstate` (backend de
+> `versions.tf`), que crea el script del paso 2. Este primer `apply` tiene que
+> ser local: la SA `voxchain-infra` y el pool de WIF que usa `01-infra` los crea
+> él mismo. Los siguientes pueden correr desde CI con `01-infra`.
 
 ### Paso 4: Configurar los secrets de GitHub Actions
 
 | Secret | Valor |
 |--------|-------|
 | `GCP_WIF_PROVIDER` | `workload_identity_provider` de `tofu output` |
-| `GCP_SERVICE_ACCOUNT` | `voxchain-cicd@voxchain-unlu.iam.gserviceaccount.com` |
+| `GCP_SERVICE_ACCOUNT` | `voxchain-cicd@voxchain-unlu.iam.gserviceaccount.com` (pipelines 02-04) |
+| `GCP_INFRA_SERVICE_ACCOUNT` | `infra_service_account` de `tofu output` (sólo `01-infra`) |
+| `GRAFANA_ADMIN_PASSWORD` | la misma de `TF_VAR_grafana_admin_password` (la inyecta `01-infra`) |
 | `K3S_KUBECONFIG` | kubeconfig del clúster k3s, en base64 |
 | `RABBITMQ_USER` | `voxchain-worker` |
 | `RABBITMQ_PASS` | `gcloud secrets versions access latest --secret rabbitmq-pass --project voxchain-unlu` |
@@ -119,6 +122,11 @@ Grafana:
 Ninguno es una llave de GCP: los workflows se autentican por **Workload
 Identity Federation** (OIDC). La única credencial estática es el kubeconfig del
 k3s, porque es un clúster ajeno.
+
+Además, una **variable** del repo (Settings → Secrets and variables → Actions →
+Variables): `CLOUD_ENABLED=true` mientras la infraestructura esté desplegada.
+Sin ella, un push no dispara `02`–`04` (se saltean en vez de fallar contra un
+WIF inexistente); a mano corren siempre.
 
 ### Paso 5: Imágenes
 
@@ -251,10 +259,11 @@ PR / push → ci-checks (gitleaks + pytest)
 (manual)   (redis+rmq)  (build+deploy)   (k3s deploy)
 ```
 
-Todos se autentican contra GCP por Workload Identity Federation. Con la
-infraestructura dada de baja, `03` y `04` fallan en el paso de autenticación
-(`invalid_target`) porque el pool de WIF no existe. Es esperable y se resuelve
-con `tofu apply`.
+Todos se autentican contra GCP por Workload Identity Federation: `01` con la SA
+`voxchain-infra` (sólo ese workflow, desde `main`, puede asumirla) y `02`–`04`
+con `voxchain-cicd`. Con la infraestructura dada de baja no hay pool de WIF
+contra el cual autenticar; por eso `02`–`04` sólo corren por push si la variable
+`CLOUD_ENABLED` vale `true`.
 
 ## Componentes
 

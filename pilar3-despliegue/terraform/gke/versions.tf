@@ -20,9 +20,11 @@ terraform {
     }
   }
 
-  # Descomentar para usar GCS backend:
-  # backend "gcs" {
-  #   bucket = "voxchain-terraform-state"
-  #   prefix = "gke"
-  # }
+  # Estado remoto: sin esto el runner de 01-infra arranca con el estado vacío y
+  # un plan propone recrear todo. El bucket no lo crea este código (tendría que
+  # existir antes de su propio `init`): lo crea bootstrap-secrets.sh.
+  backend "gcs" {
+    bucket = "voxchain-unlu-tfstate"
+    prefix = "gke"
+  }
 }

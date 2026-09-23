@@ -22,6 +22,11 @@ env:
 jobs:
   deploy:
     name: Deploy Workers to k3s
+    # Sin nube desplegada (baja de GCP), un push dispara pipelines que fallan en
+    # el primer paso contra un WIF que no existe y el repo público se llena de
+    # X rojas. Con la variable del repo CLOUD_ENABLED distinta de "true", el
+    # push los saltea; a mano (workflow_dispatch) corren siempre.
+    if: github.event_name == 'workflow_dispatch' || vars.CLOUD_ENABLED == 'true'
     runs-on: ubuntu-latest
     permissions:
       id-token: write

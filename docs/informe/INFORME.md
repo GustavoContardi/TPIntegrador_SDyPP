@@ -632,7 +632,15 @@ Los dos arreglos son acotados y están en la sección 7.2.
 | `ci-checks` | push/PR a `main` y `dev` | **gitleaks** (falla si hay un secreto hardcodeado) + suite de tests |
 
 `01-infra` es deliberadamente **sólo manual**: un `tofu apply` disparado por un
-push puede costar dinero o destruir infraestructura sin intención.
+push puede costar dinero o destruir infraestructura sin intención. Corre con una
+service account propia (`voxchain-infra`), con los permisos de proyecto que
+exige crear VPC, clúster e IAM; la de `02`–`04` (`voxchain-cicd`) sólo despliega
+sobre un clúster existente. Para que un workflow cualquiera no pueda asumir la de
+infra, el provider de WIF deriva el atributo `attribute.infra` de
+`job_workflow_ref`, y sólo `01-infra.yml` corriendo desde `main` lo obtiene. El
+estado vive en un bucket de GCS con versionado (`gs://voxchain-unlu-tfstate`),
+así que el runner parte del estado real. El primer `apply` es necesariamente
+local: la SA de infra y el pool de WIF los crea ese mismo código.
 
 Los secretos para los despliegues 2..N se resuelven con **Workload Identity
 Federation**: GitHub Actions obtiene un token OIDC y lo intercambia por
@@ -688,11 +696,14 @@ diferencia entre "funciona" y "es reproducible" sólo se ve al recrear todo.
    agosto, con `03-apps` en verde). Es el que destapó los tres agujeros de la
    sección 6.3. Después se volvió a dar de baja.
 
-Mientras la infraestructura esté apagada, los pipelines `03-apps` y
-`04-gpu-workers` **fallan al autenticar** (`invalid_target`: el pool de
-Workload Identity ya no existe). No es un defecto de los workflows, sino la
-consecuencia esperada de que no haya contra qué desplegar. `ci-checks` sigue en
-verde porque no depende de GCP.
+Con la infraestructura apagada, los pipelines `03-apps` y `04-gpu-workers`
+**fallaban al autenticar** en cada push (`invalid_target`: el pool de Workload
+Identity ya no existe). No era un defecto de los workflows, sino la consecuencia
+de que no hubiera contra qué desplegar, pero llenaba de fallos la pestaña
+Actions del repositorio público. Desde septiembre, `02`, `03` y `04` sólo corren
+por push si la variable del repositorio `CLOUD_ENABLED` vale `true`; si no, se
+saltean. Disparados a mano corren siempre. `ci-checks` no depende de GCP y corre
+en todos los casos.
 
 La bitácora completa está en [`despliegue-gcp.md`](despliegue-gcp.md), con las
 URLs, el primer bloque sellado y los problemas encontrados durante el
@@ -804,18 +815,17 @@ parcial, no alta disponibilidad real de las colas. Convertirlas a *quorum
 queues* es un cambio de una línea en `_declare_topology` y sería la primera
 mejora a hacer si el sistema fuera a producción.
 
-**Del estado de Terraform.** El backend remoto de GCS está declarado pero
-comentado en `versions.tf`, así que el estado de OpenTofu vive **sólo en la
-máquina de desarrollo**. La consecuencia es concreta: `01-infra` no puede
-funcionar desde CI, porque el runner arrancaría con un estado vacío e intentaría
-crear de nuevo recursos que ya existen. Hoy eso no se nota — el pipeline es
-`workflow_dispatch` manual y los `apply` se corrieron desde la máquina local —
-pero significa que la infraestructura tiene un único punto de verdad no
-replicado: si se pierde ese archivo, recuperar el control de los recursos
-existentes exige importarlos uno por uno. Es la mejora más barata que queda
-pendiente: un bucket de GCS y descomentar ocho líneas. Hay un segundo obstáculo
-para correrlo desde CI: `grafana_admin_password` no tiene default, a propósito,
-y el workflow todavía no la inyecta como `TF_VAR_grafana_admin_password`.
+**Del estado de Terraform.** Hasta septiembre, el backend remoto de GCS estaba
+comentado y el estado de OpenTofu vivía **sólo en la máquina de desarrollo**:
+`01-infra` no podía funcionar desde CI, porque el runner arrancaba con un estado
+vacío, y la infraestructura tenía un único punto de verdad no replicado. Había
+además tres obstáculos más: `grafana_admin_password` no tiene default, a
+propósito, y el workflow no la inyectaba; `tofu plan -auto-approve` es un flag
+inválido, así que el `plan` fallaba igual; y la SA con la que corría sólo tenía
+permisos de despliegue sobre un clúster existente. Los cuatro se corrigieron (ver
+§6.3), con una salvedad que no tiene arreglo: el **primer** `apply` sigue siendo
+local, porque la SA de infra y el pool de WIF que la habilita los crea ese mismo
+`apply`.
 
 **De la seguridad.** El TLS interno es parcial, Redis sale a internet sin
 cifrar y las NetworkPolicies no se aplican (sección 6.2). Los contenedores no
@@ -859,30 +869,26 @@ puede frenar leyes que el resto habría sellado (AGENT.md 9).
 
 En orden de relación valor/esfuerzo:
 
-1. **Mover el estado de OpenTofu a un bucket de GCS.** Es la de mejor relación
-   valor/esfuerzo de toda la lista: un bucket, descomentar el bloque `backend` y
-   `tofu init -migrate-state`. Deja de haber un único punto de verdad no
-   replicado y `01-infra` pasa a ser utilizable desde CI.
-2. **Medir el codo de la curva** con 8 y 16 workers sobre el clúster. Portar el
+1. **Medir el codo de la curva** con 8 y 16 workers sobre el clúster. Portar el
    runner a `kubectl scale` es trabajo menor y respondería la pregunta abierta
    más interesante que quedó.
-3. **Ventanas concurrentes.** Permitir N ventanas simultáneas sobre leyes
+2. **Ventanas concurrentes.** Permitir N ventanas simultáneas sobre leyes
    independientes multiplicaría el throughput. Requiere repensar el
    encadenamiento de bloques (hoy estrictamente lineal).
-4. **Fragmentación adaptativa.** Ajustar `FRAGMENT_SIZE` según la latencia
+3. **Fragmentación adaptativa.** Ajustar `FRAGMENT_SIZE` según la latencia
    observada hacia cada minero: fragmentos grandes para los remotos, chicos para
    los locales. Con workers federados por internet esto tendría efecto real.
-5. **Coordinator sin auto-minado** cuando el pool crece. Que reparta y nada más,
+4. **Coordinator sin auto-minado** cuando el pool crece. Que reparta y nada más,
    para que atender a los mineros no compita con minar.
-6. **Cerrar el canal de Redis y activar la segmentación.** TLS en Redis (o, como
+5. **Cerrar el canal de Redis y activar la segmentación.** TLS en Redis (o, como
    mínimo, `loadBalancerSourceRanges` limitado a la IP del k3s) y
    `network_policy_config` habilitado en el Terraform, para que las
    NetworkPolicies que ya existen se apliquen. Sumar `readOnlyRootFilesystem`
    con `emptyDir` para `/tmp` y los logs.
-7. **HPA por métrica específica.** Escalar los mineros por la profundidad de la
+6. **HPA por métrica específica.** Escalar los mineros por la profundidad de la
    cola o por el cómputo vivo (`voxchain_pool_miners_registered`), con
    prometheus-adapter o KEDA, en vez de sólo por CPU.
-8. **mTLS interno** con un service mesh, si el sistema fuera a manejar algo
+7. **mTLS interno** con un service mesh, si el sistema fuera a manejar algo
    sensible de verdad.
 
 ### 7.3 Dónde aplicaría esta solución

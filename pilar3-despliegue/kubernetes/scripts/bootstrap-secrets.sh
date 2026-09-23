@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Crea en GCP Secret Manager los 7 secretos que consumen los ExternalSecret de
-# kubernetes/infrastructure/. Se corre UNA VEZ por entorno, antes del pipeline
-# 02-services (que verifica que existan y falla con un mensaje claro si no).
+# kubernetes/infrastructure/, y el bucket del estado de OpenTofu. Se corre UNA
+# VEZ por entorno, antes del primer `tofu init` y del pipeline 02-services (que
+# verifica que los secretos existan y falla con un mensaje claro si no).
 #
 #   ./bootstrap-secrets.sh              usa los certs de pilar3-despliegue/certs
 #                                       (los genera con generate-certs.sh si faltan)
@@ -80,6 +81,22 @@ subir rabbitmq-user           "voxchain"
 subir rabbitmq-pass           "$(password_de rabbitmq-pass)"
 subir rabbitmq-erlang-cookie  "$(password_de rabbitmq-erlang-cookie)"
 subir redis-pass              "$(password_de redis-pass)"
+
+# -- bucket del estado de OpenTofu -------------------------------------------
+# Lo usa el backend "gcs" de terraform/gke/versions.tf. Va acá y no en el propio
+# Terraform porque tiene que existir antes de su `tofu init`. Con versionado,
+# para poder volver a un estado anterior si un apply lo corrompe.
+TFSTATE_BUCKET="gs://${PROJECT}-tfstate"
+info "== Bucket de estado de OpenTofu =="
+if gcloud storage buckets describe "$TFSTATE_BUCKET" >/dev/null 2>&1; then
+  echo "  ~ $TFSTATE_BUCKET (ya existe)"
+else
+  gcloud storage buckets create "$TFSTATE_BUCKET" --project="$PROJECT" \
+    --location=southamerica-east1 --uniform-bucket-level-access \
+    --public-access-prevention >/dev/null
+  echo "  + $TFSTATE_BUCKET (creado)"
+fi
+gcloud storage buckets update "$TFSTATE_BUCKET" --versioning >/dev/null
 
 echo
 verde "Listo. Secretos en Secret Manager:"

@@ -28,6 +28,11 @@ output "workload_identity_provider" {
   value       = "${google_iam_workload_identity_pool.github.name}/providers/github-provider"
 }
 
+output "infra_service_account" {
+  description = "SA que asume 01-infra (secret GCP_INFRA_SERVICE_ACCOUNT)"
+  value       = google_service_account.infra.email
+}
+
 output "get_credentials" {
   description = "Command to configure kubectl"
   value       = "gcloud container clusters get-credentials ${google_container_cluster.cluster.name} --zone ${var.zone} --project ${var.project_id}"

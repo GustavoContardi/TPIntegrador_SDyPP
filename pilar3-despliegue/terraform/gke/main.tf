@@ -261,6 +261,10 @@ resource "google_iam_workload_identity_pool_provider" "github" {
     "google.subject"       = "assertion.sub"
     "attribute.actor"      = "assertion.actor"
     "attribute.repository" = "assertion.repository"
+    # "true" sólo para el workflow de infra corriendo desde main. Es lo que
+    # permite darle a 01-infra una SA con permisos amplios sin que cualquier
+    # otro workflow del repo (o una rama) pueda asumirla.
+    "attribute.infra" = "assertion.job_workflow_ref.startsWith(assertion.repository + '/.github/workflows/01-infra.yml@refs/heads/main') ? 'true' : 'false'"
   }
   attribute_condition = "assertion.repository == '${var.github_repository}'"
   oidc {
@@ -307,6 +311,41 @@ resource "google_service_account_iam_member" "cicd_wif" {
   member = format("principalSet://iam.googleapis.com/%s/attribute.repository/%s",
     google_iam_workload_identity_pool.github.name,
     var.github_repository
+  )
+}
+
+# ---- Pipeline 01: SA de infraestructura ----
+# La SA de cicd sólo despliega sobre un clúster que ya existe; para que 01-infra
+# pueda crear la VPC, el clúster y los IAM hacen falta permisos de proyecto. Van
+# en una SA aparte, que sólo puede asumir ese workflow desde main
+# (attribute.infra), así los pipelines 02-04 siguen con el mínimo.
+#
+# El primer apply es necesariamente local: esta SA y el pool de WIF los crea
+# este mismo código. A partir de ahí, 01-infra corre desde CI contra el estado
+# del bucket (versions.tf).
+resource "google_service_account" "infra" {
+  account_id   = "${var.cluster_name}-infra"
+  display_name = "Infra (OpenTofu) Service Account"
+}
+
+resource "google_project_iam_member" "infra_roles" {
+  for_each = toset([
+    "roles/editor",                        # VPC, GKE, Artifact Registry, Secret Manager, bucket de estado
+    "roles/container.admin",               # helm/kubernetes providers dentro del clúster
+    "roles/resourcemanager.projectIamAdmin", # los google_project_iam_member de este archivo
+    "roles/iam.serviceAccountAdmin",       # los google_service_account_iam_member
+    "roles/iam.workloadIdentityPoolAdmin", # el pool y el provider de GitHub
+  ])
+  project = var.project_id
+  role    = each.value
+  member  = "serviceAccount:${google_service_account.infra.email}"
+}
+
+resource "google_service_account_iam_member" "infra_wif" {
+  service_account_id = google_service_account.infra.name
+  role               = "roles/iam.workloadIdentityUser"
+  member = format("principalSet://iam.googleapis.com/%s/attribute.infra/true",
+    google_iam_workload_identity_pool.github.name
   )
 }
 

@@ -24,22 +24,42 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # SA propia de infra, no la de cicd: crear VPC, clúster e IAM exige
+      # permisos de proyecto que los pipelines 02-04 no deben tener. WIF sólo
+      # deja asumirla a este workflow corriendo desde main (attribute.infra en
+      # terraform/gke/main.tf).
       - id: auth
         name: Authenticate to GCP
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
-          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          service_account: ${{ secrets.GCP_INFRA_SERVICE_ACCOUNT }}
 
       - name: Setup OpenTofu
         uses: opentofu/setup-opentofu@v1
         with:
           tofu_version: ${{ env.TF_VERSION }}
 
+      # El estado vive en gs://voxchain-unlu-tfstate (backend de versions.tf).
       - name: tofu init
         working-directory: ${{ env.TF_DIR }}
-        run: tofu init
+        run: tofu init -input=false
 
+      # grafana_admin_password no tiene default a propósito (A-03). Sin esto el
+      # plan se corta pidiendo la variable; mejor fallar acá, diciendo cuál falta.
       - name: tofu ${{ inputs.action }}
         working-directory: ${{ env.TF_DIR }}
-        run: tofu ${{ inputs.action }} -auto-approve
+        env:
+          TF_VAR_grafana_admin_password: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
+          ACTION: ${{ inputs.action }}
+        run: |
+          if [ -z "$TF_VAR_grafana_admin_password" ]; then
+            echo "::error::Falta el secret GRAFANA_ADMIN_PASSWORD del repo."
+            exit 1
+          fi
+          # -auto-approve es sólo de apply: `tofu plan -auto-approve` falla.
+          if [ "$ACTION" = "apply" ]; then
+            tofu apply -auto-approve -input=false
+          else
+            tofu plan -input=false
+          fi
