@@ -27,6 +27,8 @@ spec:
           imagePullPolicy: Always
           securityContext:
             allowPrivilegeEscalation: false
+            # Sólo /tmp y los logs son escribibles (emptyDir).
+            readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
           ports:
@@ -84,8 +86,12 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 5
           volumeMounts:
+            - name: tmp
+              mountPath: /tmp
             - name: logs
               mountPath: /var/log/voxchain
       volumes:
+        - name: tmp
+          emptyDir: {}
         - name: logs
           emptyDir: {}

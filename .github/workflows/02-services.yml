@@ -85,6 +85,26 @@ jobs:
         run: |
           kubectl apply -f ${{ env.K8S_DIR }}/infrastructure/
 
+      # Redis va por el LoadBalancer sin TLS: sin esto, cualquiera en internet
+      # llega al 6379 y la única barrera es la contraseña. Se acota a la IP de
+      # salida del k3s (GCP lo aplica como regla de firewall). Va por variable
+      # del repo y no en el YAML porque esa IP no es nuestra y puede cambiar.
+      # Cómo obtenerla: `kubectl run -n g-git-push-cv egress --rm -it
+      # --restart=Never --image=curlimages/curl -- curl -s ifconfig.me`.
+      - name: Restrict external LoadBalancers to the k3s egress
+        env:
+          CIDRS: ${{ vars.K3S_EGRESS_CIDRS }}
+        run: |
+          if [ -z "$CIDRS" ]; then
+            echo "::warning::K3S_EGRESS_CIDRS no está definida: redis-external y rabbitmq-external quedan abiertos a internet."
+            exit 0
+          fi
+          RANGOS="$(printf '%s' "$CIDRS" | tr -d ' ' | jq -Rc 'split(",")')"
+          for svc in redis-external rabbitmq-external; do
+            kubectl patch svc "$svc" -n voxchain --type merge \
+              -p "{\"spec\":{\"loadBalancerSourceRanges\":$RANGOS}}"
+          done
+
       # Los ClusterIssuer de Let's Encrypt. El controlador de cert-manager lo
       # instala OpenTofu (01-infra); acá van sólo los Issuer, que dependen de
       # sus CRDs y por eso no pueden vivir en el Terraform.

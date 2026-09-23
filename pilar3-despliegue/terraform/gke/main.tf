@@ -74,10 +74,18 @@ resource "google_container_cluster" "cluster" {
     horizontal_pod_autoscaling {
       disabled = false
     }
+    # Con Dataplane V2 este addon (el de Calico) va deshabilitado: las
+    # NetworkPolicies las aplica el propio dataplane (ver datapath_provider).
     network_policy_config {
       disabled = true
     }
   }
+
+  # Dataplane V2 (eBPF/Cilium) aplica las NetworkPolicies de forma nativa, sin
+  # el DaemonSet de Calico. Hasta septiembre no había ni una cosa ni la otra,
+  # así que las policies de kubernetes/infrastructure/ se creaban pero no
+  # filtraban nada. Sólo se puede elegir al crear el clúster.
+  datapath_provider = "ADVANCED_DATAPATH"
 
   deletion_protection = false
 }

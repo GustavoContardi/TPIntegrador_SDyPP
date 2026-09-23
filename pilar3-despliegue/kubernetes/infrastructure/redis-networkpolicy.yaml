@@ -1,10 +1,19 @@
 # A-02: restringe el ingress a Redis. Al seleccionar los pods de Redis, esta
 # policy los pone en modo default-deny y solo admite a los clientes legítimos:
-# NCT (primary/standby) y API en el namespace voxchain, más el pool-coordinator
-# en g-git-push-cv (usa Redis para el lease pool:leader). RabbitMQ NO lleva
-# NetworkPolicy porque se expone a Internet por diseño (LoadBalancer + TLS).
-# El bloque ipBlock 0.0.0.0/0 permite el acceso desde el LoadBalancer externo
-# (workers k3s); la autenticación queda en manos de la contraseña de Redis.
+# NCT (primary/standby) y API, Sentinel, y las otras réplicas de Redis (sin
+# ellas, las réplicas no pueden sincronizar desde el master). El namespace
+# g-git-push-cv es el de los mineros cuando corren en este mismo clúster.
+#
+# El ipBlock 0.0.0.0/0 es el acceso desde el LoadBalancer externo (workers del
+# k3s). Con Dataplane V2 un CIDR sólo cubre tráfico de fuera del clúster, y
+# para que llegue con la IP real del cliente el Service usa
+# externalTrafficPolicy: Local. Quién puede llegar al LoadBalancer lo acota
+# loadBalancerSourceRanges (lo fija 02-services desde K3S_EGRESS_CIDRS); la
+# autenticación queda en la contraseña de Redis.
+#
+# Se aplica desde septiembre (antes el clúster no tenía enforcement). Si algo
+# deja de conectar después de un redespliegue, `kubectl delete networkpolicy
+# -n voxchain --all` vuelve al comportamiento anterior mientras se diagnostica.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -22,7 +31,7 @@ spec:
             matchExpressions:
               - key: app
                 operator: In
-                values: ["nct-primary", "nct-standby", "voxchain-api", "redis-sentinel"]
+                values: ["nct-primary", "nct-standby", "voxchain-api", "redis-sentinel", "redis"]
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: g-git-push-cv

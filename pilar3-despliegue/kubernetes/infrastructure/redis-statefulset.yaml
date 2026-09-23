@@ -23,6 +23,18 @@ spec:
           operator: Equal
           value: infra
           effect: NoSchedule
+      # Repartir las réplicas entre nodos, como Sentinel. "preferred" y no
+      # "required": el pool infra escala de 1 a 2 nodos y con required las
+      # réplicas que no entran quedarían Pending en vez de compartir nodo.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: redis
+                topologyKey: kubernetes.io/hostname
       securityContext:
         runAsNonRoot: true
         runAsUser: 999

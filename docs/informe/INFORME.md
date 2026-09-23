@@ -170,6 +170,8 @@ Los workers también escriben su estado (`worker:status:*`, con TTL) en Redis,
 que es lo único que comparten los dos clústers. Por eso Redis tiene su propio
 LoadBalancer (`redis-external`). Ese canal va autenticado con contraseña pero
 **sin TLS**, y es la principal deuda de seguridad del despliegue (sección 7.1).
+Desde septiembre está acotado a la IP de salida del k3s
+(`loadBalancerSourceRanges`, sección 6.2).
 
 Los workers usan la imagen `worker-gpu`, que trae el minero CUDA compilado para
 `sm_61`, la arquitectura de la GTX 1060 del clúster k3s. La GPU es **opt-in por
@@ -596,8 +598,8 @@ El desempate es **por orden de llegada**, no por el valor del nonce.
 | Cluster Autoscaler | node pools `infra` (1→2) y `apps` (2→3) con autoscaling en el Terraform. El autoscaler de GKE agrega nodos cuando hay **pods pendientes**: el HPA sube réplicas por CPU, las que no entran quedan pendientes y eso dispara el nodo nuevo |
 | HPA | `api-hpa` (2→5) en GKE; `worker-hpa` (2→10) y `pool-miner-hpa` (1→10) declarados para el k3s. Todos por métricas **comunes** (70% de CPU); no hay HPA por métrica específica |
 | StatefulSets con PVC | Redis, Redis Sentinel y RabbitMQ |
-| Límites y securityContext | `runAsNonRoot` (uid 1000 apps, 999 Redis/RabbitMQ, 101 nginx), `allowPrivilegeEscalation: false`, `capabilities.drop: ALL`, seccomp `RuntimeDefault` y límites de CPU/memoria en todos los workloads. `readOnlyRootFilesystem` **no** está activado |
-| Tolerations / nodeSelector | Redis, Sentinel y RabbitMQ declaran `nodeSelector pool=infra` y la toleration al taint `pool=infra:NoSchedule`; Sentinel suma anti-affinity. Los workloads de aplicación y minado no declaran nada: el taint los mantiene fuera del pool `infra`. En el k3s no hay nodeSelector ni tolerations de GPU |
+| Límites y securityContext | `runAsNonRoot` (uid 1000 apps, 999 Redis/RabbitMQ, 101 nginx), `allowPrivilegeEscalation: false`, `capabilities.drop: ALL`, seccomp `RuntimeDefault` y límites de CPU/memoria en todos los workloads. Los contenedores propios (NCT, API, frontend y mineros, incluidos los que crea el alta desde la UI) corren con `readOnlyRootFilesystem`: sólo `/tmp` y los logs son escribibles, como `emptyDir`. Se verificó levantando el stack local con la raíz de sólo lectura y sellando una ley. Redis y RabbitMQ usan imágenes oficiales que escriben en su propio árbol y quedan fuera |
+| Tolerations / nodeSelector | Redis, Sentinel y RabbitMQ declaran `nodeSelector pool=infra` y la toleration al taint `pool=infra:NoSchedule`. Los tres suman anti-affinity *preferred* por nodo (con *required*, las réplicas que no entran en un pool de 1–2 nodos quedarían Pending). Los workloads de aplicación y minado no declaran nada: el taint los mantiene fuera del pool `infra`. En el k3s no hay nodeSelector ni tolerations de GPU |
 | Namespaces | `voxchain`, `monitoring`, `ingress-nginx`, `cert-manager`, `external-secrets` en GKE; `g-git-push-cv` en el k3s |
 | RBAC | `rabbitmq-rbac` (Role mínimo para el peer discovery). `worker-rbac` y `backend-proxy-rbac` están declarados para el k3s, pero ahí nuestra ServiceAccount no puede crear Roles: el pipeline los aplica best-effort y los pods corren con la SA `default` |
 | Zero static keys | Workload Identity Federation (OIDC) en los workflows y Workload Identity para External Secrets; ninguna llave de service account en el repo. La excepción inevitable es el kubeconfig del k3s ajeno (`K3S_KUBECONFIG`), que es un token de GitHub Secrets |
@@ -612,14 +614,27 @@ criterio:
 
 - **Redis también sale a internet y sin cifrar.** Los workers del k3s escriben
   su estado en Redis por un LoadBalancer (`redis-external`, 6379), autenticado
-  con contraseña pero sin TLS y sin restringir las IPs de origen.
-- **La segmentación interna es sólo declarativa.** Hay NetworkPolicies para
-  Redis y RabbitMQ, pero el Terraform crea el clúster con
-  `network_policy_config { disabled = true }` y sin Dataplane V2, así que GKE
-  **no las aplica**. Hoy el tráfico interno API↔NCT↔Redis va sin cifrar y sin
-  restricción efectiva.
+  con contraseña pero sin TLS. Desde septiembre, `02-services` lo restringe (a
+  él y a `rabbitmq-external`) a la IP de salida del k3s con
+  `loadBalancerSourceRanges`, que GCP aplica como regla de firewall. La IP se
+  pasa por variable del repositorio (`K3S_EGRESS_CIDRS`) porque el clúster no es
+  nuestro y puede cambiar. Sigue sin cifrar: el canal queda cerrado a terceros,
+  pero no a quien pueda observar el tráfico en el camino.
+- **La segmentación interna era sólo declarativa hasta septiembre.** Había
+  NetworkPolicies para Redis y RabbitMQ, pero el clúster se creaba sin motor que
+  las aplicara. Ahora usa **Dataplane V2** (`datapath_provider =
+  "ADVANCED_DATAPATH"`), que las aplica de forma nativa. Activarlas destapó dos
+  errores que, con el enforcement apagado, no se veían: la policy de Redis no
+  admitía a las propias réplicas (no podían sincronizar desde el master) y la de
+  RabbitMQ no abría los puertos de clustering entre sus nodos (4369 y 25672).
+  Los Services externos pasaron a `externalTrafficPolicy: Local`, para que el
+  tráfico de afuera llegue con la IP real del cliente y la policy lo reconozca
+  como externo. **Todavía no se verificó sobre un clúster real**: se aplica en el
+  próximo redespliegue, y si algo deja de conectar,
+  `kubectl delete networkpolicy -n voxchain --all` vuelve al estado anterior.
 
-Los dos arreglos son acotados y están en la sección 7.2.
+El tráfico interno API↔NCT↔Redis sigue sin cifrar; la protección interna es de
+red, no criptográfica (sección 7.2).
 
 ### 6.3 Pipelines de despliegue
 
@@ -827,9 +842,8 @@ permisos de despliegue sobre un clúster existente. Los cuatro se corrigieron (v
 local, porque la SA de infra y el pool de WIF que la habilita los crea ese mismo
 `apply`.
 
-**De la seguridad.** El TLS interno es parcial, Redis sale a internet sin
-cifrar y las NetworkPolicies no se aplican (sección 6.2). Los contenedores no
-corren con el sistema de archivos raíz de sólo lectura. El registry de imágenes
+**De la seguridad.** El TLS interno es parcial y Redis sale a internet sin
+cifrar, aunque acotado a la IP del k3s (sección 6.2). El registry de imágenes
 es de lectura pública. El usuario de RabbitMQ de los workers externos se crea
 con la misma contraseña que el administrador del broker, así que el clúster
 ajeno la conoce: convendría separarlas.
@@ -880,11 +894,9 @@ En orden de relación valor/esfuerzo:
    los locales. Con workers federados por internet esto tendría efecto real.
 4. **Coordinator sin auto-minado** cuando el pool crece. Que reparta y nada más,
    para que atender a los mineros no compita con minar.
-5. **Cerrar el canal de Redis y activar la segmentación.** TLS en Redis (o, como
-   mínimo, `loadBalancerSourceRanges` limitado a la IP del k3s) y
-   `network_policy_config` habilitado en el Terraform, para que las
-   NetworkPolicies que ya existen se apliquen. Sumar `readOnlyRootFilesystem`
-   con `emptyDir` para `/tmp` y los logs.
+5. **TLS en Redis.** El canal externo ya está acotado a la IP del k3s y la
+   segmentación interna se aplica; falta cifrarlo (`--tls-port` con la misma CA
+   de RabbitMQ, y `rediss://` en los clientes).
 6. **HPA por métrica específica.** Escalar los mineros por la profundidad de la
    cola o por el cómputo vivo (`voxchain_pool_miners_registered`), con
    prometheus-adapter o KEDA, en vez de sólo por CPU.

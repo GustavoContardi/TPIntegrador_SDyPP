@@ -281,10 +281,13 @@ def _spawn_k8s_worker(worker_id: str, enrollment_token: str):
         resources=resources,
         security_context=client.V1SecurityContext(
             allow_privilege_escalation=False,
+            # Escribibles sólo los emptyDir: la clave, /tmp y los logs.
+            read_only_root_filesystem=True,
             capabilities=client.V1Capabilities(drop=["ALL"]),
         ),
         volume_mounts=[
             client.V1VolumeMount(name="key-volume", mount_path="/app/keys"),
+            client.V1VolumeMount(name="tmp", mount_path="/tmp"),
             client.V1VolumeMount(name="rabbitmq-ca", mount_path="/etc/rabbitmq-ca", read_only=True),
             client.V1VolumeMount(name="logs", mount_path="/var/log/voxchain"),
         ]
@@ -312,6 +315,10 @@ def _spawn_k8s_worker(worker_id: str, enrollment_token: str):
                 ),
                 client.V1Volume(
                     name="logs",
+                    empty_dir=client.V1EmptyDirVolumeSource()
+                ),
+                client.V1Volume(
+                    name="tmp",
                     empty_dir=client.V1EmptyDirVolumeSource()
                 ),
             ]

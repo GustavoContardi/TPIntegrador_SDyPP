@@ -1,3 +1,14 @@
+# Ingress a RabbitMQ: AMQP plano (5672) sólo desde NCT y API; AMQPS (5671)
+# desde afuera, que es por donde entran los workers del k3s (acotado además por
+# loadBalancerSourceRanges en el Service, ver 02-services). Con Dataplane V2 un
+# CIDR sólo cubre tráfico de fuera del clúster; el Service usa
+# externalTrafficPolicy: Local para que llegue con la IP real del cliente.
+#
+# Los nodos de RabbitMQ entre sí necesitan todos sus puertos: 4369 (epmd),
+# 25672 (distribución de Erlang) y 35672-35682 (CLI). Sin esa regla, el
+# enforcement rompe el clúster: cada réplica queda aislada.
+#
+# Rollback si algo deja de conectar: `kubectl delete networkpolicy -n voxchain --all`.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -10,6 +21,10 @@ spec:
   policyTypes:
     - Ingress
   ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: rabbitmq
     - from:
         - podSelector:
             matchExpressions:

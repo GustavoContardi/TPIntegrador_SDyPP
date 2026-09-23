@@ -26,6 +26,8 @@ spec:
           imagePullPolicy: Always
           securityContext:
             allowPrivilegeEscalation: false
+            # Sólo /tmp y los logs son escribibles (emptyDir).
+            readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
           ports:
@@ -88,12 +90,16 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 10
           volumeMounts:
+            - name: tmp
+              mountPath: /tmp
             - name: logs
               mountPath: /var/log/voxchain
             - name: k3s-kubeconfig
               mountPath: /etc/k3s
               readOnly: true
       volumes:
+        - name: tmp
+          emptyDir: {}
         - name: logs
           emptyDir: {}
         # Secret creado fuera del repo:

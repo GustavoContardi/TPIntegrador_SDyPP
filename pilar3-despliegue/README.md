@@ -123,10 +123,13 @@ Ninguno es una llave de GCP: los workflows se autentican por **Workload
 Identity Federation** (OIDC). La única credencial estática es el kubeconfig del
 k3s, porque es un clúster ajeno.
 
-Además, una **variable** del repo (Settings → Secrets and variables → Actions →
-Variables): `CLOUD_ENABLED=true` mientras la infraestructura esté desplegada.
-Sin ella, un push no dispara `02`–`04` (se saltean en vez de fallar contra un
-WIF inexistente); a mano corren siempre.
+Además, dos **variables** del repo (Settings → Secrets and variables → Actions →
+Variables):
+
+| Variable | Valor |
+|----------|-------|
+| `CLOUD_ENABLED` | `true` mientras la infraestructura esté desplegada. Sin ella, un push no dispara `02`–`04` (se saltean en vez de fallar contra un WIF inexistente); a mano corren siempre |
+| `K3S_EGRESS_CIDRS` | IP de salida del k3s en CIDR (`x.x.x.x/32`, varias separadas por coma). `02` acota con ella los LoadBalancer de Redis y RabbitMQ; sin ella quedan abiertos a internet y el job lo advierte |
 
 ### Paso 5: Imágenes
 
@@ -301,17 +304,23 @@ contra el cual autenticar; por eso `02`–`04` sólo corren por push si la varia
   `allowPrivilegeEscalation: false`, `capabilities.drop: ALL` y seccomp
   `RuntimeDefault`. El frontend usa `nginx-unprivileged` (puerto 8080 no
   privilegiado). Los logs a disco van a un `emptyDir` montado en
-  `/var/log/voxchain`. `readOnlyRootFilesystem` no está activado.
+  `/var/log/voxchain`. NCT, API, frontend y mineros corren con
+  `readOnlyRootFilesystem: true`: sólo `/tmp` y los logs (`emptyDir`) son
+  escribibles.
 - **Separación de workloads**: el nodepool `infra` tiene taint
   `pool=infra:NoSchedule` y label `pool=infra` (Terraform). Redis, Sentinel y
-  RabbitMQ declaran `nodeSelector` + `tolerations` para schedulearse allí; los
+  RabbitMQ declaran `nodeSelector` + `tolerations` para schedulearse allí, y
+  anti-affinity *preferred* para repartir las réplicas entre nodos; los
   workloads de aplicación/minería quedan en el nodepool `apps` (sin toleration,
   el taint los excluye de `infra`).
-- **Segmentación de red: pendiente.** `infrastructure/` trae NetworkPolicies
-  para Redis y RabbitMQ, pero el clúster se crea con
-  `network_policy_config { disabled = true }`, así que GKE no las aplica. Y
-  `redis-external` expone Redis a internet sin TLS ni `loadBalancerSourceRanges`.
-  Las dos cosas están declaradas como deuda en el informe (§6.2 y §7.2).
+- **Segmentación de red**: el clúster usa Dataplane V2, que aplica las
+  NetworkPolicies de `infrastructure/` (Redis y RabbitMQ). Los LoadBalancer
+  externos usan `externalTrafficPolicy: Local` y `02-services` los acota con
+  `loadBalancerSourceRanges` a la variable del repo `K3S_EGRESS_CIDRS` (la IP de
+  salida del k3s, separada por comas si son varias). Para averiguarla:
+  `kubectl run -n g-git-push-cv egress --rm -it --restart=Never --image=curlimages/curl -- curl -s ifconfig.me`.
+  Redis sigue sin TLS (deuda, informe §7.2). Rollback si algo deja de conectar
+  tras un redespliegue: `kubectl delete networkpolicy -n voxchain --all`.
 - **Registry público de lectura**: el k3s ajeno hace pull sin
   `imagePullSecrets`, que exigirían mandarle una llave estática de GCP. Las
   imágenes no contienen secretos.

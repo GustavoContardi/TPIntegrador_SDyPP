@@ -7,6 +7,11 @@ metadata:
     networking.gke.io/load-balancer-type: "External"
 spec:
   type: LoadBalancer
+  # Local: el tráfico entra sólo por el nodo que tiene el pod y conserva la IP
+  # del cliente. Con Cluster llega SNATeado con la IP de otro nodo y la
+  # NetworkPolicy (que admite el exterior por ipBlock) no lo reconoce como
+  # externo. loadBalancerSourceRanges lo agrega 02-services (K3S_EGRESS_CIDRS).
+  externalTrafficPolicy: Local
   selector:
     app: redis
     statefulset.kubernetes.io/pod-name: redis-0
