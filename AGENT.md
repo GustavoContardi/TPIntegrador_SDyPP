@@ -252,7 +252,7 @@ Sin cambios respecto al enunciado base del TP: el minero GPU/CPU calcula hashes 
 
 ### Pilar 2 — Infraestructura distribuida
 
-**P1 (Validación):** el minero CUDA resuelve el desafío de gobierno (promulgar o derogar) en lugar de una transacción genérica. La dificultad (n o n+1) la define el NCT al abrir la ventana, no un ajuste dinámico por carga de red.
+**P1 (Validación):** el minero CUDA resuelve el desafío de gobierno (promulgar o derogar) en lugar de una transacción genérica. La dificultad (n para promulgar, n+1 para derogar) la define el NCT al anunciar la ley; `n` se recalcula según el cómputo vivo de la red (11.3), no según la carga de leyes en la cola.
 
 **P2 (RabbitMQ):** tres flujos de consenso, más los de coordinación y control:
 
@@ -275,7 +275,7 @@ Y uno de control, que no participa del consenso:
 - Gestiona exclusivamente ventanas de votación (abrir, cerrar, verificar).
 - Decide el orden de la cola (round-robin por autor).
 - Verifica nonces recibidos antes del deadline.
-- **No** ajusta dificultad dinámicamente por carga de red (la dificultad es fija: n para promulgar, n+1 para derogar).
+- Fija la dificultad de cada ventana: `n` para promulgar, `n+1` para derogar. Con `DYNAMIC_DIFFICULTY=true` (el modo en que corre el sistema), `n` se recalcula ante cada ley según el cómputo vivo, para sostener el tiempo de promulgación (11.3). No la ajusta según la carga de la cola: más leyes esperando no las abarata ni las encarece.
 - **No** arbitra contenido de las leyes.
 
 **P5 (Pool):** rol redefinido — ya no es solo infraestructura de escalado, es una **facción política**, y su agenda temática (3.10) es lo que la hace tal: elige en qué áreas de ley gasta su esfuerzo y en cuáles se abstiene. Subdivide el espacio de nonces de la ventana activa entre los mineros que agrega **si y sólo si** la categoría de esa ventana está en su agenda. Recibe keep-alives para conocer capacidad disponible. Dado que solo hay una ventana activa a la vez, el pool no necesita lógica de distribución entre múltiples desafíos simultáneos — toda su capacidad apunta siempre al desafío vigente.
