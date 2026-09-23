@@ -1,6 +1,12 @@
-# Extiende el ruleset por defecto de gitleaks (no lo reemplaza) y agrega una
-# regla para credenciales hardcodeadas en código/IaC que las reglas genéricas
-# pueden no detectar (A-03: el caso `adminPassword = "voxchain"` en main.tf).
+# Extiende el ruleset por defecto de gitleaks (no lo reemplaza) y agrega dos
+# reglas para credenciales hardcodeadas en código/IaC que las reglas genéricas
+# pueden no detectar:
+#   - hardcoded-credential-assignment: asignación entre comillas
+#     (A-03: el caso `adminPassword = "voxchain"` en main.tf).
+#   - hardcoded-credential-yaml-unquoted: valor YAML sin comillas
+#     (el caso `password: sdypp2026` en gpu-cluster/, que la regla anterior no
+#     veía por exigir comillas y la genérica por pedir >= 10 caracteres).
+# Los hallazgos del historial ya revocados están en .gitleaksignore.
 [extend]
 useDefault = true
 
@@ -9,6 +15,7 @@ description = "allowlisted files"
 paths = [
     ".gitignore",
     ".gitleaks.toml",
+    ".gitleaksignore",
 ]
 
 [[rules]]
@@ -17,11 +24,34 @@ description = "Password/credencial hardcodeada (asignación literal en código o
 regex = '''(?i)(admin_?password|passwd|password|pwd|secret)\s*[:=]\s*["'][^"'\s]{6,}["']'''
 [rules.allowlist]
 description = "Placeholders e interpolaciones legítimas, no secretos reales"
+# Contra el match entero y no contra el "secret": la regex tiene un solo grupo y
+# es el de la clave, así que gitleaks tomaba `password` como el secreto y estas
+# excepciones nunca se aplicaban (CHANGE_ME, por ejemplo, seguía reportándose).
+regexTarget = "match"
 regexes = [
     '''CHANGE_ME''',          # placeholder de .secrets/*.yaml
     '''var\.''',              # variables de Terraform (var.grafana_admin_password)
-    '''\$\{''',               # interpolaciones ${...}
-    '''\$\(''',               # interpolaciones $(...)
+    '''["']\$''',             # variables e interpolaciones de shell: "$X", "${X}", "$(...)"
+    '''["']<[^>]+>["']''',    # placeholders de documentación: "<RABBITMQ_PASS>"
     '''secretKeyRef''',       # referencias a Secrets de K8s
     '''valueFrom''',
+]
+
+[[rules]]
+id = "hardcoded-credential-yaml-unquoted"
+description = "Password/credencial hardcodeada como valor YAML sin comillas"
+path = '''\.ya?ml$'''
+# La clave tiene que TERMINAR en la palabra sensible (`password:`, `db_pass:`),
+# así `secretName:` o `passwordSecretRef:` no cuentan. El valor no puede empezar
+# con comillas (eso lo cubre la regla anterior), `$` (interpolación), ni con los
+# indicadores de YAML de bloque, ancla o flujo.
+regex = '''(?im)^[ \t]*-?[ \t]*[\w.-]*(password|passwd|pwd|pass|secret)[ \t]*:[ \t]*([^\s"'#$&*{|>\[][^\s#]{5,})[ \t]*(#.*)?$'''
+secretGroup = 2
+[rules.allowlist]
+description = "Placeholders y nombres de Secret, no secretos reales"
+regexTarget = "match"
+regexes = [
+    '''CHANGE_ME''',
+    ''':[ \t]*<[^>]+>''',     # placeholders de documentación: <RABBITMQ_PASS>
+    '''(?i)existingSecret''', # Helm: nombre del Secret a usar, no su valor
 ]

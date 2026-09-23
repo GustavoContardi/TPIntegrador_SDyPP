@@ -1,0 +1,17 @@
+# Hallazgos del historial de git que ya no son secretos vigentes. No se reescribe
+# el historial (el repo es público y ya fue clonado); lo que corresponde es
+# revocar y regenerar, y dejar constancia acá de cada uno.
+
+# Contraseña de admin de Grafana "voxchain" (junio, A-03). Reemplazada por
+# var.grafana_admin_password; la instancia que la usaba se destruyó con la baja
+# de la infra del 14 de julio. AUDIT_REPORT.md sólo la cita al reportarla.
+736b944e0c41eb568f2692a92f8b2c62af473220:pilar3-despliegue/terraform/gke/main.tf:hashicorp-tf-password:348
+736b944e0c41eb568f2692a92f8b2c62af473220:pilar3-despliegue/terraform/gke/main.tf:hardcoded-credential-assignment:348
+89a9a043cb49833640a7948b33b422f2c9867641:AUDIT_REPORT.md:hardcoded-credential-assignment:22
+89a9a043cb49833640a7948b33b422f2c9867641:AUDIT_REPORT.md:hardcoded-credential-assignment:80
+
+# Contraseña del usuario voxchain-worker de RabbitMQ en gpu-cluster/ (junio a
+# septiembre, sin comillas: por eso no la veía ninguna regla). Quitada del
+# manifest en septiembre; se rota con `bootstrap-secrets.sh --rotate` en el
+# redespliegue previo a la entrega.
+7ea5f2c9c4c86f7b88df4c294cbef26d2fcc220f:pilar3-despliegue/kubernetes/gpu-cluster/rabbitmq-credentials-secret.yaml:hardcoded-credential-yaml-unquoted:9
