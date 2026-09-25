@@ -37,6 +37,16 @@ export class IdentityService {
    */
   private signingKey: Promise<CryptoKey | null> = Promise.resolve(null);
 
+  /**
+   * Si el navegador se comprometió a no desalojar el almacenamiento del sitio.
+   *
+   * IndexedDB es *best-effort*: bajo presión de espacio el navegador puede
+   * borrarlo, y Safari borra lo de un sitio tras 7 días sin visitarlo. Para
+   * una clave que no se puede volver a leer, eso es perder la identidad. `null`
+   * mientras no se sabe (o si el navegador no expone la API).
+   */
+  storagePersisted = signal<boolean | null>(null);
+
   constructor() {
     this.loadFromStorage();
   }
@@ -67,6 +77,26 @@ export class IdentityService {
     this.signingKey = stored.exportedPrivkey
       ? this.migrateLegacyKey(stored.exportedPrivkey)
       : loadKey();
+    // Sólo consulta: pedir persistencia en el arranque, sin que el usuario haya
+    // hecho nada, en Firefox abre un permiso que nadie entiende. Se pide al
+    // crear o restaurar (ver requestPersistence).
+    navigator.storage?.persisted?.()
+      .then((ok) => this.storagePersisted.set(ok))
+      .catch(() => {});
+  }
+
+  /**
+   * Pide que el navegador no desaloje IndexedDB. Chrome decide solo (sitio
+   * instalado, en marcadores o con uso frecuente); Firefox le pregunta al
+   * usuario, por eso se llama justo después de una acción suya.
+   */
+  private async requestPersistence(): Promise<void> {
+    try {
+      const ok = (await navigator.storage?.persist?.()) ?? null;
+      this.storagePersisted.set(ok);
+    } catch {
+      this.storagePersisted.set(null);
+    }
   }
 
   private async migrateLegacyKey(exportedPrivkey: string): Promise<CryptoKey | null> {
@@ -104,7 +134,9 @@ export class IdentityService {
    * un dato no verificable dentro del protocolo. Quien identifica a una cuenta
    * ante el resto de la red es su clave pública.
    */
-  async generateKeypair(displayName?: string): Promise<NewIdentity> {
+  async generateKeypair(displayName?: string,
+                        opts: { replace?: boolean } = {}): Promise<NewIdentity> {
+    this.assertCanReplace(opts.replace);
     // Se genera extraíble por un instante y con un único propósito: sacar el
     // PEM de respaldo que el usuario tiene que guardar. Después se reimporta
     // como no extraíble y el handle extraíble se descarta.
@@ -128,8 +160,66 @@ export class IdentityService {
     };
     this.identity.set(identity);
     this.persistPublicPart();
+    await this.requestPersistence();
 
     return { identity, pemBackup: formatAsPem(arrayBufferToBase64(privkeyRaw)) };
+  }
+
+  /**
+   * Restaura una identidad desde el PEM de respaldo que se mostró al crearla.
+   *
+   * Es lo que le da sentido a ese respaldo: sin esto sólo servía para
+   * `scripts/propose_law.py`, y quien borraba los datos del sitio perdía la
+   * identidad aunque la hubiera guardado.
+   *
+   * La pública se deriva de la privada (vía JWK, que trae `x`/`y`): así no hay
+   * que pedirla aparte ni confiar en que el usuario pegue la que corresponde.
+   * Para eso la privada se importa extraíble un instante; no expone nada nuevo,
+   * porque el PEM ya está en JavaScript desde que el usuario lo pegó. Lo que se
+   * guarda es, como siempre, una reimportación no extraíble.
+   */
+  async restoreFromPem(pem: string, displayName?: string,
+                       opts: { replace?: boolean } = {}): Promise<Identity> {
+    this.assertCanReplace(opts.replace);
+
+    const pkcs8 = pemToArrayBuffer(pem);
+    let jwk: JsonWebKey;
+    try {
+      const temp = await crypto.subtle.importKey(
+        'pkcs8', pkcs8, { name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign']);
+      jwk = await crypto.subtle.exportKey('jwk', temp);
+    } catch {
+      throw new Error('Eso no parece una clave secreta de VoxChain. Revisá que la hayas pegado completa.');
+    }
+    const pub = await crypto.subtle.importKey(
+      'jwk', { kty: 'EC', crv: 'P-256', x: jwk.x, y: jwk.y, ext: true },
+      { name: 'ECDSA', namedCurve: 'P-256' }, true, ['verify']);
+    const pubkeyRaw = await crypto.subtle.exportKey('spki', pub);
+
+    const sealed = await importSigningKey(pkcs8);
+    await saveKey(sealed);
+    this.signingKey = Promise.resolve(sealed);
+
+    const name = displayName?.trim();
+    const identity: Identity = {
+      pubkey: arrayBufferToBase64(pubkeyRaw),
+      ...(name ? { username: name } : {}),
+    };
+    this.identity.set(identity);
+    this.persistPublicPart();
+    await this.requestPersistence();
+    return identity;
+  }
+
+  /**
+   * Crear o restaurar escribe en la misma entrada de IndexedDB que la
+   * identidad actual: hacerlo sin querer la borra para siempre. La UI pregunta
+   * antes; esto es la red de seguridad para cualquier otro llamador.
+   */
+  private assertCanReplace(replace?: boolean) {
+    if (this.identity() && !replace) {
+      throw new Error('Ya hay una identidad en este navegador: reemplazarla la borra.');
+    }
   }
 
   /**
@@ -167,6 +257,12 @@ export class IdentityService {
       .join('');
   }
 
+  /**
+   * Borra la identidad de este navegador, **clave privada incluida**.
+   *
+   * No es "cerrar sesión": no hay sesión. Es irreversible salvo que el usuario
+   * tenga el respaldo, así que sólo se llama tras una confirmación explícita.
+   */
   clearIdentity() {
     localStorage.removeItem(this.storageKey);
     this.identity.set(null);
@@ -253,6 +349,18 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
   let binary = '';
   for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
   return btoa(binary);
+}
+
+/** PEM PKCS#8 → bytes. Tolera espacios, saltos de línea y CRLF al pegar. */
+function pemToArrayBuffer(pem: string): ArrayBuffer {
+  const b64 = pem
+    .replace(/-----BEGIN PRIVATE KEY-----/, '')
+    .replace(/-----END PRIVATE KEY-----/, '')
+    .replace(/\s+/g, '');
+  if (!b64 || !/^[A-Za-z0-9+/]+=*$/.test(b64)) {
+    throw new Error('Pegá la clave secreta completa, con las líneas BEGIN y END.');
+  }
+  return base64ToArrayBuffer(b64);
 }
 
 function formatAsPem(b64: string): string {

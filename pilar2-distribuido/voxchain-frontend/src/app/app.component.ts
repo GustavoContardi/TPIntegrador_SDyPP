@@ -44,8 +44,12 @@ import { IdentityService } from './core/services/identity.service';
                    usan los mineros, acá aplicado a tu propia identidad. -->
               <span class="session__dot"></span>
               <span class="session__label">{{ sessionLabel() }}</span>
+              <!-- No hay botón de "cerrar sesión": no hay sesión que cerrar. La
+                   identidad es la clave guardada en este navegador, y el único
+                   "salir" posible es borrarla — irreversible sin el respaldo —,
+                   así que vive en /identity, detrás de una confirmación. Antes
+                   había acá una × que la borraba de un clic. -->
               <a class="btn btn-ghost session__btn" routerLink="/identity">Mi identidad</a>
-              <button class="btn btn-ghost session__out" (click)="logout()" title="Cerrar sesión">×</button>
             </ng-container>
             <ng-template #anon>
               <a class="btn btn-primary session__in" routerLink="/identity">Crear mi identidad</a>
@@ -101,7 +105,6 @@ import { IdentityService } from './core/services/identity.service';
     .session__label { font-size: 12.5px; white-space: nowrap; color: var(--color-neutral-300); }
     .session__btn { font-size: 12px; color: var(--color-neutral-500); }
     .session__btn:hover { color: var(--color-text); background: transparent; }
-    .session__out { font-size: 17px; line-height: 1; color: var(--color-neutral-500); padding: 0 6px; }
     .session__in { font-size: 12.5px; }
 
     @media (max-width: 1080px) {
@@ -122,9 +125,5 @@ export class AppComponent {
     const id = this.identityService.identity();
     if (!id) return '';
     return id.username || 'Tu identidad';
-  }
-
-  logout() {
-    this.identityService.clearIdentity();
   }
 }

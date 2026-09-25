@@ -46,7 +46,7 @@ import { friendlyError } from '../../core/utils/format';
           <button class="btn btn-secondary active__btn" (click)="copy(id.pubkey, 'Código público copiado.')">
             Copiar código
           </button>
-          <button class="btn btn-ghost active__btn" (click)="clear()">Cerrar y borrar identidad</button>
+          <button class="btn btn-ghost active__btn" (click)="clear()">Borrar identidad de este navegador</button>
         </div>
 
         <!-- Respaldo de una sola vez: existe sólo mientras dure esta pantalla,
@@ -56,8 +56,8 @@ import { friendlyError } from '../../core/utils/format';
           <div class="vc-note vc-note--bad backup">
             <strong>Guardá tu clave secreta ahora.</strong>&ngsp;
             <span>Es la única vez que la vas a ver. Copiala y guardala en un lugar
-              seguro: si borrás los datos de este navegador, es la única forma de no
-              perder tu identidad.</span>
+              seguro: si borrás los datos de este navegador, o querés usar tu identidad
+              en otro, la recuperás pegándola en "Restaurar desde respaldo".</span>
           </div>
           <pre class="vc-code-block backup__pem">{{ pem }}</pre>
           <div class="vc-actions active__cta">
@@ -70,7 +70,17 @@ import { friendlyError } from '../../core/utils/format';
           <strong>Tu clave secreta está protegida.</strong>&ngsp;
           <span>Tu navegador la usa para firmar, pero nunca la entrega: ni a esta app,
             ni a tus mineros, ni a nadie. Ojo: si borrás los datos del sitio, se borra
-            con ellos.</span>
+            con ellos, y sólo la recuperás con tu respaldo.</span>
+        </p>
+
+        <!-- IndexedDB es best-effort: sin persistencia concedida, el navegador
+             puede borrarlo solo (falta de espacio, o Safari a los 7 días sin
+             visitas). Mejor que el usuario lo sepa a que lo descubra. -->
+        <p class="vc-note vc-note--warn active__persist"
+           *ngIf="!pemBackup() && identityService.storagePersisted() === false">
+          <strong>Tu navegador podría borrar la clave por su cuenta.</strong>&ngsp;
+          <span>No garantizó conservar los datos de este sitio (pasa si le falta
+            espacio, o en Safari tras una semana sin entrar). Tené tu respaldo a mano.</span>
         </p>
       </div>
 
@@ -100,7 +110,7 @@ import { friendlyError } from '../../core/utils/format';
             <span class="own__ack-text">
               Entiendo que mi clave secreta vive sólo en este navegador, que voy a poder
               verla una única vez para respaldarla y que, si borro los datos del sitio,
-              la pierdo.
+              la pierdo salvo que tenga ese respaldo.
             </span>
           </label>
 
@@ -111,6 +121,36 @@ import { friendlyError } from '../../core/utils/format';
           <button class="btn btn-primary own__submit" (click)="register()"
                   [disabled]="generating() || !canRegister()">
             {{ generating() ? 'Creando identidad…' : 'Crear identidad' }}
+          </button>
+        </div>
+
+        <!-- Restaurar: lo que hace útil al respaldo. Sin esto, el PEM sólo
+             servía para scripts/propose_law.py. -->
+        <div class="card elev-sm vc-plain own__card">
+          <span class="card-kicker">¿Ya tenés una?</span>
+          <h4 class="own__title">Restaurar desde respaldo</h4>
+          <p class="own__body">
+            Pegá la clave secreta que guardaste al crearla. Tu código público, tus
+            mineros y tus equipos siguen siendo los mismos.
+          </p>
+
+          <div class="field own__field">
+            <label for="vc-pem">Clave secreta</label>
+            <textarea id="vc-pem" class="input own__pem" spellcheck="false" autocomplete="off"
+                      placeholder="-----BEGIN PRIVATE KEY-----" [value]="restorePem()"
+                      [disabled]="restoring()"
+                      (input)="restorePem.set($any($event.target).value)"></textarea>
+          </div>
+          <div class="field own__field">
+            <label for="vc-rname">Nombre para mostrar (opcional)</label>
+            <input id="vc-rname" class="input" maxlength="24" autocomplete="off"
+                   [value]="restoreName()" [disabled]="restoring()"
+                   (input)="restoreName.set($any($event.target).value)">
+          </div>
+
+          <button class="btn btn-secondary own__submit" (click)="restore()"
+                  [disabled]="restoring() || !restorePem().trim()">
+            {{ restoring() ? 'Restaurando…' : 'Restaurar identidad' }}
           </button>
         </div>
 
@@ -157,6 +197,8 @@ import { friendlyError } from '../../core/utils/format';
     .own__ack-text { flex: 1; }
     .own__error { margin-top: 14px; }
     .own__submit { align-self: flex-start; margin-top: 18px; min-height: 40px; padding: 0 20px; }
+    .own__pem { min-height: 110px; resize: vertical; font: 11.5px var(--font-mono); }
+    .active__persist { margin-top: 12px; }
   `]
 })
 export class IdentityComponent {
@@ -175,6 +217,11 @@ export class IdentityComponent {
    */
   pemBackup = signal<string | null>(null);
 
+  /** Formulario de restauración. El PEM se vacía apenas se usa: no queda ni en memoria. */
+  restorePem = signal('');
+  restoreName = signal('');
+  restoring = signal(false);
+
   displayName = signal('');
   acknowledged = signal(false);
   nameTouched = signal(false);
@@ -191,10 +238,12 @@ export class IdentityComponent {
     this.nameTouched.set(true);
     if (!this.canRegister()) return;
 
+    if (!this.confirmReplace()) return;
+
     this.generating.set(true);
     try {
       const name = this.displayName().trim();
-      const { pemBackup } = await this.identityService.generateKeypair(name);
+      const { pemBackup } = await this.identityService.generateKeypair(name, { replace: true });
       this.pemBackup.set(pemBackup);
       this.snackBar.open(`¡Listo, ${name}! Tu identidad está creada. Guardá tu clave secreta.`,
                          'Cerrar', { duration: 6000 });
@@ -209,7 +258,48 @@ export class IdentityComponent {
     }
   }
 
+  async restore() {
+    if (!this.confirmReplace()) return;
+
+    this.restoring.set(true);
+    try {
+      const id = await this.identityService.restoreFromPem(
+        this.restorePem(), this.restoreName(), { replace: true });
+      this.pemBackup.set(null);
+      this.restorePem.set('');
+      this.restoreName.set('');
+      this.snackBar.open(`Identidad restaurada${id.username ? `, ${id.username}` : ''}.`,
+                         'Cerrar', { duration: 4000 });
+    } catch (err: any) {
+      console.error(err);
+      this.snackBar.open(friendlyError(err, 'No se pudo restaurar la identidad.'),
+                         'Cerrar', { duration: 5000 });
+    } finally {
+      this.restoring.set(false);
+    }
+  }
+
+  /**
+   * Crear o restaurar pisa la identidad actual, y sin su respaldo no vuelve.
+   * Devuelve true si no hay nada que pisar o si el usuario confirmó.
+   */
+  private confirmReplace(): boolean {
+    const actual = this.identityService.identity();
+    if (!actual) return true;
+    return confirm(
+      `Ya tenés una identidad en este navegador (${actual.username || 'sin nombre'}).\n\n` +
+      'Si seguís, se reemplaza y su clave secreta se borra. Sólo vas a poder ' +
+      'recuperarla con el respaldo que guardaste al crearla.');
+  }
+
   clear() {
+    if (!confirm(
+      '¿Borrar tu identidad de este navegador?\n\n' +
+      'Se borra tu clave secreta. Sin el respaldo que guardaste al crearla no hay ' +
+      'forma de recuperarla: nadie puede devolvértela, y tus mineros y equipos ' +
+      'quedan a nombre de una identidad que ya no vas a poder usar.')) {
+      return;
+    }
     this.identityService.clearIdentity();
     this.pemBackup.set(null);
     this.snackBar.open('Identidad borrada.', 'Cerrar', { duration: 2000 });
