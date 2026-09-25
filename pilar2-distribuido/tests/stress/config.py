@@ -64,10 +64,11 @@ SOAK_PROPOSAL_INTERVAL = _float("SOAK_PROPOSAL_INTERVAL",  2.0)
 SOAK_METRICS_INTERVAL  = _float("SOAK_METRICS_INTERVAL",   10.0)
 
 # ── Firmas ─────────────────────────────────────────────────────────────────
-# Si USE_SIGNATURES=true, cada propuesta se firma con ECDSA P-256.
-# Requiere que el cluster tenga REQUIRE_SIGNATURES=false (acepta ambas).
-# Útil para medir el overhead de firma bajo carga.
-USE_SIGNATURES = _bool("USE_SIGNATURES", False)
+# Cada propuesta se firma con ECDSA P-256: con REQUIRE_SIGNATURES=true (el
+# default de los despliegues) el API rechaza con 401 todo lo no firmado.
+# USE_SIGNATURES=false sólo sirve contra un cluster en modo migración
+# (REQUIRE_SIGNATURES=false), para medir el overhead de la firma por diferencia.
+USE_SIGNATURES = _bool("USE_SIGNATURES", True)
 
 # Cuántas identidades distintas usa el stress test (evita cooldown cruzado).
 NUM_IDENTITIES = _int("NUM_IDENTITIES", 50)

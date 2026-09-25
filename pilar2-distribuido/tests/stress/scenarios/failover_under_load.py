@@ -167,7 +167,7 @@ def run(
     failover_slo_s: float,
 ) -> StressReport:
     report = StressReport("failover_under_load")
-    pool = IdentityPool(n=cfg.NUM_IDENTITIES, signed=False)
+    pool = IdentityPool(n=cfg.NUM_IDENTITIES, signed=cfg.USE_SIGNATURES)
     producer = ProposalProducer(api_url, proposal_interval, pool)
 
     # ── Warm-up ────────────────────────────────────────────────────────────

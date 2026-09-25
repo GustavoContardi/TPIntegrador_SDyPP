@@ -1,8 +1,10 @@
 """Genera payloads de propuesta válidos para las pruebas de estrés.
 
 Soporta dos modos:
-- Sin firma (default): más rápido, válido cuando REQUIRE_SIGNATURES=false.
-- Con firma ECDSA P-256: mide el overhead real del camino firmado.
+- Con firma ECDSA P-256 (default, ver config.USE_SIGNATURES): el único que
+  acepta un despliegue con REQUIRE_SIGNATURES=true.
+- Sin firma: sólo contra un cluster en modo migración (REQUIRE_SIGNATURES=false),
+  para medir por diferencia el overhead del camino firmado.
 
 Cada `Identity` tiene su propio `author_pubkey`, por lo que N identidades
 distintas evitan que el cooldown de una bloquee a las demás.
@@ -17,7 +19,7 @@ from datetime import datetime, timezone
 from typing import Iterator
 
 
-# ── Identidad sin firma (default para stress) ──────────────────────────────
+# ── Identidad sin firma (sólo modo migración) ──────────────────────────────
 
 class UnsignedIdentity:
     """Identidad ligera: solo necesita un pubkey único."""
@@ -84,6 +86,40 @@ class SignedIdentity:
         }
 
 
+# ── Identidad de nodo (firma respuestas de nonce) ──────────────────────────
+
+class NodeIdentity:
+    """Par P-256 de un minero simulado, que firma sus respuestas de nonce.
+
+    Con REQUIRE_SIGNATURES=true el NCT descarta todo nonce sin firma, igual que
+    las propuestas (AGENT.md 3.1). ``winning_node_or_pool`` pasa a ser la pubkey
+    del nodo, como en un worker real con WORKER_PRIVKEY_PEM.
+
+    A diferencia de ``SignedIdentity`` usa ``common.identity``: los escenarios
+    que publican nonces ya importan ``common.blockchain`` para resolver el PoW,
+    así que tienen el paquete en el path.
+    """
+
+    def __init__(self):
+        from common.identity import generate_private_key, public_key_b64
+
+        self._key = generate_private_key()
+        self.pubkey = public_key_b64(self._key)
+
+    def nonce_response(self, voting_window_id: str, nonce: int,
+                       block_hash: str) -> dict:
+        from common.identity import nonce_message, sign
+
+        return {
+            "voting_window_id": voting_window_id,
+            "nonce": nonce,
+            "winning_node_or_pool": self.pubkey,
+            "block_hash_candidato": block_hash,
+            "signature": sign(self._key, nonce_message(voting_window_id, nonce,
+                                                       self.pubkey)),
+        }
+
+
 # ── Pool de identidades ────────────────────────────────────────────────────
 
 class IdentityPool:
@@ -93,7 +129,7 @@ class IdentityPool:
     bloquee el flujo de propuestas durante pruebas de alta tasa.
     """
 
-    def __init__(self, n: int, signed: bool = False):
+    def __init__(self, n: int, signed: bool = True):
         cls = SignedIdentity if signed else UnsignedIdentity
         self._ids = [cls() for _ in range(n)]
         self._lock = threading.Lock()

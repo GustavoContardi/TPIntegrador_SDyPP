@@ -43,6 +43,12 @@ spec:
           env:
             - name: WORKER_MODE
               value: "pool-worker"
+            # Identidad de nodo (AGENT.md 3.1): el pod genera su par acá al
+            # arrancar y firma sus nonces. Sin ella, con REQUIRE_SIGNATURES el
+            # NCT descarta sus respuestas. Volumen en memoria: la clave nace y
+            # muere con el pod (mismo esquema que gpu-miner y "Register Worker").
+            - name: WORKER_PRIVKEY_PEM
+              value: /app/keys/node-key.pem
             # El espacio de nonces tiene que cubrir la derogación (n+1=7) o las
             # ventanas vencen sin sellar. Estos pods no leen el ConfigMap
             # `voxchain-config` (vive en otro namespace), así que va explícito.
@@ -106,6 +112,8 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 10
           volumeMounts:
+            - name: keys
+              mountPath: /app/keys
             - name: tmp
               mountPath: /tmp
             - name: logs
@@ -114,6 +122,9 @@ spec:
               mountPath: /etc/rabbitmq-ca
               readOnly: true
       volumes:
+        - name: keys
+          emptyDir:
+            medium: Memory
         - name: tmp
           emptyDir: {}
         - name: logs

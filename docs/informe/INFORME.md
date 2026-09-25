@@ -70,10 +70,15 @@ Cada nodo tiene par de claves. Las propuestas viajan firmadas y con
 RabbitMQ**. La clave del ciudadano vive en el navegador como `CryptoKey` **no
 extraíble** en IndexedDB: la aplicación puede pedirle firmas, pero no leer el
 material de la clave. La verificación de firma es configurable
-(`REQUIRE_SIGNATURES`) para permitir una migración gradual: en modo permisivo
-acepta propuestas sin firma pero **rechaza las que traen una firma inválida**.
-El despliegue actual corre en modo permisivo (`REQUIRE_SIGNATURES=false` en
-`voxchain-config.yaml`).
+(`REQUIRE_SIGNATURES`). El despliegue corre en modo estricto
+(`REQUIRE_SIGNATURES=true` en `voxchain-config.yaml` y en los compose): el API y
+el NCT rechazan toda propuesta y todo nonce sin firma válida. El modo permisivo
+(`false`) existió para migrar productores de a uno: acepta lo no firmado y sólo
+rechaza firmas inválidas, lo que en la práctica permitía proponer en nombre de
+cualquiera con sólo omitir la firma. Por eso todos los productores firman: el
+frontend, `run.sh demo`, los mineros (con una identidad de nodo propia, vía
+`WORKER_PRIVKEY_PEM`) y los inyectores de carga (`load-tests/scenarios/firma.py`,
+`scripts/demo_carga.py`, `tests/stress`).
 
 Implementación: `pilar2-distribuido/worker/worker_pkg/identity.py` y
 `common/identity/signing.py`, con cobertura en `test_signatures.py` y

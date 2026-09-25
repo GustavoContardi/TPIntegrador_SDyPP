@@ -15,6 +15,8 @@ import uuid
 from urllib.request import Request, urlopen
 from urllib.error import URLError
 
+from firma import propuesta_firmada
+
 API_URL = "http://localhost:8000"
 
 
@@ -33,10 +35,7 @@ def _req(method: str, path: str, data: bytes | None = None) -> dict:
 def propose_and_wait(api_url: str, text: str, poll_interval: float = 2.0,
                      timeout: float = 300.0) -> dict:
     start = time.monotonic()
-    result = _req("POST", "/api/laws", json.dumps({
-        "text": text,
-        "author_pubkey": f"pk-test-{uuid.uuid4().hex[:8]}"
-    }).encode())
+    result = _req("POST", "/api/laws", json.dumps(propuesta_firmada(text)).encode())
 
     law_hash = result.get("body", {}).get("law_id", "")
     if not law_hash:

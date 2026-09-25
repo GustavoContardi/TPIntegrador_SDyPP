@@ -16,6 +16,8 @@ import uuid
 from urllib.request import Request, urlopen
 from urllib.error import URLError
 
+from firma import propuesta_firmada
+
 API_URL = "http://localhost:8000"
 NONCE_SPACE = 50_000_000
 
@@ -47,10 +49,7 @@ def run_fragmentation_test(api_url: str, fragment_pct: int,
 
     start = time.monotonic()
 
-    payload = json.dumps({
-        "text": text,
-        "author_pubkey": f"pk-test-{uuid.uuid4().hex[:8]}",
-    }).encode()
+    payload = json.dumps(propuesta_firmada(text)).encode()
 
     result = _req("POST", "/api/laws", payload)
     law_hash = result.get("body", {}).get("law_id", "")

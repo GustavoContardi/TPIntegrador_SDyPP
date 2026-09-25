@@ -22,8 +22,9 @@ class Config:
     FRONTEND_HEALTH_URL: str = ""
     PORT: int = 8000
     # Firma de propuestas (A-01). Si True, el API rechaza propuestas sin firma
-    # válida antes de publicarlas. Debe ir alineado con el flag del NCT.
-    REQUIRE_SIGNATURES: bool = False
+    # válida antes de publicarlas. Debe ir alineado con el flag del NCT, y como
+    # él arranca en True si la variable falta: el modo abierto se pide explícito.
+    REQUIRE_SIGNATURES: bool = True
     # Quórum de mineros para abrir una ventana. Tiene que ser **el mismo valor
     # que el del NCT**, que es quien lo aplica: acá sólo se usa para anticiparle
     # al ciudadano que su ley va a quedar pospuesta. Con valores distintos el
@@ -44,7 +45,7 @@ class Config:
             NCT_HEALTH_URL=os.getenv("NCT_HEALTH_URL", "http://coordinator:8080/health"),
             FRONTEND_HEALTH_URL=os.getenv("FRONTEND_HEALTH_URL", ""),
             PORT=int(os.getenv("PORT", "8000")),
-            REQUIRE_SIGNATURES=_as_bool(os.getenv("REQUIRE_SIGNATURES"), False),
+            REQUIRE_SIGNATURES=_as_bool(os.getenv("REQUIRE_SIGNATURES"), True),
             MIN_WORKERS_FOR_WINDOW=int(os.getenv("MIN_WORKERS_FOR_WINDOW") or 1),
             QUORUM_BY_CATEGORY=_as_bool(os.getenv("QUORUM_BY_CATEGORY"), True),
             RESTRICT_PROPOSERS=_as_bool(os.getenv("RESTRICT_PROPOSERS"), True),

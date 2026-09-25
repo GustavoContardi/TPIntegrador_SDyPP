@@ -42,7 +42,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import requests
 
 import config as cfg
-from helpers.law_generator import IdentityPool, unique_text
+from helpers.law_generator import IdentityPool, NodeIdentity, unique_text
 
 # ── Paleta de colores ───────────────────────────────────────────────────────
 B  = "\033[1m"          # bold
@@ -265,7 +265,7 @@ def phase_load(api: str) -> bool:
     _phase(2, "Load Test  —  throughput y latencia del API", LOAD_DURATION)
     print(f"\n  {DIM}{LOAD_WORKERS} usuarios concurrentes × {LOAD_DURATION}s — POST /api/laws{X}\n")
 
-    pool   = IdentityPool(n=cfg.NUM_IDENTITIES, signed=False)
+    pool   = IdentityPool(n=cfg.NUM_IDENTITIES, signed=cfg.USE_SIGNATURES)
     stop   = threading.Event()
     lock   = threading.Lock()
     seq_counter = [0]
@@ -388,7 +388,7 @@ def phase_mining_race(api: str, rmq_url: str | None) -> bool:
             simulated = True
 
     # ── Enviar propuesta para activar una ventana ─────────────────────────
-    identity = IdentityPool(n=1).next()
+    identity = IdentityPool(n=1, signed=cfg.USE_SIGNATURES).next()
     _info("Enviando propuesta para generar ventana activa...")
     payload = identity.make_proposal(unique_text("race"))
     try:
@@ -462,15 +462,15 @@ def phase_mining_race(api: str, rmq_url: str | None) -> bool:
     errors: list[str] = []
     lock = threading.Lock()
 
+    # Un nodo firmante por competidor (el NCT descarta nonces sin firmar),
+    # firmado antes de la carrera para no medir la criptografía.
+    payloads = [NodeIdentity().nonce_response(window_id, nonce, hash_found)
+                for _ in range(RACE_WORKERS)]
+
     def real_worker(worker_id: str) -> None:
-        jitter = (int(worker_id.split("-")[-1]) * RACE_JITTER_MS / RACE_WORKERS) / 1000
-        time.sleep(jitter)
-        payload = {
-            "voting_window_id": window_id,
-            "nonce": nonce,
-            "winning_node_or_pool": worker_id,
-            "block_hash_candidato": hash_found,
-        }
+        i = int(worker_id.split("-")[-1])
+        time.sleep((i * RACE_JITTER_MS / RACE_WORKERS) / 1000)
+        payload = payloads[i]
         try:
             params = pika.URLParameters(rmq_url)
             conn = pika.BlockingConnection(params)
@@ -576,7 +576,7 @@ def phase_failover(api: str, namespace: str, label: str) -> bool:
     # Asegurarse de que hay al menos 1 bloque (si no, esperar)
     if baseline == 0:
         _info("Cadena vacía — enviando propuesta inicial...")
-        pool = IdentityPool(n=5)
+        pool = IdentityPool(n=5, signed=cfg.USE_SIGNATURES)
         r = requests.post(f"{api}/api/laws",
                           json=pool.next().make_proposal(unique_text("failover-init")),
                           timeout=10)
@@ -590,7 +590,7 @@ def phase_failover(api: str, namespace: str, label: str) -> bool:
                 time.sleep(3)
 
     # ── Arrancar carga de fondo ───────────────────────────────────────────
-    pool  = IdentityPool(n=cfg.NUM_IDENTITIES)
+    pool  = IdentityPool(n=cfg.NUM_IDENTITIES, signed=cfg.USE_SIGNATURES)
     stop  = threading.Event()
     stats = {"sent": 0, "errors": 0}
     seq   = [0]

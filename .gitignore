@@ -73,6 +73,8 @@ SEGURIDAD-CLAVES.md
 COMO-FUNCIONA-AHORA.md
 DELIBERACION.md
 EstadoChecklist.md
+DECISIONES-DE-DISENO.md
+marketing.md
 
 # Caché de kubectl: sin credenciales, pero trae la IP y el puerto del k3s
 .kube/

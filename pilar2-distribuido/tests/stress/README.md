@@ -38,7 +38,7 @@ Todas las variables se leen del entorno. Las más importantes:
 | `LOCUST_RUN_TIME` | `5m` | Duración del load test |
 | `SOAK_DURATION_SECONDS` | `1800` | Duración del soak (30 min) |
 | `RACE_CONCURRENT_WORKERS` | `30` | Workers en el mining race |
-| `USE_SIGNATURES` | `false` | Firmar propuestas con ECDSA (overhead real) |
+| `USE_SIGNATURES` | `true` | Firmar propuestas con ECDSA. `false` sólo contra un cluster con `REQUIRE_SIGNATURES=false` |
 | `SLO_P95_MS` | `500` | Umbral P95 latencia (ms) |
 | `SLO_ERROR_RATE_PCT` | `1.0` | Umbral tasa de error HTTP (%) |
 | `SLO_FAILOVER_SECS` | `30` | Umbral tiempo de failover del NCT (s) |

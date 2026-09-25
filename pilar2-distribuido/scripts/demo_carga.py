@@ -16,8 +16,8 @@ sostenido con escalones, no una ráfaga.
 
 Requiere RESTRICT_PROPOSERS=false
 ---------------------------------
-Propone con identidades inventadas (una por ley, para esquivar el cooldown), y
-ninguna tiene minero propio: con la restricción de proponentes activa (AGENT.md
+Propone con identidades nuevas (un par ECDSA P-256 por ley, para esquivar el
+cooldown), y ninguna tiene minero propio: con la restricción de proponentes activa (AGENT.md
 3.2, el default) el API las rechaza todas con 403. Apagarla en el ConfigMap
 `voxchain-config` antes de la demo y volver a prenderla después.
 
@@ -43,13 +43,18 @@ Uso
 
 Ctrl-C corta en cualquier momento e imprime el resumen igual.
 
-Sólo usa la biblioteca estándar: se puede correr desde cualquier notebook sin
-instalar nada ni levantar el venv del proyecto.
+Firma cada propuesta
+--------------------
+Con REQUIRE_SIGNATURES=true el API rechaza lo no firmado, así que cada ley va
+firmada como la firmaría el frontend. Lo único que hace falta además de la
+biblioteca estándar es ``cryptography`` (``pip install cryptography``): el
+mensaje canónico se toma de ``common.identity``, sin levantar el venv entero.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import random
 import ssl
@@ -61,6 +66,18 @@ import urllib.request
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+
+try:
+    import cryptography  # noqa: F401
+except ImportError:
+    raise SystemExit("demo_carga firma sus propuestas (REQUIRE_SIGNATURES=true): "
+                     "pip install cryptography")
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from common.identity import (  # noqa: E402
+    generate_private_key, proposal_message, public_key_b64, sign)
 
 # ── Colores ────────────────────────────────────────────────────────────────
 B, DIM, G, R, Y, C, M, X = (
@@ -302,37 +319,54 @@ CATEGORIAS = (
 )
 
 
+def firmada(text: str, action: str, category: str, law_id: str) -> dict:
+    """Payload firmado por una identidad nueva (autor distinto ⇒ nunca cae en cooldown).
+
+    Se firma al momento de enviar: ``created_at`` entra en la firma y el NCT
+    descarta lo que tenga más de PROPOSAL_MAX_AGE_SECONDS.
+    """
+    key = generate_private_key()
+    pubkey = public_key_b64(key)
+    text_hash = hashlib.sha256(text.encode()).hexdigest()
+    created_at = datetime.now(timezone.utc).isoformat()
+    return {
+        "law_id": law_id, "author_pubkey": pubkey, "text": text,
+        "action": action, "category": category,
+        "text_hash": text_hash, "created_at": created_at,
+        "signature": sign(key, proposal_message(pubkey, action, text_hash,
+                                                law_id, created_at, category)),
+    }
+
+
 def enviar_ley(api: Api, est: Estado, numero: int) -> None:
-    """Propone una ley con autor único (autor distinto ⇒ nunca cae en cooldown)."""
-    payload = {
-        "text": texto_de_ley(numero),
-        "author_pubkey": f"pk-demo-{numero:04d}-{uuid.uuid4().hex[:8]}",
-        "action": "promulgacion",
-        # Round-robin en vez de aleatorio: dos corridas de la demo con el mismo
-        # total reparten igual, y eso hace comparables sus resultados.
-        "category": CATEGORIAS[numero % len(CATEGORIAS)],
-    }
+    """Propone una ley con autor único."""
+    # Round-robin en vez de aleatorio: dos corridas de la demo con el mismo
+    # total reparten igual, y eso hace comparables sus resultados.
+    payload = firmada(texto_de_ley(numero), "promulgacion",
+                      CATEGORIAS[numero % len(CATEGORIAS)],
+                      f"ley-{uuid.uuid4().hex[:8]}")
     est.registrar(*api.post_ley(payload))
 
 
-def enviar_derogacion(api: Api, est: Estado, law_id: str) -> None:
-    """Propone derogar una ley ya promulgada (exige n+1 ceros y ventana más larga)."""
-    payload = {
-        "law_id": law_id,
-        "text": f"Derógase en todos sus términos la ley {law_id}. "
-                f"[ref. {uuid.uuid4().hex[:12]}]",
-        "author_pubkey": f"pk-derog-{uuid.uuid4().hex[:8]}",
-        "action": "derogacion",
-    }
-    est.registrar(*api.post_ley(payload))
+def enviar_derogacion(api: Api, est: Estado, law_id: str, category: str) -> None:
+    """Propone derogar una ley ya promulgada (exige n+1 ceros y ventana más larga).
+
+    ``category`` es la de la ley original: el API la impone en una derogación
+    (AGENT.md 3.10), así que es la que hay que firmar o la firma no valida.
+    """
+    text = (f"Derógase en todos sus términos la ley {law_id}. "
+            f"[ref. {uuid.uuid4().hex[:12]}]")
+    est.registrar(*api.post_ley(firmada(text, "derogacion", category, law_id)))
 
 
-def leyes_promulgadas(api: Api, cantidad: int) -> list[str]:
+def leyes_promulgadas(api: Api, cantidad: int) -> list[tuple[str, str]]:
+    """``(law_id, category)`` de hasta ``cantidad`` leyes promulgadas, al azar."""
     leyes = api.get("/api/laws") or []
-    ids = [l["law_id"] for l in leyes
-           if isinstance(l, dict) and l.get("status") == "promulgated" and l.get("law_id")]
-    random.shuffle(ids)
-    return ids[:cantidad]
+    objetivos = [(l["law_id"], l.get("category") or "general") for l in leyes
+                 if isinstance(l, dict) and l.get("status") == "promulgated"
+                 and l.get("law_id")]
+    random.shuffle(objetivos)
+    return objetivos[:cantidad]
 
 
 def correr_plan(api: Api, est: Estado, pool: ThreadPoolExecutor,
@@ -471,10 +505,10 @@ def main() -> int:
             objetivos = leyes_promulgadas(api, args.derogaciones)
             if not objetivos:
                 est.etapa = "derogaciones (sin leyes promulgadas todavía)"
-            for law_id in objetivos:
+            for law_id, category in objetivos:
                 if not est.corriendo:
                     break
-                pool.submit(enviar_derogacion, api, est, law_id)
+                pool.submit(enviar_derogacion, api, est, law_id, category)
                 time.sleep(2.0)   # la derogación exige n+1 ceros: no la apuremos
 
         pool.shutdown(wait=True)

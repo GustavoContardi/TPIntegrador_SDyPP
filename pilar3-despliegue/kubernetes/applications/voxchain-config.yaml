@@ -36,10 +36,11 @@ data:
   # H/s a suponerle a un minero que todavía no reportó medición propia.
   HPS_CPU: "954180"
   HPS_GPU: "500000000"
-  # Firma de propuestas (A-01 / AGENT.md 3.1). Migración: arrancar en "false"
-  # (acepta no firmadas y loguea; una firma inválida siempre se rechaza) y pasar
-  # a "true" cuando todos los productores firman. Debe quedar igual en NCT y API.
-  REQUIRE_SIGNATURES: "false"
+  # Firma de propuestas y de nonces (A-01 / AGENT.md 3.1). "true" = se rechaza
+  # todo lo no firmado. "false" era el modo de migración (acepta no firmadas,
+  # rechaza firmas inválidas) y dejaba proponer en nombre de cualquiera con sólo
+  # omitir la firma. Debe quedar igual en NCT y API.
+  REQUIRE_SIGNATURES: "true"
   # Anti-replay: antigüedad máxima de created_at en una propuesta firmada (segundos).
   PROPOSAL_MAX_AGE_SECONDS: "300"
   WINDOW_SECONDS_PROMULGACION: "120"

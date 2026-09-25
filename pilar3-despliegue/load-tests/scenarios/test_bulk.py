@@ -10,17 +10,20 @@ Salida: CSV con size, total_time_s, throughput_proposals_s, blocks_sealed.
 import argparse
 import concurrent.futures
 import csv
+import json
 import sys
 import time
 import uuid
 from urllib.request import Request, urlopen
 from urllib.error import URLError
 
+from firma import propuesta_firmada
+
 API_URL = "http://localhost:8000"
 
 
 def propose_law(api_url: str, text: str) -> dict | None:
-    payload = f'{{"text":"{text}","author_pubkey":"pk-test-{uuid.uuid4().hex[:8]}"}}'.encode()
+    payload = json.dumps(propuesta_firmada(text)).encode()
     req = Request(
         f"{api_url}/api/laws",
         data=payload,

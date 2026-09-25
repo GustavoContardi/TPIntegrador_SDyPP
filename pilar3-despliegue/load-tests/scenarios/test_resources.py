@@ -28,6 +28,8 @@ import uuid
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
+from firma import propuesta_firmada
+
 API_URL = "http://localhost:8000"
 
 
@@ -47,13 +49,10 @@ def _req(method: str, path: str, data: bytes | None = None, timeout: float = 30.
 def propose(text: str) -> str | None:
     """Publica una ley y devuelve su law_id.
 
-    Cada propuesta usa un author_pubkey distinto: el API aplica cooldown por
-    autor y devolvería 429 si se reusara el mismo.
+    Cada propuesta va firmada por una identidad nueva: el API aplica cooldown
+    por autor y devolvería 429 si se reusara la misma.
     """
-    payload = json.dumps({
-        "text": text,
-        "author_pubkey": f"pk-scale-{uuid.uuid4().hex[:12]}",
-    }).encode()
+    payload = json.dumps(propuesta_firmada(text)).encode()
     result = _req("POST", "/api/laws", payload)
     if "error" in result:
         print(f"    error al proponer: {result['error']}")

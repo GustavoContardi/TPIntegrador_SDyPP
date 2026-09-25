@@ -149,7 +149,7 @@ def run(
         collector = HttpMetricsCollector(api_url, interval=metrics_interval)
         print("[soak] Usando HttpMetricsCollector (vía API)")
 
-    pool = IdentityPool(n=cfg.NUM_IDENTITIES, signed=False)
+    pool = IdentityPool(n=cfg.NUM_IDENTITIES, signed=cfg.USE_SIGNATURES)
     producer = _SoakProducer(api_url, proposal_interval, pool)
 
     # ── Arrancar ───────────────────────────────────────────────────────────

@@ -30,7 +30,9 @@ x-app-env: &app-env
   REDIS_URL: redis://redis:6379/0
   N_ZEROS: "${N_ZEROS:-6}"
   HEALTH_PORT: "8080"
-  REQUIRE_SIGNATURES: "false"
+  # Las propuestas del experimento van firmadas (test_resources.py), igual que
+  # los nonces de los mineros: se mide el camino real, no uno sin verificación.
+  REQUIRE_SIGNATURES: "true"
   PROPOSAL_MAX_AGE_SECONDS: "300"
   # El experimento propone con identidades inventadas, sin minero propio: con la
   # restricción de proponentes (AGENT.md 3.2) todas serían rechazadas.
@@ -44,6 +46,9 @@ x-miner-env: &miner-env
   # 400 fragmentos por ventana: suficientes para que los mineros se repartan
   # trabajo parejo en vez de que uno solo se lleve el fragmento ganador.
   FRAGMENT_SIZE: "${FRAGMENT_SIZE:-500000}"
+  # Identidad de nodo: cada réplica genera la suya al arrancar y firma sus
+  # nonces. Sin ella, con REQUIRE_SIGNATURES el NCT descarta las respuestas.
+  WORKER_PRIVKEY_PEM: "/tmp/voxchain-node-key.pem"
 
 services:
   rabbitmq:

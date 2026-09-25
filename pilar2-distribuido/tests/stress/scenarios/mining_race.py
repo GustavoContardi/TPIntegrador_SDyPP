@@ -41,7 +41,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import requests
 
 import config as cfg
-from helpers.law_generator import UnsignedIdentity, unique_text
+from helpers.law_generator import IdentityPool, NodeIdentity, unique_text
 from helpers.report import StressReport
 
 # ── Parámetros de la prueba ────────────────────────────────────────────────
@@ -51,7 +51,7 @@ WINDOW_WAIT_S    = 60  # máximo tiempo esperando que el NCT abra la ventana
 SEAL_WAIT_S      = 30  # máximo tiempo esperando que la ventana se cierre
 
 
-def _submit_proposal(api_url: str, identity: UnsignedIdentity) -> str:
+def _submit_proposal(api_url: str, identity) -> str:
     """Envía una propuesta y devuelve el law_id."""
     payload = identity.make_proposal(unique_text("race"), action="promulgacion")
     resp = requests.post(f"{api_url}/api/laws", json=payload, timeout=10)
@@ -116,7 +116,7 @@ def run(n_workers: int, api_url: str, rmq_url: str, n_zeros: int,
     print(f"\n[race] Iniciando con {n_workers} workers concurrentes, n_zeros={n_zeros}")
 
     # 1. Propuesta → ventana activa
-    identity = UnsignedIdentity()
+    identity = IdentityPool(n=1, signed=cfg.USE_SIGNATURES).next()
     print("[race] Enviando propuesta...")
     try:
         law_id = _submit_proposal(api_url, identity)
@@ -150,14 +150,15 @@ def run(n_workers: int, api_url: str, rmq_url: str, n_zeros: int,
     errors: list[str] = []
     lock = threading.Lock()
 
-    def worker_thread(worker_id: str) -> None:
+    # Cada competidor es un nodo distinto con su propia firma (el NCT descarta
+    # nonces sin firmar). Las respuestas se firman antes de largar los hilos
+    # para que la carrera mida la llegada concurrente, no la criptografía.
+    block_hash = compute_hash(base, nonce)
+    payloads = [NodeIdentity().nonce_response(window_id, nonce, block_hash)
+                for _ in range(n_workers)]
+
+    def worker_thread(worker_id: str, payload: dict) -> None:
         time.sleep(random.uniform(0, jitter_s))
-        payload = {
-            "voting_window_id": window_id,
-            "nonce": nonce,
-            "winning_node_or_pool": worker_id,
-            "block_hash_candidato": compute_hash(base, nonce),
-        }
         try:
             _publish_nonce_via_rabbitmq(rmq_url, payload)
         except Exception as e:
@@ -168,7 +169,7 @@ def run(n_workers: int, api_url: str, rmq_url: str, n_zeros: int,
     threads = [
         threading.Thread(
             target=worker_thread,
-            args=(f"race-worker-{i}",),
+            args=(f"race-worker-{i}", payloads[i]),
             daemon=True,
         )
         for i in range(n_workers)

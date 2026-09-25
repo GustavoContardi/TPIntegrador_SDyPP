@@ -127,35 +127,53 @@ cmd_demo() {
   # sin desplegarlo (un minero standalone cuenta aunque esté apagado). Corre
   # dentro del contenedor del API, que ya tiene la librería de firmas: así el
   # host no necesita más que Docker y curl.
-  info "== Registrando una identidad de demo con minero propio =="
-  local pk
-  if ! pk="$(docker compose -f "$COMPOSE" exec -T voxchain-api python - <<'PY'
-import json, urllib.request
+  #
+  # La propuesta sale del mismo proceso que registra: con REQUIRE_SIGNATURES
+  # tiene que ir firmada, y la clave privada no sale nunca de acá (ni al host).
+  info "== Registrando una identidad de demo con minero propio y proponiendo una ley =="
+  local salida
+  if ! salida="$(docker compose -f "$COMPOSE" exec -T \
+      -e TEXTO="Ley de ejemplo generada por run.sh ($(date +%H:%M:%S))" \
+      voxchain-api python - <<'PY'
+import hashlib, json, os, urllib.error, urllib.request, uuid
 from datetime import datetime, timezone
-from common.identity.signing import generate_private_key, public_key_b64, sign
+from common.identity.signing import (generate_private_key, proposal_message,
+                                     public_key_b64, sign)
+API = "http://localhost:8000"
 key = generate_private_key()
 pk = public_key_b64(key)
+
+def post(path, body):
+    req = urllib.request.Request(API + path, json.dumps(body).encode(),
+                                 {"Content-Type": "application/json"})
+    return urllib.request.urlopen(req, timeout=10).read().decode()
+
 ts = datetime.now(timezone.utc).isoformat()
 wid = "demo-" + "".join(c for c in pk[-16:].lower() if c.isalnum())
-body = {"worker_id": wid, "pubkey": pk, "timestamp": ts,
-        "signature": sign(key, f"{wid}|register|{ts}".encode())}
-req = urllib.request.Request("http://localhost:8000/api/workers/register",
-                             json.dumps(body).encode(),
-                             {"Content-Type": "application/json"})
-urllib.request.urlopen(req, timeout=10).read()
+post("/api/workers/register",
+     {"worker_id": wid, "pubkey": pk, "timestamp": ts,
+      "signature": sign(key, f"{wid}|register|{ts}".encode())})
 print(pk)
+
+texto = os.environ["TEXTO"]
+ley = {"law_id": f"ley-{uuid.uuid4().hex[:8]}", "author_pubkey": pk,
+       "text": texto, "action": "promulgacion", "category": "general",
+       "text_hash": hashlib.sha256(texto.encode()).hexdigest(),
+       "created_at": datetime.now(timezone.utc).isoformat()}
+ley["signature"] = sign(key, proposal_message(
+    pk, ley["action"], ley["text_hash"], ley["law_id"], ley["created_at"],
+    ley["category"]))
+try:
+    print(post("/api/laws", ley))
+except urllib.error.HTTPError as exc:
+    print(f"HTTP {exc.code}: {exc.read().decode()}")
 PY
 )"; then
     rojo "No se pudo registrar la identidad de demo."
     exit 1
   fi
-  echo "Identidad: ${pk:0:24}..."
-  echo
-  info "== Proponiendo una ley de ejemplo =="
-  local texto="Ley de ejemplo generada por run.sh ($(date +%H:%M:%S))"
-  curl -s -X POST "$API/api/laws" \
-    -H 'Content-Type: application/json' \
-    -d "{\"text\":\"$texto\",\"author_pubkey\":\"$pk\"}" | head -c 300
+  echo "Identidad: $(head -1 <<<"$salida" | cut -c1-24)..."
+  tail -n +2 <<<"$salida" | head -c 300
   echo; echo
   # Antes de abrir la ventana, el NCT anuncia la ley y espera DELIBERATION_SECONDS
   # (120 s) a que los convocados decidan si la minan (AGENT.md 3.12). Los

@@ -114,9 +114,11 @@ RABBITMQ_TLS_SERVER_NAME = get("RABBITMQ_TLS_SERVER_NAME", "")
 
 # Identidad / firmas (A-01, AGENT.md 3.1): cada propuesta debe venir firmada por
 # la clave privada del autor y el NCT/API verifican la firma contra author_pubkey.
-# Migración: arrancar en False (verifica si hay firma, acepta no firmadas y loguea)
-# y pasar a True una vez que todos los productores firman (rechazo duro).
-REQUIRE_SIGNATURES = get_bool("REQUIRE_SIGNATURES", False)
+# Default True (rechazo duro): si la variable falta, el sistema no se abre solo.
+# False es el modo migración (acepta no firmadas y loguea, rechaza firmas
+# inválidas), que deja proponer en nombre de cualquiera omitiendo la firma: hay
+# que pedirlo explícitamente.
+REQUIRE_SIGNATURES = get_bool("REQUIRE_SIGNATURES", True)
 # Ventana máxima de antigüedad de created_at para aceptar una propuesta firmada
 # (anti-replay). 0 = sin chequeo de frescura.
 PROPOSAL_MAX_AGE_SECONDS = get_int("PROPOSAL_MAX_AGE_SECONDS", 300)
