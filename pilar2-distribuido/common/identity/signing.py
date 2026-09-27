@@ -93,12 +93,23 @@ def verify(pubkey_b64: str, message: bytes, signature_b64: str) -> bool:
     """Verifica una firma ECDSA P-256/SHA-256.
 
     ``pubkey_b64``: clave pública SPKI DER en base64 (igual que la exporta el
-    frontend). ``signature_b64``: firma cruda P1363 (``r||s``) en base64.
+    frontend). ``signature_b64``: firma cruda P1363 (``r||s``) en base64, o una
+    firma hecha con passkey (``wa1.…``, ver ``common/identity/webauthn.py``).
     Devuelve ``False`` ante cualquier error (clave/firma malformada, no coincide),
     nunca lanza: el llamador rechaza el mensaje.
+
+    Es el único punto de verificación del sistema (API y NCT), así que las
+    passkeys valen en todos lados —proponer, mineros, equipos, deliberación—
+    sin que ningún endpoint sepa que existen.
     """
     if not pubkey_b64 or not signature_b64:
         return False
+    from .webauthn import PREFIX as _WEBAUTHN_PREFIX
+    if signature_b64.startswith(_WEBAUTHN_PREFIX):
+        from common import config
+        from .webauthn import verify_assertion
+        return verify_assertion(pubkey_b64, message, signature_b64,
+                                config.WEBAUTHN_RP_IDS, config.WEBAUTHN_ORIGINS)
     try:
         from cryptography.exceptions import InvalidSignature
         from cryptography.hazmat.primitives import hashes

@@ -8,6 +8,10 @@ export interface Identity {
 /**
  * Cómo está guardada la clave de la identidad en este navegador.
  *
+ * - `passkey`: la clave no está en el navegador. Vive en el autenticador del
+ *   dispositivo (Secure Enclave, TPM, llave física o gestor de passkeys) y cada
+ *   firma pide huella, cara o PIN. En el navegador sólo quedan la pubkey y el id
+ *   de la credencial, que son públicos. Es la opción recomendada.
  * - `vault`: cifrada con la contraseña del usuario (el caso normal). En disco
  *   sólo hay un blob cifrado; la clave usable vive en memoria mientras la
  *   identidad esté desbloqueada.
@@ -16,7 +20,7 @@ export interface Identity {
  *   usarla. No se puede cifrar retroactivamente (`wrapKey` exige una clave
  *   extraíble): se protege restaurándola desde su respaldo con una contraseña.
  */
-export type Protection = 'vault' | 'legacy';
+export type Protection = 'passkey' | 'vault' | 'legacy';
 
 /**
  * El registro cifrado de una identidad. Es lo que se guarda en IndexedDB y,
@@ -106,6 +110,10 @@ export class IdentityService {
    */
   private key: CryptoKey | null = null;
   private vault: VaultRecord | null = null;
+  /** Id (base64url) de la credencial WebAuthn de una identidad `passkey`. */
+  private credentialId: string | null = null;
+  /** Una sola ceremonia WebAuthn a la vez: el navegador rechaza la segunda. */
+  private passkeyQueue: Promise<unknown> = Promise.resolve();
 
   /** Lectura inicial de IndexedDB: todo lo que dependa de la clave la espera. */
   private ready: Promise<void>;
@@ -135,6 +143,13 @@ export class IdentityService {
       pubkey: stored.pubkey,
       ...(stored.username ? { username: stored.username } : {}),
     });
+
+    // Passkey: no hay nada que leer de IndexedDB, la clave no está acá.
+    if (stored.passkey?.credentialId) {
+      this.credentialId = stored.passkey.credentialId;
+      this.protection.set('passkey');
+      return;
+    }
 
     // Sólo consulta: pedir persistencia en el arranque, sin que el usuario haya
     // hecho nada, en Firefox abre un permiso que nadie entiende. Se pide al
@@ -189,10 +204,162 @@ export class IdentityService {
     }
   }
 
-  /** Guarda en localStorage sólo la parte pública de la identidad. */
+  /**
+   * Guarda en localStorage sólo la parte pública de la identidad (con passkey,
+   * también el id de la credencial: tampoco es secreto).
+   */
   private persistPublicPart() {
     const id = this.identity();
-    if (id) localStorage.setItem(this.storageKey, JSON.stringify(id));
+    if (!id) return;
+    const passkey = this.credentialId ? { passkey: { credentialId: this.credentialId } } : {};
+    localStorage.setItem(this.storageKey, JSON.stringify({ ...id, ...passkey }));
+  }
+
+  /**
+   * Si este navegador puede usar passkeys acá. Exige contexto seguro (HTTPS o
+   * localhost): en `http://<ip>` no hay WebAuthn.
+   */
+  passkeysSupported(): boolean {
+    return window.isSecureContext && typeof PublicKeyCredential !== 'undefined'
+      && !!navigator.credentials?.create;
+  }
+
+  /**
+   * Crea una identidad cuya clave vive en una passkey.
+   *
+   * El autenticador genera el par y nunca entrega la privada; lo que vuelve es
+   * la pública en SPKI (`getPublicKey()`), el mismo formato que las demás
+   * identidades, así que para el resto del sistema es una identidad más. Se
+   * pide ES256 (P-256) porque es lo único que verifica el backend.
+   *
+   * `residentKey: 'required'` hace la passkey "descubrible": en otro dispositivo
+   * se puede encontrar sin saber su id, que es lo que permite restaurar con
+   * sólo el código público.
+   */
+  async createPasskey(displayName: string | undefined,
+                      opts: { replace?: boolean } = {}): Promise<Identity> {
+    await this.ready;
+    this.assertCanReplace(opts.replace);
+    const name = displayName?.trim() || 'VoxChain';
+
+    let cred: PublicKeyCredential | null;
+    try {
+      cred = await navigator.credentials.create({
+        publicKey: {
+          rp: { name: 'VoxChain' },
+          user: { id: crypto.getRandomValues(new Uint8Array(16)), name, displayName: name },
+          challenge: crypto.getRandomValues(new Uint8Array(32)),
+          pubKeyCredParams: [{ type: 'public-key', alg: -7 }],
+          authenticatorSelection: { residentKey: 'required', userVerification: 'required' },
+          attestation: 'none',
+          timeout: 120_000,
+        },
+      }) as PublicKeyCredential | null;
+    } catch (err) {
+      throw passkeyError(err, 'No se creó la passkey');
+    }
+    const response = cred?.response as AuthenticatorAttestationResponse | undefined;
+    const spki = response?.getPublicKey?.();
+    if (!cred || !spki || response?.getPublicKeyAlgorithm?.() !== -7) {
+      throw new Error('Este navegador no pudo crear una passkey compatible. Probá con la contraseña.');
+    }
+    // Que sea de verdad una pública P-256 antes de adoptarla como identidad.
+    await crypto.subtle.importKey('spki', spki, ECDSA, false, ['verify']);
+    return this.adoptPasskey(arrayBufferToBase64(spki), b64url(cred.rawId), displayName?.trim());
+  }
+
+  /**
+   * Restaura una identidad con passkey a partir de su código público.
+   *
+   * WebAuthn no devuelve la pública al firmar, así que en un dispositivo nuevo
+   * el navegador no tiene forma de saberla: la aporta el usuario (es pública).
+   * Para no creerle a ciegas, se le pide una firma a la passkey y se verifica
+   * contra ese código: si no coincide, no es su identidad.
+   */
+  async restorePasskey(pubkey: string, displayName?: string,
+                       opts: { replace?: boolean } = {}): Promise<Identity> {
+    await this.ready;
+    this.assertCanReplace(opts.replace);
+    let pub: CryptoKey;
+    try {
+      pub = await crypto.subtle.importKey(
+        'spki', base64ToArrayBuffer(pubkey.trim()), ECDSA, false, ['verify']);
+    } catch {
+      throw new Error('Ese no es un código público de VoxChain.');
+    }
+
+    const challenge = crypto.getRandomValues(new Uint8Array(32));
+    let cred: PublicKeyCredential | null;
+    try {
+      cred = await navigator.credentials.get({
+        publicKey: { challenge, userVerification: 'required', timeout: 120_000 },
+      }) as PublicKeyCredential | null;
+    } catch (err) {
+      throw passkeyError(err, 'No se usó ninguna passkey');
+    }
+    const r = cred?.response as AuthenticatorAssertionResponse | undefined;
+    if (!cred || !r) throw new Error('No se usó ninguna passkey.');
+
+    const client = JSON.parse(new TextDecoder().decode(r.clientDataJSON));
+    const signed = concat(r.authenticatorData,
+                          await crypto.subtle.digest('SHA-256', r.clientDataJSON));
+    const ok = client.type === 'webauthn.get'
+      && client.challenge === b64url(challenge.buffer)
+      && await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, pub,
+                                    derToP1363(r.signature), signed);
+    if (!ok) throw new Error('Esa passkey no corresponde a ese código público.');
+
+    return this.adoptPasskey(pubkey.trim(), b64url(cred.rawId), displayName?.trim());
+  }
+
+  private async adoptPasskey(pubkey: string, credentialId: string,
+                             name: string | undefined): Promise<Identity> {
+    // Con passkey no queda ninguna clave en el navegador: se borra lo que
+    // hubiera de una identidad anterior (cifrada o no).
+    await Promise.all([dbDelete(VAULT_KEY), dbDelete(LEGACY_KEY)]);
+    this.vault = null;
+    this.key = null;
+    this.credentialId = credentialId;
+    this.protection.set('passkey');
+    this.locked.set(false);
+    this.settleUnlock();
+
+    const identity: Identity = { pubkey, ...(name ? { username: name } : {}) };
+    this.identity.set(identity);
+    this.persistPublicPart();
+    return identity;
+  }
+
+  /**
+   * Firma con la passkey: el navegador muestra su diálogo, el usuario pone la
+   * huella o el PIN, y el autenticador firma. El challenge es el SHA-256 del
+   * mensaje, así que la firma queda atada a este mensaje y a ningún otro.
+   * Devuelve el sobre `wa1.…` que entiende `common/identity/webauthn.py`.
+   */
+  private signWithPasskey(message: string): Promise<string> {
+    const credentialId = this.credentialId!;
+    const run = async () => {
+      const challenge = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(message));
+      let cred: PublicKeyCredential | null;
+      try {
+        cred = await navigator.credentials.get({
+          publicKey: {
+            challenge,
+            allowCredentials: [{ type: 'public-key', id: b64urlToArrayBuffer(credentialId) }],
+            userVerification: 'required',
+            timeout: 120_000,
+          },
+        }) as PublicKeyCredential | null;
+      } catch (err) {
+        throw passkeyError(err, 'No se firmó nada');
+      }
+      const r = cred?.response as AuthenticatorAssertionResponse | undefined;
+      if (!r) throw new Error('No se firmó nada: la passkey no respondió.');
+      return 'wa1.' + [r.authenticatorData, r.clientDataJSON, r.signature].map(b64url).join('.');
+    };
+    const result = this.passkeyQueue.then(run, run);
+    this.passkeyQueue = result.catch(() => {});
+    return result;
   }
 
   /**
@@ -285,6 +452,7 @@ export class IdentityService {
 
     this.vault = record;
     this.key = key;
+    this.credentialId = null;
     this.protection.set('vault');
     this.locked.set(false);
 
@@ -378,6 +546,7 @@ export class IdentityService {
     await this.ready;
     if (!this.identity()) throw new Error('no identity');
 
+    if (this.protection() === 'passkey') return this.signWithPasskey(message);
     if (!this.key && this.protection() === 'vault') await this.requestUnlock();
     const key = this.key;
     if (!key) {
@@ -414,6 +583,7 @@ export class IdentityService {
     this.identity.set(null);
     this.key = null;
     this.vault = null;
+    this.credentialId = null;
     this.protection.set(null);
     this.locked.set(false);
     this.settleUnlock(new Error('La identidad se borró.'));
@@ -519,6 +689,66 @@ function parseVault(text: string): VaultRecord {
     cipher: { name: 'AES-GCM', iv: r.cipher.iv },
     wrapped: r.wrapped,
   };
+}
+
+// --- Passkeys ----------------------------------------------------------------
+
+/**
+ * Traduce los errores de WebAuthn a algo que el usuario entienda. El caso
+ * común es `NotAllowedError`: canceló el diálogo o se venció el tiempo.
+ */
+function passkeyError(err: unknown, prefix: string): Error {
+  const name = (err as any)?.name;
+  if (name === 'NotAllowedError' || name === 'AbortError') {
+    return new Error(`${prefix}: cancelaste la passkey o se venció el tiempo.`);
+  }
+  if (name === 'InvalidStateError') {
+    return new Error(`${prefix}: esa passkey ya está registrada en este dispositivo.`);
+  }
+  if (name === 'SecurityError') {
+    return new Error(`${prefix}: las passkeys sólo funcionan en una conexión segura (HTTPS).`);
+  }
+  console.error(err);
+  return new Error(`${prefix}: la passkey no respondió.`);
+}
+
+/**
+ * Firma ECDSA de DER (como la entrega un autenticador) a P1363 (r||s, como la
+ * espera `crypto.subtle.verify`). Sólo se usa para comprobar localmente, al
+ * restaurar, que una passkey corresponde a un código público.
+ */
+function derToP1363(der: ArrayBuffer): ArrayBuffer {
+  const b = new Uint8Array(der);
+  let i = 2;                                   // 0x30 len
+  if (b[1] & 0x80) i += b[1] & 0x7f;           // largo en forma larga
+  const read = () => {
+    const len = b[i + 1];
+    let v = b.slice(i + 2, i + 2 + len);
+    i += 2 + len;
+    while (v.length > 32 && v[0] === 0) v = v.slice(1);
+    const out = new Uint8Array(32);
+    out.set(v, 32 - v.length);
+    return out;
+  };
+  const r = read();
+  const s = read();
+  return concat(r.buffer, s.buffer);
+}
+
+function concat(a: ArrayBuffer, b: ArrayBuffer): ArrayBuffer {
+  const out = new Uint8Array(a.byteLength + b.byteLength);
+  out.set(new Uint8Array(a), 0);
+  out.set(new Uint8Array(b), a.byteLength);
+  return out.buffer;
+}
+
+function b64url(buffer: ArrayBuffer | ArrayBufferLike): string {
+  return arrayBufferToBase64(buffer).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function b64urlToArrayBuffer(text: string): ArrayBuffer {
+  const b64 = text.replace(/-/g, '+').replace(/_/g, '/');
+  return base64ToArrayBuffer(b64 + '='.repeat((4 - (b64.length % 4)) % 4));
 }
 
 // --- IndexedDB ---------------------------------------------------------------

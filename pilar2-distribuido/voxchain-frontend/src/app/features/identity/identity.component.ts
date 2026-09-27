@@ -39,6 +39,7 @@ import { friendlyError } from '../../core/utils/format';
               {{ identityService.locked() ? 'bloqueada' : 'desbloqueada' }}
             </span>
             <span class="tag tag-neutral" *ngIf="identityService.protection() === 'legacy'">sin contraseña</span>
+            <span class="tag tag-neutral" *ngIf="identityService.protection() === 'passkey'">con passkey</span>
           </span>
         </div>
 
@@ -77,6 +78,15 @@ import { friendlyError } from '../../core/utils/format';
         </div>
 
         <ng-container *ngIf="!justCreated()">
+          <p class="vc-note active__note" *ngIf="identityService.protection() === 'passkey'">
+            <strong>Tu clave secreta vive en tu passkey, no en este navegador.</strong>&ngsp;
+            <span>Cada firma te va a pedir huella, cara o PIN, así que nada puede firmar
+              por vos sin que te enteres. Para usarla en otro dispositivo necesitás que la
+              passkey esté ahí (si tu gestor de passkeys la sincroniza, ya está) y tu
+              código público: guardalo. Si la passkey no se sincroniza y perdés el
+              dispositivo, perdés la identidad; no hay respaldo posible, porque la clave
+              no sale nunca del autenticador.</span>
+          </p>
           <p class="vc-note active__note" *ngIf="identityService.protection() === 'vault'">
             <strong>Tu clave secreta está cifrada con tu contraseña.</strong>&ngsp;
             <span>En este navegador sólo se guarda cifrada. Mientras la identidad está
@@ -111,10 +121,25 @@ import { friendlyError } from '../../core/utils/format';
         <div class="card elev-sm vc-plain own__card">
           <span class="card-kicker">{{ identityService.identity() ? 'Otra identidad' : 'Empezá acá' }}</span>
           <h4 class="own__title">Crear mi identidad</h4>
-          <p class="own__body">
+          <p class="own__body" *ngIf="method() === 'passkey'">
+            Elegí un nombre y creá una passkey: tu clave secreta queda en tu dispositivo
+            (o en tu gestor de passkeys) y cada firma te pide huella, cara o PIN.
+          </p>
+          <p class="own__body" *ngIf="method() === 'password'">
             Elegí un nombre y una contraseña. Tu clave secreta se genera en este
             navegador y se guarda cifrada con esa contraseña.
           </p>
+
+          <!-- Passkey primero y recomendada; la contraseña queda para navegadores
+               sin WebAuthn (o sin HTTPS) y para quien quiera usar el CLI. -->
+          <div class="vc-actions own__method" *ngIf="passkeys">
+            <button type="button" class="btn active__btn"
+                    [class.btn-primary]="method() === 'passkey'" [class.btn-ghost]="method() !== 'passkey'"
+                    (click)="method.set('passkey')">Con passkey (recomendado)</button>
+            <button type="button" class="btn active__btn"
+                    [class.btn-primary]="method() === 'password'" [class.btn-ghost]="method() !== 'password'"
+                    (click)="method.set('password')">Con contraseña</button>
+          </div>
 
           <div class="field own__field">
             <label for="vc-name">Nombre para mostrar</label>
@@ -124,6 +149,7 @@ import { friendlyError } from '../../core/utils/format';
                    (blur)="touched.set(true)">
             <p class="vc-note-sm own__hint">Se guarda sólo en este navegador; nunca viaja a la red.</p>
           </div>
+          <ng-container *ngIf="method() === 'password'">
           <div class="field own__field">
             <label for="vc-pass">Contraseña</label>
             <input id="vc-pass" class="input" type="password" autocomplete="new-password"
@@ -140,15 +166,20 @@ import { friendlyError } from '../../core/utils/format';
               y más difícil de adivinar que una palabra rara.
             </p>
           </div>
+          </ng-container>
 
           <label class="radio own__ack">
             <input type="checkbox" [checked]="acknowledged()" [disabled]="generating()"
                    (change)="acknowledged.set($any($event.target).checked)">
             <span class="dot own__box"></span>
-            <span class="own__ack-text">
+            <span class="own__ack-text" *ngIf="method() === 'password'">
               Entiendo que nadie puede recuperar mi contraseña, y que si la olvido, o si
               se borran los datos de este navegador sin que yo haya descargado el
               respaldo, pierdo mi identidad.
+            </span>
+            <span class="own__ack-text" *ngIf="method() === 'passkey'">
+              Entiendo que mi identidad depende de esta passkey: si la borro, o pierdo el
+              dispositivo y la passkey no está sincronizada en otro, pierdo mi identidad.
             </span>
           </label>
 
@@ -158,7 +189,7 @@ import { friendlyError } from '../../core/utils/format';
 
           <button class="btn btn-primary own__submit" (click)="register()"
                   [disabled]="generating() || !!createError() || !acknowledged()">
-            {{ generating() ? 'Creando identidad…' : 'Crear identidad' }}
+            {{ generating() ? 'Creando identidad…' : (method() === 'passkey' ? 'Crear con passkey' : 'Crear identidad') }}
           </button>
         </div>
 
@@ -169,8 +200,9 @@ import { friendlyError } from '../../core/utils/format';
           <span class="card-kicker">¿Ya tenés una?</span>
           <h4 class="own__title">Restaurar desde respaldo</h4>
           <p class="own__body">
-            Subí el archivo de respaldo o pegá su contenido. Tu código público, tus
-            mineros y tus equipos siguen siendo los mismos.
+            Subí el archivo de respaldo o pegá su contenido. Si tu identidad es una
+            passkey, pegá tu código público. Tus mineros y tus equipos siguen siendo
+            los mismos.
           </p>
 
           <div class="field own__field">
@@ -182,7 +214,11 @@ import { friendlyError } from '../../core/utils/format';
             <input type="file" class="own__file" accept=".json,.pem,.txt,application/json"
                    [disabled]="restoring()" (change)="loadFile($event)">
           </div>
-          <div class="field own__field">
+          <p class="vc-note-sm own__hint" *ngIf="restoreKind() === 'pubkey'">
+            Es un código público: al restaurar, tu navegador te va a pedir la passkey
+            y se comprueba que corresponda a ese código.
+          </p>
+          <div class="field own__field" *ngIf="restoreKind() !== 'pubkey'">
             <label for="vc-rpass">{{ restoreIsPem() ? 'Contraseña nueva' : 'Contraseña del respaldo' }}</label>
             <input id="vc-rpass" class="input" type="password"
                    [attr.autocomplete]="restoreIsPem() ? 'new-password' : 'current-password'"
@@ -210,7 +246,7 @@ import { friendlyError } from '../../core/utils/format';
 
           <button class="btn btn-secondary own__submit" (click)="restore()"
                   [disabled]="restoring() || !canRestore()">
-            {{ restoring() ? 'Restaurando…' : 'Restaurar identidad' }}
+            {{ restoring() ? 'Restaurando…' : (restoreKind() === 'pubkey' ? 'Buscar mi passkey' : 'Restaurar identidad') }}
           </button>
         </div>
 
@@ -257,6 +293,7 @@ import { friendlyError } from '../../core/utils/format';
     .own__submit { align-self: flex-start; margin-top: 18px; min-height: 40px; padding: 0 20px; }
     .own__pem { min-height: 110px; resize: vertical; font: 11.5px var(--font-mono); }
     .own__file { margin-top: 8px; font-size: 12px; color: var(--color-neutral-400); }
+    .own__method { gap: 8px; margin-bottom: 16px; }
   `]
 })
 export class IdentityComponent {
@@ -264,6 +301,10 @@ export class IdentityComponent {
   private snackBar = inject(MatSnackBar);
 
   readonly minPass = MIN_PASSPHRASE;
+  readonly passkeys = this.identityService.passkeysSupported();
+
+  /** Cómo se protege la identidad nueva. Passkey si el navegador la soporta. */
+  method = signal<'passkey' | 'password'>(this.passkeys ? 'passkey' : 'password');
 
   /** Recién creada: se insiste con el respaldo hasta que el usuario diga que lo guardó. */
   justCreated = signal(false);
@@ -280,6 +321,7 @@ export class IdentityComponent {
   createError = computed(() => {
     const n = this.displayName().trim();
     if (n.length < 3 || n.length > 24) return 'Elegí un nombre de entre 3 y 24 caracteres.';
+    if (this.method() === 'passkey') return '';
     if ([...this.pass()].length < MIN_PASSPHRASE) {
       return `La contraseña tiene que tener al menos ${MIN_PASSPHRASE} caracteres.`;
     }
@@ -295,13 +337,23 @@ export class IdentityComponent {
   restoreName = signal('');
   restoring = signal(false);
 
-  /** Un PEM en claro (respaldo viejo) se cifra con una contraseña nueva. */
-  restoreIsPem = computed(() => {
+  /**
+   * Qué pegó el usuario: el respaldo cifrado (JSON), el código público de una
+   * identidad con passkey, o un PEM en claro de antes.
+   */
+  restoreKind = computed<'vault' | 'pubkey' | 'pem' | null>(() => {
     const t = this.restoreText().trim();
-    return !!t && !t.startsWith('{');
+    if (!t) return null;
+    if (t.startsWith('{')) return 'vault';
+    if (/^MFkw[A-Za-z0-9+/]+=*$/.test(t)) return 'pubkey';
+    return 'pem';
   });
 
+  /** Un PEM en claro (respaldo viejo) se cifra con una contraseña nueva. */
+  restoreIsPem = computed(() => this.restoreKind() === 'pem');
+
   canRestore = computed(() => {
+    if (this.restoreKind() === 'pubkey') return this.passkeys;
     if (!this.restoreText().trim() || !this.restorePass()) return false;
     if (!this.restoreIsPem()) return true;
     return [...this.restorePass()].length >= MIN_PASSPHRASE
@@ -316,10 +368,17 @@ export class IdentityComponent {
     this.generating.set(true);
     try {
       const name = this.displayName().trim();
-      await this.identityService.generateKeypair(name, this.pass(), { replace: true });
-      this.justCreated.set(true);
-      this.snackBar.open(`¡Listo, ${name}! Tu identidad está creada. Descargá tu respaldo.`,
-                         'Cerrar', { duration: 6000 });
+      if (this.method() === 'passkey') {
+        await this.identityService.createPasskey(name, { replace: true });
+        this.justCreated.set(false);
+        this.snackBar.open(`¡Listo, ${name}! Tu identidad vive en tu passkey. Guardá tu código público.`,
+                           'Cerrar', { duration: 6000 });
+      } else {
+        await this.identityService.generateKeypair(name, this.pass(), { replace: true });
+        this.justCreated.set(true);
+        this.snackBar.open(`¡Listo, ${name}! Tu identidad está creada. Descargá tu respaldo.`,
+                           'Cerrar', { duration: 6000 });
+      }
       this.displayName.set('');
       this.pass.set('');
       this.pass2.set('');
@@ -338,8 +397,10 @@ export class IdentityComponent {
 
     this.restoring.set(true);
     try {
-      const id = await this.identityService.restore(
-        this.restoreText(), this.restorePass(), this.restoreName(), { replace: true });
+      const id = this.restoreKind() === 'pubkey'
+        ? await this.identityService.restorePasskey(this.restoreText(), this.restoreName(), { replace: true })
+        : await this.identityService.restore(
+            this.restoreText(), this.restorePass(), this.restoreName(), { replace: true });
       this.justCreated.set(false);
       this.restoreText.set('');
       this.restorePass.set('');
@@ -411,9 +472,12 @@ export class IdentityComponent {
   clear() {
     if (!confirm(
       '¿Borrar tu identidad de este navegador?\n\n' +
-      'Se borra tu clave secreta. Sin tu respaldo (y su contraseña) no hay forma ' +
-      'de recuperarla: nadie puede devolvértela, y tus mineros y equipos quedan a ' +
-      'nombre de una identidad que ya no vas a poder usar.')) {
+      (this.identityService.protection() === 'passkey'
+        ? 'La passkey queda en tu dispositivo (se borra desde su configuración de ' +
+          'passkeys): con ella y tu código público podés volver a entrar.'
+        : 'Se borra tu clave secreta. Sin tu respaldo (y su contraseña) no hay forma ' +
+          'de recuperarla: nadie puede devolvértela, y tus mineros y equipos quedan a ' +
+          'nombre de una identidad que ya no vas a poder usar.'))) {
       return;
     }
     this.identityService.clearIdentity();

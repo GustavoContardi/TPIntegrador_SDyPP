@@ -41,6 +41,12 @@ data:
   # rechaza firmas inválidas) y dejaba proponer en nombre de cualquiera con sólo
   # omitir la firma. Debe quedar igual en NCT y API.
   REQUIRE_SIGNATURES: "true"
+  # Passkeys (WebAuthn, AGENT.md 3.1): el dominio (rpId) y el origen del
+  # frontend. Tienen que coincidir con el host del Ingress: si cambia la IP del
+  # LoadBalancer cambia el host de sslip.io, y las passkeys creadas con el
+  # dominio viejo dejan de servir (el autenticador las ata a su rpId).
+  WEBAUTHN_RP_IDS: "voxchain.34.39.171.193.sslip.io"
+  WEBAUTHN_ORIGINS: "https://voxchain.34.39.171.193.sslip.io"
   # Anti-replay: antigüedad máxima de created_at en una propuesta firmada (segundos).
   PROPOSAL_MAX_AGE_SECONDS: "300"
   WINDOW_SECONDS_PROMULGACION: "120"

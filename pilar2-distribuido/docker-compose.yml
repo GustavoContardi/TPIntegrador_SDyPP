@@ -72,6 +72,10 @@ x-app-env: &app-env
   # Compartido por NCT y API vía el anchor.
   REQUIRE_SIGNATURES: "true"
   PROPOSAL_MAX_AGE_SECONDS: "300"
+  # Passkeys (WebAuthn): dominio y origen del frontend. Una firma con passkey
+  # hecha desde otro sitio no valida aunque la firma sea correcta.
+  WEBAUTHN_RP_IDS: "localhost"
+  WEBAUTHN_ORIGINS: "http://localhost:4200"
 
 services:
   rabbitmq:

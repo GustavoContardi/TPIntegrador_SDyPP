@@ -123,6 +123,19 @@ REQUIRE_SIGNATURES = get_bool("REQUIRE_SIGNATURES", True)
 # (anti-replay). 0 = sin chequeo de frescura.
 PROPOSAL_MAX_AGE_SECONDS = get_int("PROPOSAL_MAX_AGE_SECONDS", 300)
 
+
+def get_list(name: str, default: str) -> list[str]:
+    return [x.strip() for x in get(name, default).split(",") if x.strip()]
+
+
+# Passkeys (WebAuthn, AGENT.md 3.1). Una firma hecha con passkey dice para qué
+# dominio (rpId) y desde qué página (origin) se hizo; se aceptan sólo los de
+# acá. Tienen que ser los del frontend real: con `voxchain.<ip>.sslip.io`, si
+# cambia la IP del LoadBalancer cambian los dos, y las passkeys creadas con el
+# dominio viejo dejan de servir (el autenticador las ata a su rpId).
+WEBAUTHN_RP_IDS = get_list("WEBAUTHN_RP_IDS", "localhost")
+WEBAUTHN_ORIGINS = get_list("WEBAUTHN_ORIGINS", "http://localhost:4200")
+
 # Health endpoints
 # Pool
 POOL_HTTP_PORT = get_int("POOL_HTTP_PORT", 9001)

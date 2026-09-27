@@ -67,7 +67,11 @@ esfuerzo computacional.
 
 Cada nodo tiene par de claves. Las propuestas viajan firmadas y con
 `author_pubkey`; **las claves privadas nunca se persisten ni viajan por
-RabbitMQ**. La clave del ciudadano vive en el navegador **cifrada con una
+RabbitMQ**. La identidad del ciudadano se crea, preferentemente, como una
+**passkey** (WebAuthn): la clave queda en el autenticador del dispositivo, cada
+firma pide huella o PIN, y el backend verifica la aserción WebAuthn en el mismo
+punto que cualquier otra firma (`common/identity/webauthn.py`). Como
+alternativa, la clave vive en el navegador **cifrada con una
 contraseña** (PBKDF2-SHA256 + AES-GCM, `wrapKey`): en IndexedDB sólo hay el blob
 cifrado, y la clave utilizable existe en memoria como `CryptoKey` no extraíble
 mientras la identidad está desbloqueada. El respaldo es ese mismo blob, que el

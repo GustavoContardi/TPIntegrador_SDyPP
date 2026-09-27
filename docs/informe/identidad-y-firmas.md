@@ -1,7 +1,7 @@
 # Identidad, firmas y la clave privada en el navegador
 
 Registro de una sesión de trabajo (25/09/2026) que empezó con una pregunta —*¿para
-qué nos sirven las claves públicas y privadas?*— y terminó en tres cambios de
+qué nos sirven las claves públicas y privadas?*— y terminó en cuatro cambios de
 seguridad:
 
 1. **Las firmas pasaron a ser obligatorias.** Hasta ahora eran opcionales en todos
@@ -12,6 +12,9 @@ seguridad:
 3. **La clave privada pasó a guardarse cifrada con una contraseña.** En disco
    queda solo un blob cifrado, la clave usable vive en memoria y el respaldo es un
    archivo cifrado que también sirve para el CLI.
+4. **La identidad puede vivir en una passkey (WebAuthn).** La clave no está en el
+   navegador, cada firma pide huella o PIN, y el backend verifica las firmas
+   WebAuthn en el mismo punto que todas las demás.
 
 El documento sigue ese mismo orden: primero el concepto, después el recorrido de
 una firma por el sistema, los dos hallazgos con lo que se hizo, y al final lo que
@@ -218,7 +221,7 @@ bloqueaba nada ni le avisaba a nadie.
 |---|---|---|
 | 1 | Dejar de perder identidades y exigir Trusted Types | ✅ Hecho, commit `da70610` (§5) |
 | 2 | Cifrar la clave en reposo con una contraseña | ✅ Hecho (§6) |
-| 3 | Passkeys (WebAuthn) | Trabajo futuro (§7) |
+| 3 | Passkeys (WebAuthn) | ✅ Hecho (§7) |
 
 ---
 
@@ -438,7 +441,123 @@ obligatorio del nivel 1 forman parte de este diseño, no son un agregado.
 
 ---
 
-## 7. Lo que queda pendiente
+## 7. Nivel 3: passkeys (WebAuthn)
+
+### Qué es y por qué
+
+Con una passkey, la clave privada **no está en el navegador**. La genera y la
+guarda el autenticador del dispositivo (Secure Enclave, TPM, una llave física o el
+gestor de passkeys) y no sale nunca de ahí. **Cada firma exige un gesto del
+usuario:** huella, cara o PIN. Es lo que los niveles 1 y 2 no podían dar: no hay
+nada en la página que un XSS pueda usar ni robar.
+
+En el navegador solo quedan la pubkey y el id de la credencial, que son públicos.
+La pubkey se pide en ES256 (P-256) y se obtiene en SPKI con `getPublicKey()`, el
+mismo formato que el resto de las identidades. Para el resto del sistema es una
+identidad más.
+
+### Cómo se verifica (backend)
+
+WebAuthn no firma el mensaje tal cual: el autenticador firma
+`authenticatorData || SHA-256(clientDataJSON)`. El mensaje canónico entra por el
+`challenge`, que es su SHA-256.
+
+- **Un solo punto de cambio.** La firma viaja en el mismo campo `signature` (o la
+  cabecera `X-Signature`) que las demás, como un sobre
+  `wa1.<authData>.<clientDataJSON>.<firma DER>` en base64url.
+  `common.identity.verify` lo reconoce por el prefijo y delega en
+  `common/identity/webauthn.py`. El API y el NCT no cambiaron: las passkeys valen
+  para proponer, mineros, equipos y deliberación sin que ningún endpoint sepa
+  que existen.
+- **Qué se exige:**
+  - `type == "webauthn.get"`;
+  - `challenge == base64url(SHA-256(mensaje))`;
+  - un `origin` de `WEBAUTHN_ORIGINS`, sin `crossOrigin`;
+  - un `rpIdHash` de `WEBAUTHN_RP_IDS`;
+  - las banderas **UP** (hubo alguien) y **UV** (se verificó quién);
+  - la firma ECDSA válida.
+- **Qué no se hace, a propósito:**
+  - No hay challenge emitido por el servidor: la frescura y el anti-replay ya los
+    dan los mensajes firmados (timestamp o `created_at` + `sig:used`), igual que
+    con cualquier otra firma.
+  - No se sigue el contador de firmas: las passkeys sincronizadas lo reportan
+    siempre en cero, y seguirlo exigiría estado por credencial.
+- **Configuración:** `WEBAUTHN_RP_IDS` y `WEBAUTHN_ORIGINS` en el ConfigMap
+  (`voxchain.34.39.171.193.sslip.io` y `https://…`) y en compose (`localhost` y
+  `http://localhost:4200`).
+
+### Cómo se usa (frontend)
+
+- **Crear:** "Con passkey (recomendado)" viene elegida si el navegador soporta
+  WebAuthn en un contexto seguro (HTTPS o localhost). No pide contraseña: el
+  navegador muestra su diálogo de passkey. Se pide `residentKey: 'required'` para
+  que la passkey sea descubrible en otros dispositivos.
+- **Firmar:** `sign()` llama a `navigator.credentials.get` con la credencial de
+  esta identidad y `userVerification: 'required'`. Las pantallas no cambiaron.
+  Las ceremonias se ponen en fila, porque el navegador rechaza dos a la vez. Si el
+  usuario cancela: "No se firmó nada: cancelaste la passkey o se venció el
+  tiempo."
+- **Otro dispositivo:** WebAuthn no devuelve la pública al firmar, así que en un
+  dispositivo nuevo la app no puede saberla. Se restaura **pegando el código
+  público**: la app le pide una firma a la passkey (descubrible, sin id) y la
+  verifica localmente contra ese código antes de aceptarlo.
+- **Borrar:** la identidad se borra de la app, pero la passkey queda en el
+  dispositivo (un sitio no puede borrarla). El aviso lo dice.
+- **La contraseña sigue disponible** para navegadores sin WebAuthn y para quien
+  use el CLI: con una passkey no hay clave que `propose_law.py` pueda usar.
+
+### Qué resuelve y qué no
+
+| Amenaza | Contraseña (nivel 2) | Passkey |
+|---|---|---|
+| Robo del disco o del perfil | Hay que forzar la contraseña | No hay nada que robar |
+| XSS almacenado | No firma hasta que el usuario desbloquee | No firma sin un gesto del usuario |
+| XSS activo | Firma mientras esté desbloqueada; puede capturar la contraseña | No puede firmar en silencio ni robar nada. Sí puede **disparar** el diálogo con un mensaje suyo y esperar que el usuario lo confirme, porque el diálogo del navegador no muestra qué se firma |
+| Pérdida | Sin la contraseña, identidad perdida | Si la passkey no se sincroniza y se pierde el dispositivo, identidad perdida: no hay respaldo posible |
+| Cambio de dominio | No afecta | **Las passkeys dejan de servir**: el autenticador las ata al rpId, y `voxchain.<ip>.sslip.io` cambia con la IP del LoadBalancer |
+
+### Verificación
+
+**Tests de Python:** 565 en total, 15 de ellos nuevos, en `common/tests/test_webauthn.py`.
+Arman aserciones como las de un autenticador real (WebAuthn §6.1 y §5.8.1) y
+comprueban:
+- que una firma válida pasa;
+- que falla con otro mensaje (el challenge la ata a este);
+- que falla con otra clave;
+- que falla con otro rpId (una passkey de otro sitio) y con otro origen;
+- que falla con `crossOrigin`;
+- que falla sin UP o sin UV;
+- que falla una aserción de registro (`webauthn.create`);
+- que un sobre malformado no lanza excepciones;
+- que las firmas crudas de siempre siguen funcionando.
+
+**En el navegador.** El navegador embebido no tiene un autenticador que se pueda
+operar sin la huella del usuario. Por eso las pruebas usaron un autenticador
+emulado en la página, que sigue la especificación: firma
+`authenticatorData || SHA-256(clientDataJSON)` con una clave P-256 y entrega la
+firma en DER. Todo lo demás es real: el frontend, el API y el NCT reconstruidos
+con el código nuevo.
+
+| Prueba | Resultado |
+|---|---|
+| Crear con passkey | Pide ES256, `residentKey: required` y `userVerification: required`. En localStorage quedan solo pubkey, nombre e id de la credencial; en IndexedDB no queda nada. Etiqueta "con passkey"; el header no ofrece bloquear. |
+| Registrar un minero | Un pedido a la passkey (con una sola credencial permitida y UV obligatorio); el API responde 200. |
+| Proponer y **cancelar** la passkey | "No se firmó nada: cancelaste la passkey o se venció el tiempo." No sale ningún `POST`. |
+| Proponer con una aserción sin UV | El API responde **401 Firma inválida**. |
+| Proponer con UP y UV | Ley enviada (`ley-e8fa3803`). El NCT la vuelve a verificar al recibirla por RabbitMQ y la encola. |
+| Borrar | El aviso explica que la passkey queda en el dispositivo. |
+| Restaurar con un código público ajeno | "Esa passkey no corresponde a ese código público."; no se adopta nada. |
+| Restaurar con el código correcto | Misma pubkey; se recupera el id de la credencial desde la aserción. |
+| Opción "Con contraseña" | Siguen apareciendo sus dos campos y el flujo del nivel 2. |
+| Consola | Sin errores ni violaciones de Trusted Types. |
+
+**Queda pendiente:** probar con un autenticador real (Touch ID, Windows Hello o una
+llave). Necesita que una persona ponga la huella, y crea una passkey para
+`localhost` en su gestor, que después conviene borrar.
+
+---
+
+## 8. Lo que queda pendiente
 
 ### Lo que el nivel 2 deja abierto
 
@@ -459,25 +578,15 @@ obligatorio del nivel 1 forman parte de este diseño, no son un agregado.
   Crypto no lo trae: necesita WASM, y eso obliga a agregar `'wasm-unsafe-eval'`
   a la CSP.
 
-### Nivel 3: passkeys (WebAuthn)
-
-La clave vive en el hardware del dispositivo (Secure Enclave, TPM o una llave
-física) y **cada firma exige un gesto del usuario**, como la huella o el PIN.
-Resuelve a la vez el robo del disco y el XSS que firma en silencio, y las passkeys
-que se sincronizan resuelven el respaldo. Usa P-256, igual que ahora.
-
-Los costos:
-
-- **Hay que cambiar la verificación en el API y en el NCT.** WebAuthn no firma el
-  mensaje tal cual: firma `authenticatorData || sha256(clientDataJSON)`, y el
-  `challenge` tiene que corresponder al mensaje canónico.
-- **Las passkeys quedan atadas al dominio.** El despliegue usa
-  `voxchain.<ip>.sslip.io`: si cambia la IP del LoadBalancer, cambia el dominio y
-  todas las passkeys dejan de servir. Hace falta un dominio estable antes de
-  considerarlo.
-
 ### Otros hallazgos de la sesión
 
+- **El anti-replay de las acciones firmadas se puede esquivar.** `sig:used` guarda
+  el hash del **string** de la firma, no de lo que autoriza. Hay otros strings que
+  también validan para el mismo mensaje: `b64decode` descarta caracteres fuera del
+  alfabeto (agregar un "!" da otro string), y ECDSA es maleable (`s → n−s`). Quien
+  vea pasar una acción firmada podría repetirla dentro de los 300 s. El arreglo es
+  que la marca dependa de `pubkey|mensaje` y no de la firma; quedó como tarea
+  aparte.
 - **Las fuentes no cargan.** La CSP (`font-src 'self'`) bloquea las fuentes de
   Google que el build de Angular referencia (`fonts.gstatic.com`). La app se ve
   con fuentes de reemplazo, y la consola muestra cientos de errores de CSP. Se
@@ -490,7 +599,7 @@ Los costos:
 
 ---
 
-## 8. Archivos tocados
+## 9. Archivos tocados
 
 **Firmas obligatorias** (commit `d3629c5`): `common/config.py`,
 `voxchain_api/config.py`, `docker-compose.yml`, `docker-compose.scale.yml`,
@@ -513,3 +622,11 @@ Los costos:
 `common/identity/backup.py` (nuevo), `common/identity/__init__.py`,
 `common/tests/test_backup.py` (nuevo), `scripts/propose_law.py`, `AGENT.md` y
 `docs/informe/INFORME.md`.
+
+**Passkeys, nivel 3:**
+`common/identity/webauthn.py` (nuevo), `common/identity/signing.py`,
+`common/config.py`, `common/tests/test_webauthn.py` (nuevo),
+`docker-compose.yml`, `voxchain-config.yaml`,
+`voxchain-frontend/src/app/core/services/identity.service.ts`,
+`voxchain-frontend/src/app/features/identity/identity.component.ts`, `AGENT.md`
+y `docs/informe/INFORME.md`.

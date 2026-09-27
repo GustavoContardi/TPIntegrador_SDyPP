@@ -56,6 +56,22 @@ Estas reglas son normativas. Cualquier implementación debe respetarlas exactame
 
 #### Dónde vive la clave del ciudadano
 
+Hay dos formas, y la recomendada es la primera:
+
+- **En una passkey (WebAuthn).** La clave la genera y la guarda el autenticador del dispositivo (Secure Enclave, TPM, una llave física o el gestor de passkeys) y **nunca sale de ahí**: en el navegador sólo quedan la pubkey y el id de la credencial, que son públicos. **Cada firma exige huella, cara o PIN**, así que ni un XSS ni nadie puede firmar en silencio. Se pide ES256 (P-256) y la pública se obtiene en SPKI (`getPublicKey()`), así que para el resto del sistema es una identidad como cualquier otra.
+- **Cifrada con una contraseña** (descrita abajo), para navegadores sin WebAuthn o sin HTTPS, y para quien necesite el CLI: con una passkey no hay clave que el CLI pueda usar.
+
+**Cómo se verifica una firma con passkey** (`common/identity/webauthn.py`). WebAuthn no firma el mensaje tal cual: el autenticador firma `authenticatorData || SHA-256(clientDataJSON)`, y el mensaje entra como `challenge = SHA-256(mensaje canónico)`. La firma viaja en el mismo campo que las demás, como `wa1.<authData>.<clientDataJSON>.<firma DER>`, y `common.identity.verify` la reconoce por el prefijo. Así vale en todo el sistema (API y NCT, propuestas, mineros, equipos, deliberación) sin que ningún endpoint sepa que existe. Se exige: `type == "webauthn.get"`, el challenge del mensaje, un `origin` y un rpId de los configurados (`WEBAUTHN_ORIGINS`, `WEBAUTHN_RP_IDS`) y las banderas UP (hubo alguien) y UV (se verificó quién). No hay challenge emitido por el servidor: la frescura y el anti-replay los dan los mensajes firmados, igual que con cualquier otra firma. Tampoco se sigue el contador de firmas: las passkeys sincronizadas lo reportan en cero.
+
+**Restricciones que hay que asumir:**
+
+- **El rpId es el dominio**, y el autenticador ata la passkey a él. Con `voxchain.<ip>.sslip.io`, si cambia la IP del LoadBalancer cambia el dominio y todas las passkeys dejan de servir (y hay que actualizar `WEBAUTHN_RP_IDS`/`WEBAUTHN_ORIGINS`). Un dominio propio y estable lo resuelve.
+- **Otro dispositivo:** si el gestor de passkeys las sincroniza (iCloud, Google), la passkey ya está ahí, pero WebAuthn no devuelve la pública al firmar. Se restaura con el **código público**: la app le pide una firma a la passkey y la verifica contra ese código antes de aceptarlo.
+- **Sin sincronización no hay respaldo posible**: la clave no sale nunca del autenticador. Perder el dispositivo es perder la identidad.
+- **Borrar la identidad en la app no borra la passkey** del dispositivo (un sitio no puede hacerlo); se borra desde la configuración de passkeys.
+
+#### La clave cifrada con contraseña
+
 En el navegador, **cifrada con una contraseña que sólo conoce el usuario** (`identity.service.ts`). En IndexedDB hay un único registro (`vault`): el PKCS#8 de la privada cifrado con AES-GCM-256 (`wrapKey`), con una clave derivada de la contraseña por PBKDF2-SHA256 (600.000 iteraciones, sal aleatoria) y la pubkey como dato autenticado (AAD), de modo que un registro al que le cambien la pubkey no se descifra. No se guarda ningún hash de la contraseña: una contraseña equivocada simplemente no descifra.
 
 La clave utilizable existe **sólo en memoria**, como `CryptoKey` no extraíble obtenido con `unwrapKey`: sus bytes en claro nunca pasan por JavaScript, ni al crearla (el PKCS#8 lo produce `wrapKey` ya cifrado) ni al usarla. Al abrir la app la identidad está **bloqueada**; `sign()` pide la contraseña (un único diálogo global, `UnlockPromptComponent`) y sigue firmando hasta que el usuario toca "Bloquear" o cierra la pestaña. Ninguna pantalla que firma sabe de bloqueos.
@@ -78,7 +94,7 @@ Consecuencias que hay que asumir, no esconder:
 
 La otra mitad de esta defensa es la **CSP** que sirve `voxchain-frontend/nginx.conf`: `script-src 'self'` sin `unsafe-inline` ni `unsafe-eval` es lo que intenta que no haya XSS en primer lugar. Para poder ponerla hay que compilar con `inlineCritical: false` (`angular.json`), porque el inliner de CSS crítico de Angular mete un `<style>` y un `onload=` en el `index.html` que obligarían a aflojar la directiva. `style-src` sí lleva `unsafe-inline` porque Angular Material inyecta estilos en tiempo de ejecución; es un residuo mucho menor, con CSS no se ejecuta JavaScript. **Trusted Types es obligatorio** (`require-trusted-types-for 'script'; trusted-types angular`): cierra el DOM-XSS por `innerHTML` y compañía; sólo la política del sanitizador de Angular puede escribir en esos sumideros.
 
-**Lo que esto NO cubre:** un XSS que logre ejecutarse mientras la identidad está desbloqueada puede pedirle firmas, y si la captura al tipearla, llevarse la contraseña. La solución de fondo es que cada firma exija un gesto del usuario sobre una clave en hardware (passkeys/WebAuthn); requiere cambiar la verificación en API y NCT y un dominio estable (las passkeys se atan al dominio, y `<ip>.sslip.io` cambia con la IP del LoadBalancer).
+**Lo que esto NO cubre:** con contraseña, un XSS que logre ejecutarse mientras la identidad está desbloqueada puede pedirle firmas, y si la captura al tipearla, llevarse la contraseña. Con passkey eso no pasa —cada firma pide un gesto del usuario y no hay nada que robar—, pero un XSS sí podría **disparar** el pedido de passkey con un mensaje suyo y esperar a que el usuario lo confirme pensando que es otra cosa: el diálogo del navegador no muestra qué se firma.
 
 #### Para qué se usa una clave privada
 
