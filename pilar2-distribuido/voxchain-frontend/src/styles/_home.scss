@@ -149,13 +149,13 @@
 }
 .hm-body { margin: 0; font-size: 14px; line-height: 1.75; color: var(--color-neutral-400); }
 
-.hm-steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 40px; margin-top: 48px; }
+.hm-steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(250px, 100%), 1fr)); gap: 40px; margin-top: 48px; }
 .hm-step__mark { display: flex; align-items: center; gap: 12px; }
 .hm-step__num { font-size: 13px; color: var(--color-accent); }
 .hm-step__line { flex: 1; height: 1px; background: linear-gradient(to right, var(--color-accent-700), transparent); }
 .hm-step__title { margin: 18px 0 10px; font-size: 21px; font-weight: 500; color: var(--color-neutral-100); }
 
-.hm-features { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-top: 48px; }
+.hm-features { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); gap: 16px; margin-top: 48px; }
 .hm-feature {
   gap: 0; padding: 28px 26px;
   background: color-mix(in srgb, var(--color-surface) 55%, transparent);
@@ -172,7 +172,7 @@
   stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round;
 }
 
-.hm-paths { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; margin-top: 48px; }
+.hm-paths { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); gap: 16px; margin-top: 48px; }
 .hm-path {
   gap: 0; padding: 34px 32px; align-items: flex-start;
   background: color-mix(in srgb, var(--color-surface) 55%, transparent);
@@ -246,6 +246,24 @@
   .hm-path { padding: 26px 22px; }
   .hm-closing { margin-top: 80px; padding: 56px 20px; }
   .hm-live__num { font-size: 20px; }
+}
+@media (max-width: 480px) {
+  .hm-hero { padding: 40px 0 48px; gap: 40px; }
+  .hm-pill { margin-bottom: 22px; }
+  .hm-tagline { margin-top: 22px; }
+  .hm-lead { font-size: 15.5px; }
+  // Los dos botones del hero, uno debajo del otro y del mismo ancho: a medio
+  // ancho quedaban de distinto largo y parecían un error.
+  .hm-cta .hm-btn { flex: 1 1 100%; }
+  .hm-live { padding: 22px 20px 18px; }
+  .hm-live__grid { gap: 8px; }
+  .hm-num { padding: 24px 12px; }
+  .hm-section { padding-top: 60px; }
+  .hm-steps { gap: 32px; margin-top: 36px; }
+  .hm-features, .hm-paths { margin-top: 36px; }
+  .hm-feature { padding: 24px 20px; }
+  .hm-q .hm-body { padding-right: 0; }
+  .hm-closing { margin-top: 64px; padding: 48px 18px; border-radius: 16px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .hm-rise, .hm-live { animation: none; }

@@ -99,7 +99,7 @@ import { friendlyDate } from '../../core/utils/format';
                   [class.tag-accent]="b.action !== 'derogacion'">
               {{ actionLabel(b.action) }}
             </span>
-            <span class="vc-note-sm">sellada por {{ b.winning_node_or_pool }}</span>
+            <span class="vc-note-sm recent__by" [title]="b.winning_node_or_pool">sellada por {{ b.winning_node_or_pool }}</span>
             <span class="vc-push recent__ts">{{ date(b.timestamp) }}</span>
           </div>
         </div>
@@ -116,6 +116,7 @@ import { friendlyDate } from '../../core/utils/format';
     .stats { margin-top: 40px; }
 
     .live { margin-top: 16px; padding: 26px; }
+    @media (max-width: 480px) { .live { padding: 22px 18px; } }
 
     .sec__title { margin-bottom: 20px; }
     /* Lista y no tarjetas: son cinco filas de lo mismo, y la regla superior
@@ -126,6 +127,9 @@ import { friendlyDate } from '../../core/utils/format';
       padding: 15px 0; border-top: 1px solid var(--color-divider);
     }
     .recent__law { font-size: 13px; color: var(--color-neutral-100); }
+    /* Quien sella es una clave pública entera, sin espacios: sin el recorte
+       empuja la página de costado. Completa al pasar el mouse. */
+    .recent__by { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .recent__ts { font-size: 12px; color: var(--color-neutral-500); }
     .recent__more { margin-top: 24px; }
     .recent__btn { font-size: 13px; }

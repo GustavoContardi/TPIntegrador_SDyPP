@@ -302,7 +302,7 @@ import {
     .panel__actions { justify-content: flex-end; margin-top: 20px; gap: 12px; }
 
     .teams__empty { margin-top: 24px; }
-    .teams { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 16px; margin-top: 24px; }
+    .teams { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(380px, 100%), 1fr)); gap: 16px; margin-top: 24px; }
     .team { padding: 24px; }
     .team__head { gap: 10px; }
     .team__name { margin: 0; font-size: 19px; color: var(--color-neutral-100); }
@@ -318,6 +318,11 @@ import {
     .team__edit-cta { justify-content: flex-end; margin-top: 12px; }
     .team__btn { font-size: 13px; }
     .team__danger { color: var(--color-neutral-400); }
+
+    @media (max-width: 720px) {
+      .head__already { text-align: left; }
+      .panel, .team { padding: 20px 18px; }
+    }
   `]
 })
 export class TeamsComponent {

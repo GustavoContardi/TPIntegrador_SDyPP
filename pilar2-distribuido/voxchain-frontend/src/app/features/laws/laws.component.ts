@@ -55,7 +55,7 @@ const FILTROS: { key: string; label: string }[] = [
       </div>
 
       <div class="vc-table-wrap laws" *ngIf="visible().length; else vacio">
-        <table class="table laws__table">
+        <table class="table laws__table vc-table--stack">
           <thead>
             <tr>
               <th>Ley</th>
@@ -67,13 +67,13 @@ const FILTROS: { key: string; label: string }[] = [
           </thead>
           <tbody>
             <tr *ngFor="let l of visible()">
-              <td class="mono laws__id">{{ l.law_id }}</td>
-              <td><span class="tag tag-outline">{{ label(l.category) }}</span></td>
-              <td class="laws__action">{{ actionLabel(l.action) }}</td>
-              <td>
+              <td class="mono laws__id" data-label="Ley">{{ l.law_id }}</td>
+              <td data-label="Área"><span class="tag tag-outline">{{ label(l.category) }}</span></td>
+              <td class="laws__action" data-label="Tipo">{{ actionLabel(l.action) }}</td>
+              <td data-label="Estado">
                 <span class="tag" [ngClass]="statusCls(l.status)">{{ statusLabel(l.status) }}</span>
               </td>
-              <td class="laws__date">{{ date(l.created_at) }}</td>
+              <td class="laws__date" data-label="Propuesta el">{{ date(l.created_at) }}</td>
             </tr>
           </tbody>
         </table>

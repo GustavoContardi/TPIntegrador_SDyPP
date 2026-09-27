@@ -319,7 +319,7 @@ import { friendlyError } from '../../core/utils/format';
     .active__btn { font-size: 13px; }
     .active__note { margin-top: 16px; }
 
-    .own { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+    .own { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 16px; }
     .own__card { padding: 24px; }
     .own__title { margin: 12px 0 10px; font-size: 18px; color: var(--color-neutral-100); }
     .own__body { margin: 0 0 18px; font-size: 13px; line-height: 1.7; color: var(--color-neutral-400); }

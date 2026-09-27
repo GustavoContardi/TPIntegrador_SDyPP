@@ -114,11 +114,13 @@ body {
 .vc-muted { color: var(--color-neutral-500); }
 .vc-note-sm { margin: 0; font-size: 12.5px; line-height: 1.6; color: var(--color-neutral-500); }
 
-// Fragmento de código dentro de un párrafo.
+// Fragmento de código dentro de un párrafo. Un id o una clave no tiene
+// espacios donde cortar: en un celular empujaría la página de costado, así que
+// corta donde haga falta.
 .vc-code {
   font-family: var(--font-mono); font-size: 12.5px;
   color: var(--color-accent-300); background: var(--color-accent-900);
-  padding: 1px 6px; border-radius: 4px;
+  padding: 1px 6px; border-radius: 4px; overflow-wrap: anywhere;
 }
 // Bloque de datos crudos: el desafío, una clave pública entera.
 .vc-code-block {
@@ -164,7 +166,7 @@ body {
 // patrón más repetido del diseño y porque, copiada en las tres pantallas,
 // Portada pasaba sola el presupuesto de 4 kB de estilos por componente.
 .vc-live__top { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 14px; }
-.vc-live__id { margin: 18px 0 0; font-size: 26px; font-weight: 400; color: var(--color-neutral-100); }
+.vc-live__id { margin: 18px 0 0; font-size: 26px; font-weight: 400; color: var(--color-neutral-100); overflow-wrap: anywhere; }
 .vc-live__text, .vc-live__idle {
   margin: 10px 0 0; font-size: 13.5px; line-height: 1.7;
   white-space: pre-wrap; color: var(--color-neutral-400);
@@ -203,9 +205,11 @@ body {
 .vc-owned { box-shadow: inset 0 0 0 1px var(--color-accent-700), var(--shadow-md); }
 
 .vc-grid { display: grid; gap: 16px; }
-.vc-grid--cards { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
-.vc-grid--wide { grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); }
-.vc-grid--cols { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 20px; }
+// El `min(…, 100%)` es para el celular: una columna mínima más ancha que la
+// pantalla no se achica, desborda.
+.vc-grid--cards { grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); }
+.vc-grid--wide { grid-template-columns: repeat(auto-fill, minmax(min(380px, 100%), 1fr)); }
+.vc-grid--cols { grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr)); gap: 20px; }
 .vc-stack { display: flex; flex-direction: column; gap: 12px; }
 .vc-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .vc-row { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; }
@@ -259,5 +263,46 @@ body {
 // ── responsive ─────────────────────────────────────────────────────────────
 @media (max-width: 720px) {
   .vc-page { padding: 40px 20px 80px; }
+  .vc-head { gap: 20px; }
   .vc-title { font-size: 34px; }
+  .vc-section, .vc-section--divided { margin-top: 44px; }
+  // De a dos y no de a una: cuatro tarjetas apiladas de un número cada una se
+  // comen la pantalla entera antes de llegar a lo que importa.
+  .vc-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .vc-stat { padding: 16px; }
+  .vc-stat__value { font-size: 24px; }
+}
+@media (max-width: 480px) {
+  .vc-page { padding: 32px 16px 72px; }
+  .vc-title { font-size: 30px; }
+  .vc-h3 { font-size: 22px; }
+}
+
+// ── tablas que se apilan ───────────────────────────────────────────────────
+// En el celular una tabla de seis columnas sólo se lee corriéndola de costado.
+// Con `.vc-table--stack` cada fila pasa a ser una ficha: la primera celda
+// queda de título y el resto, par etiqueta/valor, con la etiqueta sacada del
+// `data-label` de la celda (el mismo texto que su encabezado). La regla que se
+// desvanece bajo cada fila se mantiene tal cual.
+@media (max-width: 720px) {
+  // Tres clases a propósito: tiene que ganarle al `min-width` y al `nowrap` que
+  // cada pantalla le pone a su tabla desde la hoja del componente.
+  .vc-table-wrap .table.vc-table--stack { min-width: 0; white-space: normal; }
+  // En bloque y no como tabla: una tabla se estira hasta su celda más ancha
+  // (una clave pública sin espacios) y dejaría los valores fuera de pantalla.
+  .vc-table--stack, .vc-table--stack tbody { display: block; }
+  .vc-table--stack thead { display: none; }
+  .vc-table--stack tbody tr { display: block; padding: 14px 0; }
+  .vc-table--stack td {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    min-width: 0; padding: 5px 0; text-align: right; overflow-wrap: anywhere;
+  }
+  .vc-table--stack td::before {
+    content: attr(data-label); flex: none; text-align: left;
+    font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--color-neutral-500);
+  }
+  .vc-table--stack td:first-child { padding-top: 0; justify-content: flex-start; text-align: left; font-size: 14px; }
+  .vc-table--stack td:first-child::before { content: none; }
+  .vc-table--stack .num { text-align: right; }
 }

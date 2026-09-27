@@ -52,7 +52,7 @@ interface Fila {
       </div>
 
       <div class="vc-table-wrap chain" *ngIf="rows().length; else vacia">
-        <table class="table chain__table">
+        <table class="table chain__table vc-table--stack">
           <thead>
             <tr>
               <th>N.º</th>
@@ -66,18 +66,20 @@ interface Fila {
           </thead>
           <tbody>
             <tr *ngFor="let b of rows()">
-              <td class="mono chain__height">{{ b.height }}</td>
-              <td class="mono chain__law">{{ b.law }}</td>
-              <td>
+              <td class="mono chain__height" data-label="N.º">{{ b.height }}</td>
+              <td class="mono chain__law" data-label="Ley">{{ b.law }}</td>
+              <td data-label="Decisión">
                 <span class="tag" [class.tag-outline]="b.derogacion" [class.tag-accent]="!b.derogacion">
                   {{ b.action }}
                 </span>
               </td>
-              <td class="num chain__zeros">nivel {{ b.zeros }}</td>
-              <td class="chain__winner">{{ b.winner }}</td>
-              <td class="chain__ts">{{ b.ts }}</td>
+              <td class="num chain__zeros" data-label="Dificultad">nivel {{ b.zeros }}</td>
+              <!-- Quien sella es una clave pública entera: se corta a la vista y
+                   queda completa al pasar el mouse, como el sello. -->
+              <td data-label="Sellada por"><span class="chain__winner" [title]="b.winner">{{ b.winner }}</span></td>
+              <td class="chain__ts" data-label="Fecha">{{ b.ts }}</td>
               <!-- El sello es el comprobante: corto a la vista, entero al pasar el mouse. -->
-              <td><code class="chain__seal" [title]="b.hash">{{ b.seal }}</code></td>
+              <td data-label="Sello"><code class="chain__seal" [title]="b.hash">{{ b.seal }}</code></td>
             </tr>
           </tbody>
         </table>
@@ -98,10 +100,14 @@ interface Fila {
     .chain__height { font-size: 13px; color: var(--color-neutral-500); }
     .chain__law { font-size: 13px; color: var(--color-neutral-100); }
     .chain__zeros { font-size: 13px; color: var(--color-accent-300); }
-    .chain__winner { font-size: 13px; color: var(--color-neutral-300); }
+    .chain__winner { display: block; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--color-neutral-300); }
     .chain__ts { font-size: 12.5px; color: var(--color-neutral-400); }
     .table code.chain__seal { font-size: 12px; color: var(--color-neutral-500); }
     .chain__empty { margin-top: 40px; }
+    @media (max-width: 720px) {
+      .chain { margin-top: 28px; }
+      .chain__winner { min-width: 0; max-width: none; }
+    }
   `]
 })
 export class ChainComponent {

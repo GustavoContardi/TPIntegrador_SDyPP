@@ -103,7 +103,7 @@ interface Servicio {
   styles: [`
     .read-at { font-size: 11.5px; white-space: nowrap; color: var(--color-neutral-500); }
 
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; margin-top: 40px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(230px, 100%), 1fr)); gap: 14px; margin-top: 40px; }
     .grid__foot { margin-top: 18px; }
 
     .svc { padding: 22px; }
@@ -114,7 +114,7 @@ interface Servicio {
     .svc__svg { position: absolute; inset: 0; width: 100%; height: 100%; }
     .svc__beat { animation: vc-ecg 2.6s linear infinite; }
 
-    .qa { display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: 32px; }
+    .qa { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(290px, 100%), 1fr)); gap: 32px; }
     .qa__body { margin: 0; font-size: 13px; line-height: 1.7; color: var(--color-neutral-400); }
   `]
 })

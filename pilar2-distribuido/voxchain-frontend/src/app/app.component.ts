@@ -1,4 +1,4 @@
-import { Component, inject } from '@angular/core';
+import { Component, inject, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { RouterModule } from '@angular/router';
 import { IdentityService } from './core/services/identity.service';
@@ -14,6 +14,12 @@ import { UnlockPromptComponent } from './core/components/unlock-prompt.component
  *
  * El bloque de sesión de la derecha va separado por una línea vertical: lo que
  * está a su izquierda es la app, lo que está a su derecha sos vos.
+ *
+ * En pantallas angostas los links y la sesión no entran en una fila, y
+ * envueltos en tres ocupaban un cuarto del celular pegado arriba. Ahí la barra
+ * queda en marca + botón de menú, y el menú se despliega debajo, dentro de la
+ * misma barra: links en columna y la sesión al pie, separada por una regla en
+ * vez de la línea vertical.
  */
 @Component({
   selector: 'app-root',
@@ -21,13 +27,24 @@ import { UnlockPromptComponent } from './core/components/unlock-prompt.component
   imports: [CommonModule, RouterModule, UnlockPromptComponent],
   template: `
     <div class="vc-shell">
-      <header class="hdr">
-        <div class="hdr__inner">
+      <header class="hdr" [class.hdr--open]="menuOpen()">
+        <div class="hdr__inner" (click)="closeMenuOnLink($event)">
           <a routerLink="/" class="brand" title="Inicio">
             <span class="brand__vox">VOXCHAIN</span><span class="brand__reborn">REBORN</span>
           </a>
 
-          <nav class="nav-links">
+          <button type="button" class="btn btn-secondary btn-icon hdr__menu"
+                  [attr.aria-expanded]="menuOpen()" aria-controls="vc-menu"
+                  [attr.aria-label]="menuOpen() ? 'Cerrar menú' : 'Abrir menú'"
+                  (click)="menuOpen.set(!menuOpen())">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
+                 stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+              <path *ngIf="!menuOpen()" d="M4 7h16M4 12h16M4 17h16"></path>
+              <path *ngIf="menuOpen()" d="M6 6l12 12M18 6L6 18"></path>
+            </svg>
+          </button>
+
+          <nav class="nav-links" id="vc-menu">
             <a routerLink="/dashboard" routerLinkActive="on" [ariaCurrentWhenActive]="'page'">Panel</a>
             <a routerLink="/chain" routerLinkActive="on" [ariaCurrentWhenActive]="'page'">Historial</a>
             <a routerLink="/laws" routerLinkActive="on" [ariaCurrentWhenActive]="'page'">Leyes</a>
@@ -118,15 +135,47 @@ import { UnlockPromptComponent } from './core/components/unlock-prompt.component
     .session__btn:hover { color: var(--color-text); background: transparent; }
     .session__in { font-size: 12.5px; }
 
+    .hdr__menu { display: none; color: var(--color-neutral-300); }
+
     @media (max-width: 1080px) {
       .hdr__inner { flex-wrap: wrap; padding: 12px 20px; row-gap: 12px; }
       .brand { margin-right: 0; }
       .session { margin-left: auto; }
     }
+
+    @media (max-width: 960px) {
+      .hdr__inner { gap: 0; }
+      .brand { margin-right: auto; }
+      .hdr__menu { display: inline-flex; }
+      .nav-links, .session { display: none; flex-basis: 100%; }
+      .hdr--open .hdr__inner { max-height: 100vh; overflow-y: auto; }
+      .hdr--open .nav-links {
+        display: flex; flex-direction: column; align-items: stretch; gap: 0; margin-top: 8px;
+      }
+      .nav-links a { padding: 12px 2px; font-size: 15px; border-top: 1px solid var(--color-divider); }
+      .hdr--open .session {
+        display: flex; flex-wrap: wrap; margin: 0; padding: 14px 2px 6px;
+        border-left: 0; border-top: 1px solid var(--color-divider);
+      }
+      .session__label { margin-right: auto; }
+      .session__in { flex: 1; min-height: 40px; }
+    }
   `]
 })
 export class AppComponent {
   identityService = inject(IdentityService);
+
+  /** Sólo cuenta en pantallas angostas: en las anchas el botón no se ve. */
+  menuOpen = signal(false);
+
+  /**
+   * Elegir un destino cierra el menú: si no, la página nueva carga tapada. Va
+   * por el clic y no por el router porque tocar el link de la página en la que
+   * ya estás no navega, y el menú igual tiene que cerrarse.
+   */
+  closeMenuOnLink(event: MouseEvent) {
+    if ((event.target as HTMLElement).closest('a')) this.menuOpen.set(false);
+  }
 
   /**
    * Cómo se te nombra en la barra: tu nombre para mostrar. La clave pública

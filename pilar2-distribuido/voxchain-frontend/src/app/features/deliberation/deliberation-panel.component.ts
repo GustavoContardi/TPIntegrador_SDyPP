@@ -68,6 +68,12 @@ import { friendlyDuration, friendlyError } from '../../core/utils/format';
     .dp__lead { margin-top: 10px; }
     .dp__btn { padding: 4px 12px; font-size: 12.5px; }
     .dp__err { margin-top: 16px; }
+    /* En el celular la fila de un convocado no entra: nombre, peso, postura y
+       botones bajan de renglón en vez de apretarse. */
+    @media (max-width: 720px) {
+      .dp { padding: 22px 18px; }
+      .vc-roster li { flex-wrap: wrap; row-gap: 8px; }
+    }
   `]
 })
 export class DeliberationPanelComponent implements OnInit, OnDestroy {

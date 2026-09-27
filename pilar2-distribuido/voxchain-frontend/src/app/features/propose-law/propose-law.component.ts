@@ -240,8 +240,13 @@ import { friendlyDate, friendlyError } from '../../core/utils/format';
     .box__sign { margin: 10px 0 0; font-size: 13px; line-height: 1.7; color: var(--color-neutral-400); }
 
     @media (max-width: 960px) {
-      .layout { grid-template-columns: minmax(0, 1fr); }
+      .layout { grid-template-columns: minmax(0, 1fr); margin-top: 36px; }
       .aside { position: static; }
+    }
+    @media (max-width: 520px) {
+      .picks { grid-template-columns: minmax(0, 1fr); }
+      .area { min-height: 200px; }
+      .form__submit { flex: 1 1 100%; }
     }
   `]
 })

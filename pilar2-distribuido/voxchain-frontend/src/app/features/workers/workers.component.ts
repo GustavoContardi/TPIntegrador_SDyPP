@@ -112,7 +112,7 @@ interface PoolHealth {
       <section class="vc-section">
         <h3 class="vc-h3 net__title">Mineros de la red</h3>
         <div class="vc-table-wrap" *ngIf="workers().length; else sinMineros">
-          <table class="table net__table">
+          <table class="table net__table vc-table--stack">
             <thead>
               <tr>
                 <th>Minero</th>
@@ -125,20 +125,20 @@ interface PoolHealth {
             </thead>
             <tbody>
               <tr *ngFor="let w of workers()">
-                <td>
+                <td data-label="Minero">
                   <code>{{ w.worker_id }}</code>
                   <span class="tag tag-accent net__mine" *ngIf="isWorkerOwned(w)">mío</span>
                 </td>
-                <td><span class="tag" [ngClass]="modeCls(w.mode)">{{ modeLabel(w.mode) }}</span></td>
-                <td class="net__team">
+                <td data-label="Cómo mina"><span class="tag" [ngClass]="modeCls(w.mode)">{{ modeLabel(w.mode) }}</span></td>
+                <td class="net__team" data-label="Equipo">
                   <ng-container *ngIf="w.team_id; else solo">
                     <a href="#seccion-equipos" (click)="scrollToTeams($event)">{{ w.team_name }}</a>
                     <span class="net__role">{{ w.team_role === 'coordinator' ? 'líder' : 'miembro' }}</span>
                   </ng-container>
                   <ng-template #solo><span class="vc-muted">por su cuenta</span></ng-template>
                 </td>
-                <td class="net__policy" [class.empty]="getPolicyDisplay(w) === '—'">{{ getPolicyDisplay(w) }}</td>
-                <td>
+                <td class="net__policy" data-label="Qué respalda" [class.empty]="getPolicyDisplay(w) === '—'">{{ getPolicyDisplay(w) }}</td>
+                <td class="net__status" data-label="Estado">
                   <span class="vc-state" [class.online]="w.running">
                     <span class="dot" [class.online]="w.running"></span>
                     {{ w.running ? 'encendido' : 'apagado' }}
@@ -147,7 +147,7 @@ interface PoolHealth {
                     todavía no se encendió
                   </span>
                 </td>
-                <td class="num">
+                <td class="num net__cell-actions" data-label="Acciones">
                   <span class="net__actions">
                     <button class="btn btn-ghost net__btn" *ngIf="isWorkerOwned(w) && w.team_id"
                             (click)="backToSolo(w)" [disabled]="switching()"
@@ -272,9 +272,22 @@ interface PoolHealth {
     .net__danger { color: var(--color-neutral-400); }
 
     .modes__title { margin-bottom: 24px; }
-    .modes { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 32px; }
+    .modes { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); gap: 32px; }
     .modes__code { margin: 0 0 8px; }
     .modes__body { margin: 0; font-size: 13px; line-height: 1.7; color: var(--color-neutral-400); }
+
+    @media (max-width: 720px) {
+      /* Debajo del título ya no hay nada a la izquierda: alinear a la derecha
+         dejaba el botón y las notas colgando del otro lado. */
+      .head__side { align-items: flex-start; }
+      .head__note { text-align: left; }
+      /* El aviso de "todavía no se encendió" baja a su propio renglón. */
+      .net__status { flex-wrap: wrap; row-gap: 0; }
+      .net__pending { flex-basis: 100%; }
+      /* Sin nada que hacer con un minero ajeno, la fila de acciones sobra. */
+      .net__cell-actions:not(:has(button)) { display: none; }
+      .net__actions { flex-wrap: wrap; justify-content: flex-end; }
+    }
   `]
 })
 export class WorkersComponent implements OnInit, OnDestroy {
