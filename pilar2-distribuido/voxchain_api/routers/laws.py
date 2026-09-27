@@ -26,6 +26,7 @@ from voxchain_api.models import (
 from voxchain_api.routers.system import availability_for
 from voxchain_api.services.rabbitmq_publisher import RabbitMQPublisher
 from voxchain_api.services.redis_reader import RedisReader
+from voxchain_api.services.revocation import reject_if_revoked
 
 router = APIRouter(prefix="/api/laws", tags=["laws"])
 
@@ -137,6 +138,9 @@ async def propose_law(
     un éxito liso y dejar al ciudadano esperando una ventana que no va a llegar.
     """
     category = _resolve_category(proposal, redis)
+    # Antes de la firma y también sin firma (modo migración): una clave
+    # revocada no propone de ninguna forma.
+    reject_if_revoked(redis.store.r, proposal.author_pubkey)
     _verify_proposal_signature(proposal, category)
     _verify_proposer_standing(proposal, redis)
 

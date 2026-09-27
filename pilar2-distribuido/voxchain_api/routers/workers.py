@@ -27,6 +27,7 @@ from voxchain_api.services.worker_control import (
     dispatch_switch_mode,
 )
 from common.identity import verify
+from voxchain_api.services.revocation import reject_if_revoked
 from datetime import datetime, timezone
 
 router = APIRouter(prefix="/api/workers", tags=["workers"])
@@ -458,6 +459,7 @@ def require_signed_action(redis_client, resource_id: str, action: str,
                     "X-Signature y X-Timestamp."),
         )
     _verify_timestamp_freshness(timestamp)
+    reject_if_revoked(redis_client, owner_pubkey)
     msg = f"{resource_id}|{action}|{timestamp}".encode()
     if not verify(owner_pubkey, msg, signature):
         raise HTTPException(status_code=401, detail="Firma inválida")
@@ -974,6 +976,7 @@ def persist_worker_registration(request: RegisterWorkerRequest, redis_client) ->
     _verify_timestamp_freshness(timestamp)
 
     # 3. Ownership Authentication: verify signature of `${worker_id}|register|${timestamp}`
+    reject_if_revoked(redis_client, pubkey)
     msg = f"{worker_id}|register|{timestamp}".encode()
     if not verify(pubkey, msg, signature):
         raise HTTPException(status_code=401, detail="Invalid signature")
@@ -1209,6 +1212,7 @@ async def unregister_worker(
     _verify_timestamp_freshness(x_timestamp)
 
     # 4. Verify signature of `${worker_id}|delete|${timestamp}`
+    reject_if_revoked(redis_client, owner_pubkey)
     msg = f"{worker_id}|delete|{x_timestamp}".encode()
     if not verify(owner_pubkey, msg, x_signature):
         raise HTTPException(status_code=401, detail="Invalid signature")

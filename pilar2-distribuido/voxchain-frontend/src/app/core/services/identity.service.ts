@@ -529,6 +529,23 @@ export class IdentityService {
     if (err) waiter.reject(err); else waiter.resolve();
   }
 
+  /**
+   * Firma el certificado de revocación de la identidad actual.
+   *
+   * Es la firma de `revoke|<pubkey>|voxchain-revocation-v1` (el mismo mensaje
+   * que arma `common/identity/signing.py`). No lleva timestamp: se genera por
+   * adelantado y se guarda, para presentarlo el día que se pierda el control
+   * de la clave, cuando ya no se la pueda usar. Pide la contraseña o la passkey
+   * como cualquier otra firma.
+   */
+  async revocationCertificate(): Promise<string> {
+    const id = this.identity();
+    if (!id) throw new Error('no identity');
+    const signature = await this.sign(revocationMessage(id.pubkey));
+    return JSON.stringify(
+      { format: 'voxchain-revocation', v: 1, pubkey: id.pubkey, signature }, null, 2);
+  }
+
   /** El respaldo cifrado de la identidad actual, o `null` si no está cifrada. */
   backupJson(): string | null {
     return this.vault ? JSON.stringify(this.vault, null, 2) : null;
@@ -689,6 +706,26 @@ function parseVault(text: string): VaultRecord {
     cipher: { name: 'AES-GCM', iv: r.cipher.iv },
     wrapped: r.wrapped,
   };
+}
+
+/** Mensaje de revocación: tiene que coincidir con `revocation_message` del backend. */
+export function revocationMessage(pubkey: string): string {
+  return `revoke|${pubkey}|voxchain-revocation-v1`;
+}
+
+/** Valida un certificado de revocación pegado o subido. */
+export function parseRevocation(text: string): { pubkey: string; signature: string } {
+  let c: any;
+  try {
+    c = JSON.parse(text);
+  } catch {
+    throw new Error('Ese archivo no es un certificado de revocación de VoxChain.');
+  }
+  if (c?.format !== 'voxchain-revocation' || c?.v !== 1
+      || typeof c.pubkey !== 'string' || typeof c.signature !== 'string') {
+    throw new Error('Ese archivo no es un certificado de revocación de VoxChain.');
+  }
+  return { pubkey: c.pubkey, signature: c.signature };
 }
 
 // --- Passkeys ----------------------------------------------------------------

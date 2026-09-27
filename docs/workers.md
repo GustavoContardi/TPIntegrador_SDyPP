@@ -144,11 +144,13 @@ El NCT aplica, en este orden (`nct/coordinator.py`, `handle_nonce_response`):
 1. ¿Soy el líder? Si no, ignora.
 2. ¿Hay ventana activa y el `voting_window_id` coincide? Si no, descarta.
 3. ¿Llegó antes del `deadline`? Si no, descarta.
-4. ¿La firma valida contra `winning_node_or_pool`? (si hay firma o si
-   `REQUIRE_SIGNATURES=true`).
-5. ¿El ganador **no** es el autor de la ley? (regla 3.4 de AGENT.md).
-6. `verify_nonce(base, nonce, n_zeros)` — recalcula el MD5 y verifica el prefijo.
-7. `try_seal_window` → `SET window_sealed:<wid> <winner> NX` en Redis. **El primero
+4. ¿La clave de `winning_node_or_pool` **no** está revocada? (AGENT.md 3.1,
+   "Revocación").
+5. ¿La firma valida contra `winning_node_or_pool`? Con `REQUIRE_SIGNATURES=true`
+   —el default— es obligatoria; en modo migración solo se verifica si viene.
+6. ¿El ganador **no** es el autor de la ley? (regla 3.4 de AGENT.md).
+7. `verify_nonce(base, nonce, n_zeros)` — recalcula el MD5 y verifica el prefijo.
+8. `try_seal_window` → `SET window_sealed:<wid> <winner> NX` en Redis. **El primero
    que llega acá gana**; los demás ven el guard puesto y se descartan como tardíos.
 
 ### Autonomía política del worker standalone
@@ -676,7 +678,13 @@ Detalles que importan:
   `leave-team` autorizaría un `dissolve-team`.
 - **Cada firma se consume** (`sig:used:<sha256>`, con el TTL de la ventana de
   frescura). Sin eso la firma sigue siendo válida durante los 300 s de la
-  ventana y quien la vio pasar puede repetir la acción.
+  ventana y quien la vio pasar puede repetir la acción. Ojo: la marca es sobre el
+  string de la firma, y hay otros strings que validan para el mismo mensaje
+  (AGENT.md 9); falta que dependa de `pubkey|mensaje`.
+- **Una identidad revocada no administra nada**: `require_signed_action`
+  rechaza su firma antes de verificarla (401), aunque sea válida.
+- La firma puede venir de una passkey (`wa1.…`, `common/identity/webauthn.py`):
+  para estos endpoints es una firma más.
 
 ### La identidad del minero no es la del ciudadano
 

@@ -214,3 +214,31 @@ def test_nodo_sin_vincular_se_representa_a_si_mismo(bus, store):
         "block_hash_candidato": "x",
     })
     assert store.chain_length() == 1
+
+
+# --- Revocación (AGENT.md 3.1) -----------------------------------------------
+#
+# El API ya las rechaza, pero a la cola `propuestas` y a `respuesta_nonce` se
+# puede llegar sin pasar por él: el NCT tiene que mirar la revocación también.
+
+def test_propuesta_de_identidad_revocada_no_se_encola(bus, store):
+    make_nct(bus, store, Clock(), require_signatures=True)
+    priv, pub = _keypair()
+    store.revoke_identity(pub, "2026-09-27T00:00:00+00:00")
+    bus.publish_proposal(_signed_proposal(priv, pub))
+    assert store.get_law("L1") is None
+
+
+def test_nonce_de_identidad_revocada_no_sella(bus, store):
+    make_nct(bus, store, Clock(), require_signatures=True)
+    ch, _author = _open_window(bus, store)
+    nonce = solve(ch["partial_hash_base"], ch["n_zeros_required"])
+    wpriv, wpub = _keypair()
+    store.revoke_identity(wpub, "2026-09-27T00:00:00+00:00")
+    bus.publish_nonce_response({
+        "voting_window_id": ch["voting_window_id"], "nonce": nonce,
+        "winning_node_or_pool": wpub,
+        "signature": sign(wpriv, nonce_message(ch["voting_window_id"], nonce, wpub)),
+        "block_hash_candidato": "x",
+    })
+    assert store.chain_length() == 0

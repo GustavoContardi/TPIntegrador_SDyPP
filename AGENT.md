@@ -96,9 +96,19 @@ La otra mitad de esta defensa es la **CSP** que sirve `voxchain-frontend/nginx.c
 
 **Lo que esto NO cubre:** con contraseña, un XSS que logre ejecutarse mientras la identidad está desbloqueada puede pedirle firmas, y si la captura al tipearla, llevarse la contraseña. Con passkey eso no pasa —cada firma pide un gesto del usuario y no hay nada que robar—, pero un XSS sí podría **disparar** el pedido de passkey con un mensaje suyo y esperar a que el usuario lo confirme pensando que es otra cosa: el diálogo del navegador no muestra qué se firma.
 
+#### Revocación
+
+Una identidad es una clave, y hasta ahora una clave filtrada lo era para siempre. **Revocar** la anula en toda la red: presentar un *certificado de revocación*, que es la firma de `revoke|<pubkey>|voxchain-revocation-v1` hecha con esa misma clave (`POST /api/identity/revoke`). Queda en `identity:revoked:<pubkey>` y es **permanente**: si se pudiera deshacer, quien robó la clave también podría.
+
+- **Sin timestamp, a propósito.** Es un certificado al estilo PGP: se firma por adelantado ("Certificado de revocación" en `/identity`) y se guarda aparte del respaldo, para presentarlo el día que se pierda el control de la clave, cuando ya no se la pueda usar. También se puede revocar en el acto ("Revocar identidad"). Revocar es idempotente y conserva el momento original.
+- **Que lo firme la propia clave** impide que cualquiera revoque a cualquiera. La contracara: quien robó la clave también puede revocarla, pero eso solo destruye una identidad que ya estaba comprometida. Por lo mismo, quien tenga el certificado puede anularla, aunque no firmar con ella.
+- **Qué rechaza una clave revocada:** todo lo que firma, en el API (propuestas, alta y baja de mineros y todas las acciones de `require_signed_action`: equipos, modos, deliberación) y en el NCT (propuestas y nonces, porque a las colas se puede llegar sin pasar por el API). El chequeo está en `voxchain_api/services/revocation.py` y en `handle_proposal` y `handle_nonce_response`; `common.identity.verify` sigue siendo pura.
+- **Lo que no toca:** lo que ya está en la cadena queda como está. Los mineros de una identidad revocada siguen registrados a su nombre y minando con su clave de nodo, pero nadie puede volver a administrarlos.
+- **Rotación, pendiente.** Revocar no pasa los mineros ni los equipos a una clave nueva. Hacerlo con un mensaje firmado por la clave vieja tiene un problema de carrera: si la clave se filtró, el atacante puede rotar primero y quedarse con todo. La solución conocida es comprometer por adelantado la clave siguiente (pre-rotación, como KERI).
+
 #### Para qué se usa una clave privada
 
-Firmar es lo único que constituye una identidad acá: no hay cuentas, contraseñas ni sesiones. Se firma en cinco lugares, con dos identidades distintas:
+Firmar es lo único que constituye una identidad acá: no hay cuentas, contraseñas ni sesiones. Se firma en seis lugares, con dos identidades distintas:
 
 | Qué | Mensaje firmado | Quién firma | Qué impide |
 |---|---|---|---|
@@ -107,8 +117,11 @@ Firmar es lo único que constituye una identidad acá: no hay cuentas, contrase�
 | Dar de baja un minero | `worker_id\|delete\|timestamp` | Ciudadano | Borrarle el minero a otro |
 | Administrar (ver abajo) | `recurso\|acción\|timestamp` | Ciudadano | Mover de equipo, cambiar de modo o reescribir la agenda de un minero ajeno |
 | Responder un nonce | `voting_window_id\|nonce\|winning_node_or_pool` | Nodo | Atribuir una victoria a otro, y evadir la regla 3.4 |
+| Revocar la identidad (ver "Revocación") | `revoke\|pubkey\|voxchain-revocation-v1` | Ciudadano | Que cualquiera anule la identidad de otro |
 
-Las acciones de administración firmadas son `switch-mode`, `pool-policy`, `create-team`, `join-team`, `leave-team`, `set-categories` y `dissolve-team`. La acción va **dentro** del mensaje para que una firma capturada de la operación más inocua no autorice la más destructiva, y el recurso también, para que una firma sobre un minero no valga sobre otro. Cada firma se **consume**: se guarda su hash en `sig:used:<sha256>` con el TTL de la ventana de frescura, así que dentro de esa ventana no se puede repetir.
+Cualquiera de las firmas del ciudadano puede ser cruda (P1363, `r||s` en base64: contraseña, identidades viejas, CLI) o una aserción de passkey (`wa1.…`); `common.identity.verify` acepta las dos y el resto del sistema no distingue.
+
+Las acciones de administración firmadas son `switch-mode`, `pool-policy`, `create-team`, `join-team`, `leave-team`, `set-categories` y `dissolve-team`. La acción va **dentro** del mensaje para que una firma capturada de la operación más inocua no autorice la más destructiva, y el recurso también, para que una firma sobre un minero no valga sobre otro. Cada firma se **consume**: se guarda su hash en `sig:used:<sha256>` con el TTL de la ventana de frescura, así que dentro de esa ventana no se puede repetir **el mismo string**. Ver en 9 por qué eso todavía no alcanza.
 
 La autorización se verifica siempre contra el dueño **guardado en Redis**, nunca contra la cabecera `X-Owner-Id`: esa cabecera la elige quien llama y contiene una pubkey que es pública, así que sirve para dar un 403 con mensaje útil y para nada más. Autorizar por cabecera era autorización por *declarar* una identidad; el sistema entero se apoya en *probarla*.
 
@@ -468,6 +481,12 @@ Responde directamente al requisito de seguridad del TP ("Zero static keys", cred
 - **El "no" es del más grande (3.12):** la dificultad se congela sobre el convocado más grande del área, así que sólo su abstención encarece la ley para los demás. Un equipo chico que se baja no cambia nada si el resto puede resolverla. No es una votación proporcional sino un **veto del mayor**; se aceptó porque es barato —reusa la dificultad por máximo y los vetos que ya existían— y le da al sistema un "no" real sin cambiar la arquitectura de minado.
 - **El cómputo es declarado:** el más grande se mide por el `hashrate_hps` que cada minero reporta. Un minero que declare un cómputo inflado se vuelve el más grande, sube la dificultad del área y, si después se abstiene, puede frenar leyes que el resto habría sellado. El trinquete y el TTL de 15 s no lo impiden; verificar el cómputo real exigiría medirlo, no preguntarlo.
 - **Una red ausente demora la cola:** una ley sin ninguna respuesta se reanuncia hasta `MAX_SILENT_DELIBERATIONS` veces antes de descartarse, así que con todos los convocados ausentes cada ley ocupa hasta `MAX_SILENT_DELIBERATIONS × DELIBERATION_SECONDS` (6 min con los defaults). La respuesta por defecto de los equipos es lo que lo evita en la práctica.
+- **Claves de ciudadano (3.1):** lo que queda abierto después de la contraseña, las passkeys y la revocación (detalle en `docs/informe/identidad-y-firmas.md`, §8 y §10):
+  - **No hay rotación.** Una identidad revocada no puede pasar sus mineros y equipos a una clave nueva; hacerlo con una firma de la clave vieja tiene un problema de carrera si esa clave se filtró.
+  - **El dominio `<ip>.sslip.io` puede cambiar de dueño.** Si se libera la IP del LoadBalancer y otro la obtiene, sirve el mismo origen: lee el IndexedDB de quien entre, puede mostrar un desbloqueo falso y pedir firmas a las passkeys (el rpId es legítimo). Lo resuelve un dominio propio.
+  - **El anti-replay es por string.** `sig:used` guarda el hash de la firma tal como llega; `b64decode` descarta caracteres fuera del alfabeto y ECDSA es maleable (`s → n−s`), así que la misma acción firmada se puede repetir con otro string dentro de los 300 s. La marca debería depender de `pubkey|mensaje`.
+  - **El diálogo de passkey no muestra qué se firma.** Un XSS no puede firmar en silencio, pero sí pedir una firma de algo suyo y esperar que el usuario la confirme.
+  - **Contraseñas débiles:** se exigen 10 caracteres sin medir fortaleza; un respaldo filtrado con una contraseña mala se fuerza fuera de línea.
 - **Concentración de poder:** el diseño favorece estructuralmente a pools grandes sobre mineros individuales, igual que las blockchains reales de PoW. La ventaja está **acotada por la cantidad de fragmentos** (`NONCE_SPACE / FRAGMENT_SIZE`): un pool reparte tareas de a un fragmento por minero, así que un equipo con más miembros que fragmentos no va más rápido — con la config desplegada son 50, de modo que el pool más grande le saca a lo sumo 50x a un minero solo, tenga 50 miembros o un millón. Ese cociente es la perilla de la desigualdad, no `n`: ningún valor de `n` la corrige, porque el que encarece la ley para el pool grande deja al minero solo fuera del sistema. No se mitiga más allá de eso — se documenta como observación de diseño y se discute cualitativamente en el informe, sin pretender un estudio estadístico riguroso de la distribución de poder computacional en la población (fuera de alcance del TP).
 
 ---

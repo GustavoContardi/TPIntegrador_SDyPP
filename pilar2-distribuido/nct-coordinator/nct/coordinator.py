@@ -241,6 +241,13 @@ class NCTCoordinator:
             log.warning("propuesta rechazada: %s", exc)
             return
 
+        # Identidad revocada (AGENT.md 3.1): su clave ya no firma nada. Va antes
+        # de la firma porque aplica también a una propuesta sin firma en modo
+        # migración, y porque a la cola se puede llegar sin pasar por el API.
+        if self.store.is_revoked(author):
+            log.warning("propuesta rechazada: identidad revocada (autor %s)", author[:12])
+            return
+
         # Firma del autor (A-01 / AGENT.md 3.1): nadie propone en nombre de otro.
         if not self._signature_ok(law, author, action, text_hash, law_id,
                                   created_at, declared_category):
@@ -910,6 +917,10 @@ class NCTCoordinator:
 
         winner = sol.get("winning_node_or_pool", "")
         nonce = sol.get("nonce")
+        # Una clave revocada tampoco firma nonces (AGENT.md 3.1).
+        if self.store.is_revoked(winner):
+            log.warning("nonce rechazado: identidad revocada (%s)", (winner or "?")[:12])
+            return
         # Firma del solver (A-01 fase 2): si está firmada, winner es la pubkey y
         # la firma debe validar; con require_signatures es obligatoria. Esto hace
         # exigible la regla 3.4 (un atacante no puede declarar winner==autor ajeno).

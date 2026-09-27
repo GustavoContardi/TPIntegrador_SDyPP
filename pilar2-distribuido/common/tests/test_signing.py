@@ -80,3 +80,15 @@ def test_otra_pubkey_falla():
 ])
 def test_entradas_invalidas_no_lanzan(pub, sig):
     assert verify(pub, b"msg", sig) is False
+
+
+def test_mensaje_de_revocacion_tiene_su_propio_dominio():
+    """Ningún otro mensaje firmado del sistema puede leerse como revocación."""
+    from common.identity import revocation_message
+
+    priv, pub = _keypair()
+    msg = revocation_message(pub)
+    assert msg == f"revoke|{pub}|voxchain-revocation-v1".encode()
+    assert verify(pub, msg, sign(priv, msg))
+    otra = proposal_message(pub, "promulgacion", "h", "L1", "t0")
+    assert not verify(pub, msg, sign(priv, otra))

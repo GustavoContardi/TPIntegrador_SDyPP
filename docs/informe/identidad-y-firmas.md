@@ -220,8 +220,8 @@ bloqueaba nada ni le avisaba a nadie.
 | Nivel | Qué | Estado |
 |---|---|---|
 | 1 | Dejar de perder identidades y exigir Trusted Types | ✅ Hecho, commit `da70610` (§5) |
-| 2 | Cifrar la clave en reposo con una contraseña | ✅ Hecho (§6) |
-| 3 | Passkeys (WebAuthn) | ✅ Hecho (§7) |
+| 2 | Cifrar la clave en reposo con una contraseña | ✅ Hecho, commit `d60a543` (§6) |
+| 3 | Passkeys (WebAuthn) | ✅ Hecho, commit `91ce8c6` (§7) |
 
 ---
 
@@ -557,7 +557,172 @@ llave). Necesita que una persona ponga la huella, y crea una passkey para
 
 ---
 
-## 8. Lo que queda pendiente
+## 8. El estado después de los tres niveles
+
+### El cuadro de amenazas, actualizado
+
+Es el mismo cuadro de §4, ahora con una columna para cada forma de guardar la
+identidad:
+
+| Amenaza | Antes | Con contraseña (nivel 2) | Con passkey (nivel 3) |
+|---|---|---|---|
+| Un XSS **roba** la clave | ✅ Sí | ⚠️ Parcial. No puede exportarla, pero si está activo **cuando se tipea la contraseña** puede capturarla junto con el blob y descifrarlo afuera. | ✅ Sí. La clave nunca está en el navegador. |
+| Un XSS **firma en nombre del usuario** | ❌ No | ⚠️ Parcial. Solo mientras la identidad está desbloqueada; un XSS almacenado en una visita futura no puede hasta que el usuario escriba la contraseña. | ⚠️ Parcial. No puede firmar en silencio: cada firma pide huella o PIN. Sí puede **disparar el diálogo** con un mensaje suyo y esperar que el usuario lo confirme, porque el diálogo no muestra qué se firma. |
+| Extensión maliciosa | ❌ No | ⚠️ Igual que un XSS. | ⚠️ Igual que un XSS. |
+| Robo del disco, del perfil o malware que lee archivos | ❌ No | ✅ Sí. Solo hay un blob cifrado, y cada intento de adivinar la contraseña cuesta 600.000 iteraciones de PBKDF2. | ✅ Sí. No hay nada que robar. |
+| El respaldo | ⚠️ Débil (PEM en claro) | ✅ Archivo cifrado; filtrado, hay que adivinar la contraseña. | No hay respaldo: depende de que el gestor sincronice la passkey. |
+| **Pérdida** de la identidad | ❌ Grave | ⚠️ Olvidar la contraseña es perderla. El borrado accidental, el reemplazo sin aviso y la falta de restauración están resueltos (nivel 1). | ⚠️ Perder el dispositivo con una passkey sin sincronizar es perderla. |
+
+Hay dos cambios transversales:
+- **Trusted Types** obligatorio baja la probabilidad de un XSS en todas las filas.
+- **Las identidades viejas** ("sin contraseña") siguen en la columna "Antes" hasta
+  que el usuario las restaure desde su PEM con una contraseña.
+
+### Otras vulnerabilidades de las claves privadas
+
+De más a menos grave:
+
+1. ~~**No hay revocación ni rotación de claves.**~~ La revocación ya está (§9); la
+   rotación sigue pendiente. Era así: Si una clave se filtra (un PEM
+   viejo pegado en un chat, un respaldo con contraseña débil), la identidad queda
+   comprometida **para siempre**. No existe forma de decir "esta pubkey ya no
+   vale" ni de pasar los mineros y equipos a una clave nueva. Es la brecha
+   estructural más importante.
+2. **El dominio `sslip.io` está atado a una IP que puede cambiar de dueño.** Si se
+   libera la IP del LoadBalancer y otra persona la obtiene, `voxchain.<ip>.sslip.io`
+   pasa a apuntar a su servidor. Esa persona puede sacar un certificado válido y
+   servir **el mismo origen**. Entonces puede:
+   - leer el IndexedDB de quien entre (blobs cifrados, identidades sin contraseña);
+   - mostrar un diálogo de desbloqueo falso para capturar contraseñas;
+   - pedir firmas a las passkeys, porque el rpId es legítimo.
+
+   Se resuelve con un dominio propio, que es lo mismo que ya necesitaban las
+   passkeys.
+3. **Las contraseñas débiles se pueden forzar fuera de línea.** Solo se exigen 10
+   caracteres, sin medir fortaleza. PBKDF2 es barato para quien tiene GPUs: un
+   respaldo filtrado con una contraseña tipo "voxchain2026" cae rápido. Mejoraría
+   con un medidor de fortaleza (zxcvbn), con Argon2id (necesita WASM) o con más
+   iteraciones.
+4. **Un XSS que dispara la passkey.** WebAuthn no le muestra al usuario qué está
+   firmando. Se puede mitigar con una confirmación dentro de la app, aunque un XSS
+   también controla esa pantalla. En la práctica depende de que no haya XSS: la
+   CSP, Trusted Types y revisar las dependencias npm. Una dependencia comprometida
+   es un XSS que la CSP no frena, porque se sirve desde el mismo origen.
+5. **La clave de los mineros está en claro.** `WORKER_PRIVKEY_PEM` es un PEM sin
+   cifrar: en un `emptyDir` en memoria en Kubernetes y en `/tmp` del contenedor en
+   compose. Quien tenga `kubectl exec` o `docker exec` la lee y puede firmar nonces
+   como ese nodo. El impacto es acotado, porque no permite firmar como el
+   ciudadano, solo atribuirse victorias de ese nodo.
+6. **Repetir acciones firmadas** (anti-replay por string, ver "Otros hallazgos").
+   No roba la clave, pero reutiliza sus firmas dentro de los 300 s.
+7. **Memoria del proceso.** Mientras la identidad está desbloqueada, la clave vive
+   en la RAM del navegador; un malware con acceso a la memoria del proceso la puede
+   usar. Queda fuera de lo que una web puede defender; con passkey no aplica.
+
+---
+
+## 9. Revocación de identidades
+
+### El problema
+
+Una identidad es una clave. Antes de esto, una clave filtrada (un PEM viejo pegado
+en un chat, un respaldo con contraseña débil, un dispositivo robado) quedaba
+comprometida **para siempre**: no había forma de decirle a la red "esta pubkey ya
+no vale".
+
+### Diseño
+
+- **Certificado de revocación.** Es la firma de
+  `revoke|<pubkey>|voxchain-revocation-v1` hecha con la propia clave
+  (`revocation_message` en `common/identity/signing.py`). El sufijo fijo separa
+  este mensaje de cualquier otro que el usuario firme: una firma de otra cosa
+  nunca se puede presentar como revocación.
+- **Sin timestamp, a propósito.** Es un certificado al estilo PGP: se genera por
+  adelantado y se guarda aparte del respaldo, para presentarlo el día que se pierda
+  el control de la clave, cuando ya no se la pueda usar para firmar.
+- **Registro.** `POST /api/identity/revoke` lo verifica con el mismo
+  `common.identity.verify`, así que sirve con contraseña, con passkey y con
+  identidades viejas. Queda en `identity:revoked:<pubkey>`, sin vencimiento. Es
+  idempotente y conserva el momento original. `GET /api/identity/revocation/<pubkey>`
+  es pública.
+- **Es permanente.** Si se pudiera "des-revocar", quien robó la clave también
+  podría.
+- **Qué rechaza una clave revocada:** todo lo que firma.
+  - En el API (`voxchain_api/services/revocation.py`): propuestas, alta y baja de
+    mineros, y todas las acciones de `require_signed_action` (equipos, modos,
+    deliberación).
+  - En el NCT: propuestas y nonces, porque a las colas se puede llegar sin pasar
+    por el API.
+
+  El chequeo va antes de verificar la firma y aplica también a propuestas sin
+  firma. `common.identity.verify` sigue siendo pura: una firma de una clave
+  revocada es matemáticamente válida, lo que cambia es que el sistema no la acepta.
+
+### Qué hay que asumir
+
+- **Quien tenga el certificado puede anular la identidad**, aunque no firmar con
+  ella. Por eso va aparte del respaldo.
+- **Quien robó la clave también puede revocarla.** Solo destruye una identidad que
+  ya estaba comprometida.
+- **Lo ya sellado en la cadena no cambia.** Los mineros de una identidad revocada
+  siguen registrados y minando con su clave de nodo, pero nadie puede volver a
+  administrarlos.
+- **No hay rotación.** Revocar no pasa los mineros ni los equipos a una clave
+  nueva. Hacerlo con un mensaje firmado por la clave vieja tiene un problema de
+  carrera: si la clave se filtró, el atacante puede rotar primero y quedarse con
+  todo. La solución conocida es comprometer por adelantado la clave siguiente
+  (pre-rotación, como en KERI). Queda pendiente.
+
+### En la pantalla
+
+- **Identidad activa:**
+  - "Certificado de revocación" firma el certificado (pide contraseña o passkey
+    como cualquier firma) y lo descarga.
+  - "Revocar identidad" lo firma y lo presenta en el acto, con una confirmación
+    que explica que no se puede deshacer.
+  - Una identidad revocada muestra la etiqueta "revocada" y un aviso con la fecha.
+    La app consulta el estado cada vez que cambia la identidad, porque una
+    identidad restaurada puede estar revocada.
+- **Tarjeta "¿Perdiste el control de tu clave?":** permite subir o pegar un
+  certificado y revocar **sin tener la identidad en ese navegador**, que es el
+  caso para el que existe.
+
+### Verificación
+
+**Tests:** 578 en total, 13 de ellos nuevos.
+- `tests/test_identity_revocation.py`:
+  - revocar con un certificado válido;
+  - nadie revoca a otro;
+  - una firma de otra cosa no revoca;
+  - revocar es idempotente y conserva el momento;
+  - la consulta de una identidad vigente;
+  - una clave revocada no propone, no registra ni da de baja mineros, y no pasa
+    `require_signed_action`;
+  - revocar una identidad no afecta a otra.
+- `nct-coordinator/tests/test_signatures.py`: una propuesta de una identidad
+  revocada no se encola, y un nonce firmado por una clave revocada no sella.
+- `common/tests/test_signing.py`: el mensaje de revocación tiene su propio dominio.
+
+**En vivo**, con el stack local reconstruido:
+
+| Prueba | Resultado |
+|---|---|
+| "Certificado de revocación" con una identidad con passkey | Pide la passkey y descarga `voxchain-identidad-revocacion.json` con `format`, `v`, `pubkey` y la firma (sobre `wa1.…`). |
+| Revocar con ese certificado desde la tarjeta | El API lo acepta; la pantalla muestra "revocada", el aviso con la fecha, y desaparecen los botones de revocar. |
+| Dar de baja el minero de esa identidad con una firma válida de su passkey | **401 "Esta identidad fue revocada y ya no puede firmar nada."**; el minero sigue registrado. |
+| Identidad nueva con contraseña | Aparece vigente: el aviso de la anterior no se arrastra. |
+| "Revocar identidad" en el acto | Pide confirmación, firma y presenta el certificado; queda revocada en el API y en la pantalla. |
+| Consola | Sin errores ni violaciones de Trusted Types. |
+
+En esta última tanda el panel del navegador estaba oculto, así que los clics se
+dispararon con JavaScript sobre los mismos botones (los handlers de Angular son
+los mismos). La baja del minero se probó armando la firma con la passkey emulada
+y llamando al API directamente, porque la navegación del router no avanza con el
+panel oculto.
+
+---
+
+## 10. Lo que queda pendiente
 
 ### Lo que el nivel 2 deja abierto
 
@@ -599,7 +764,7 @@ llave). Necesita que una persona ponga la huella, y crea una passkey para
 
 ---
 
-## 9. Archivos tocados
+## 11. Archivos tocados
 
 **Firmas obligatorias** (commit `d3629c5`): `common/config.py`,
 `voxchain_api/config.py`, `docker-compose.yml`, `docker-compose.scale.yml`,
@@ -621,7 +786,19 @@ llave). Necesita que una persona ponga la huella, y crea una passkey para
 `voxchain-frontend/src/app/app.component.ts`,
 `common/identity/backup.py` (nuevo), `common/identity/__init__.py`,
 `common/tests/test_backup.py` (nuevo), `scripts/propose_law.py`, `AGENT.md` y
-`docs/informe/INFORME.md`.
+`docs/informe/INFORME.md` (commit `d60a543`).
+
+**Revocación:**
+`common/identity/signing.py`, `common/identity/__init__.py`,
+`common/storage/redis_store.py`, `voxchain_api/routers/identity.py` (nuevo),
+`voxchain_api/services/revocation.py` (nuevo), `voxchain_api/main.py`,
+`voxchain_api/routers/laws.py`, `voxchain_api/routers/workers.py`,
+`nct-coordinator/nct/coordinator.py`, `tests/test_identity_revocation.py`
+(nuevo), `nct-coordinator/tests/test_signatures.py`,
+`common/tests/test_signing.py`,
+`voxchain-frontend/src/app/core/services/{identity,api}.service.ts`,
+`voxchain-frontend/src/app/features/identity/identity.component.ts`, `AGENT.md`
+y `docs/informe/INFORME.md`.
 
 **Passkeys, nivel 3:**
 `common/identity/webauthn.py` (nuevo), `common/identity/signing.py`,
@@ -629,4 +806,4 @@ llave). Necesita que una persona ponga la huella, y crea una passkey para
 `docker-compose.yml`, `voxchain-config.yaml`,
 `voxchain-frontend/src/app/core/services/identity.service.ts`,
 `voxchain-frontend/src/app/features/identity/identity.component.ts`, `AGENT.md`
-y `docs/informe/INFORME.md`.
+y `docs/informe/INFORME.md` (commit `91ce8c6`).

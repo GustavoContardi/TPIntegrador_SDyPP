@@ -15,6 +15,7 @@ from .signing import (
     private_key_pem,
     proposal_message,
     public_key_b64,
+    revocation_message,
     sign,
     verify,
 )
@@ -24,4 +25,5 @@ __all__ = [
     "public_key_b64", "load_private_key",
     "generate_private_key", "private_key_pem",
     "BackupError", "encrypt_backup", "decrypt_backup", "load_backup",
+    "revocation_message",
 ]

@@ -13,6 +13,7 @@ Esquema de claves (namespaced):
 - ``law_queue``           lista de ``law_id`` en estado ``pending_queue``
 - ``discarded_text_hashes`` set de ``text_hash`` descartados (detección de reproposición)
 - ``node:owner:<node_pubkey>`` ciudadano dueño de un nodo minero/pool (3.1)
+- ``identity:revoked:<pubkey>`` momento en que se revocó esa clave (3.1); nunca expira
 - ``nct:availability``    último veredicto de quórum de mineros del NCT
 
 Se leen además, sin escribirlas nunca, claves que mantiene el API: equipos
@@ -674,6 +675,35 @@ return 1
         if not node_pubkey:
             return None
         return self.r.get(f"node:owner:{node_pubkey}")
+
+    # --- Revocación (AGENT.md 3.1) ------------------------------------------
+    #
+    # Una clave revocada no firma nada más: ni propuestas ni acciones sobre
+    # mineros y equipos, ni nonces. La escribe el API al recibir un certificado
+    # de revocación válido; la leen el API y el NCT antes de aceptar una firma.
+    # No expira ni se deshace: si se pudiera "des-revocar", quien robó la clave
+    # también podría.
+
+    def revoke_identity(self, pubkey: str, when: str) -> str:
+        """Revoca ``pubkey`` y devuelve el momento de la revocación.
+
+        Idempotente: si ya estaba revocada, conserva (y devuelve) el momento
+        original. Presentar el mismo certificado dos veces no cambia nada.
+        """
+        key = f"identity:revoked:{pubkey}"
+        self.r.set(key, when, nx=True)
+        stored = self.r.get(key)
+        return stored.decode() if isinstance(stored, bytes) else stored
+
+    def revocation_of(self, pubkey: str) -> Optional[str]:
+        """Momento en que se revocó ``pubkey``, o ``None`` si sigue vigente."""
+        if not pubkey:
+            return None
+        stored = self.r.get(f"identity:revoked:{pubkey}")
+        return stored.decode() if isinstance(stored, bytes) else stored
+
+    def is_revoked(self, pubkey: str) -> bool:
+        return self.revocation_of(pubkey) is not None
 
     # --- Quién puede proponer (AGENT.md 3.2) --------------------------------
     #

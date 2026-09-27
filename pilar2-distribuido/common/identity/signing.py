@@ -51,6 +51,23 @@ def proposal_message(author_pubkey: str, action: str, text_hash: str,
             f"|{category or DEFAULT_CATEGORY}").encode()
 
 
+#: Sufijo fijo del mensaje de revocación. Separa este mensaje de cualquier otro
+#: que el usuario firme: ninguno de los demás formatos termina así, así que una
+#: firma de otra cosa nunca se puede presentar como revocación.
+REVOCATION_TAG = "voxchain-revocation-v1"
+
+
+def revocation_message(pubkey: str) -> bytes:
+    """Mensaje que revoca ``pubkey`` para siempre (AGENT.md 3.1, "Revocación").
+
+    No lleva timestamp a propósito: es un *certificado de revocación* al estilo
+    PGP. Se puede firmar por adelantado y guardar, para presentarlo el día que se
+    pierda el control de la clave —cuando ya no se la pueda usar para firmar
+    nada—. Revocar es idempotente, así que repetirlo no hace daño.
+    """
+    return f"revoke|{pubkey}|{REVOCATION_TAG}".encode()
+
+
 def nonce_message(voting_window_id: str, nonce, winning_node_or_pool: str) -> bytes:
     """Mensaje canónico de una respuesta de nonce (fase 2: firma de pools/nodos)."""
     return f"{voting_window_id}|{nonce}|{winning_node_or_pool}".encode()

@@ -11,6 +11,12 @@ import { Window } from '../models/window.model';
 import { Team, WorkerRegistration, WorkerStatus } from '../models/worker.model';
 import { IdentityService } from './identity.service';
 
+export interface RevocationStatus {
+  pubkey: string;
+  revoked: boolean;
+  revoked_at: string | null;
+}
+
 @Injectable({
   providedIn: 'root'
 })
@@ -80,6 +86,18 @@ export class ApiService {
    * pubkey en base64 trae `+`, que HttpParams deja sin escapar y el backend
    * leería como espacio.
    */
+  /** Presenta un certificado de revocación. Idempotente (AGENT.md 3.1). */
+  revokeIdentity(cert: { pubkey: string; signature: string }): Observable<RevocationStatus> {
+    return this.http.post<RevocationStatus>(`${this.apiUrl}/identity/revoke`,
+                                            { pubkey: cert.pubkey, signature: cert.signature });
+  }
+
+  /** Si una identidad está revocada. Es público: sirve para cualquier pubkey. */
+  getRevocation(pubkey: string): Observable<RevocationStatus> {
+    return this.http.get<RevocationStatus>(
+      `${this.apiUrl}/identity/revocation/${encodeURIComponent(pubkey)}`);
+  }
+
   getProposerStanding(pubkey: string): Observable<ProposerStanding> {
     return this.http.get<ProposerStanding>(
       `${this.apiUrl}/laws/proposer/${encodeURIComponent(pubkey)}`);

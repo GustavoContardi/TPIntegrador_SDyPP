@@ -22,6 +22,7 @@ from voxchain_api.routers import (
     chain,
     deliberation,
     health,
+    identity,
     laws,
     system,
     teams,
@@ -111,6 +112,7 @@ async def metrics():
 # Include routers
 app.include_router(chain.router)
 app.include_router(laws.router)
+app.include_router(identity.router)
 app.include_router(windows.router)
 app.include_router(deliberation.router)
 app.include_router(health.router)

@@ -1,8 +1,9 @@
-import { Component, computed, inject, signal } from '@angular/core';
+import { Component, computed, effect, inject, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
 import { RouterModule } from '@angular/router';
-import { IdentityService, MIN_PASSPHRASE } from '../../core/services/identity.service';
+import { IdentityService, MIN_PASSPHRASE, parseRevocation } from '../../core/services/identity.service';
+import { ApiService } from '../../core/services/api.service';
 import { friendlyError } from '../../core/utils/format';
 
 /**
@@ -40,6 +41,7 @@ import { friendlyError } from '../../core/utils/format';
             </span>
             <span class="tag tag-neutral" *ngIf="identityService.protection() === 'legacy'">sin contraseña</span>
             <span class="tag tag-neutral" *ngIf="identityService.protection() === 'passkey'">con passkey</span>
+            <span class="tag tag-neutral" *ngIf="revokedAt()">revocada</span>
           </span>
         </div>
 
@@ -59,8 +61,22 @@ import { friendlyError } from '../../core/utils/format';
                     (click)="identityService.lock()">Bloquear</button>
             <button class="btn btn-secondary active__btn" (click)="downloadBackup()">Descargar respaldo</button>
           </ng-container>
+          <ng-container *ngIf="!revokedAt()">
+            <button class="btn btn-secondary active__btn" (click)="downloadRevocation()"
+                    [disabled]="revoking()">Certificado de revocación</button>
+            <button class="btn btn-ghost active__btn" (click)="revokeNow()"
+                    [disabled]="revoking()">Revocar identidad</button>
+          </ng-container>
           <button class="btn btn-ghost active__btn" (click)="clear()">Borrar identidad de este navegador</button>
         </div>
+
+        <!-- Revocada: la clave ya no firma nada en la red. Va antes que todo lo
+             demás porque cambia qué puede hacer el usuario con esta identidad. -->
+        <p class="vc-note vc-note--bad active__note" *ngIf="revokedAt() as when">
+          <strong>Esta identidad está revocada desde el {{ when | date:'d/M/yyyy HH:mm' }}.</strong>&ngsp;
+          <span>La red ya no acepta nada firmado con su clave: ni propuestas, ni
+            mineros, ni equipos. Creá una identidad nueva; esta la podés borrar.</span>
+        </p>
 
         <!-- Recién creada: el respaldo es lo primero. Se puede descargar de
              nuevo cuando sea (está cifrado), pero nadie vuelve a esta pantalla
@@ -102,6 +118,14 @@ import { friendlyError } from '../../core/utils/format';
               acceda a los datos de este navegador puede usarla. Para protegerla,
               restaurala abajo desde el respaldo que guardaste al crearla (el texto
               BEGIN PRIVATE KEY) y elegí una contraseña.</span>
+          </p>
+
+          <p class="vc-note active__note" *ngIf="!revokedAt()">
+            <strong>Si perdés el control de tu clave, revocala.</strong>&ngsp;
+            <span>El certificado de revocación anula tu identidad para siempre, aunque ya
+              no tengas la clave (se filtró tu respaldo, te robaron el dispositivo).
+              Descargalo ahora y guardalo aparte del respaldo: no permite firmar nada,
+              pero quien lo tenga puede anular tu identidad.</span>
           </p>
 
           <!-- IndexedDB es best-effort: sin persistencia concedida, el navegador
@@ -250,6 +274,29 @@ import { friendlyError } from '../../core/utils/format';
           </button>
         </div>
 
+        <!-- Revocar sin la clave: justamente el caso para el que existe el
+             certificado. No hace falta tener la identidad en este navegador. -->
+        <div class="card elev-sm vc-plain own__card">
+          <span class="card-kicker">¿Perdiste el control de tu clave?</span>
+          <h4 class="own__title">Revocar con tu certificado</h4>
+          <p class="own__body">
+            Subí o pegá el certificado de revocación que descargaste. La identidad queda
+            anulada en toda la red y nadie más puede firmar con ella. No se puede deshacer.
+          </p>
+          <div class="field own__field">
+            <textarea class="input own__pem" spellcheck="false" autocomplete="off"
+                      aria-label="Certificado de revocación" placeholder="Pegá acá el certificado"
+                      [value]="revokeText()" [disabled]="revoking()"
+                      (input)="revokeText.set($any($event.target).value)"></textarea>
+            <input type="file" class="own__file" accept=".json,application/json"
+                   [disabled]="revoking()" (change)="loadRevocationFile($event)">
+          </div>
+          <button class="btn btn-secondary own__submit" (click)="revokeWithCertificate()"
+                  [disabled]="revoking() || !revokeText().trim()">
+            {{ revoking() ? 'Revocando…' : 'Revocar identidad' }}
+          </button>
+        </div>
+
         <div class="card elev-sm vc-plain own__card">
           <span class="card-kicker">Por qué es seguro</span>
           <h4 class="own__title">Nadie puede votar por vos</h4>
@@ -298,7 +345,30 @@ import { friendlyError } from '../../core/utils/format';
 })
 export class IdentityComponent {
   identityService = inject(IdentityService);
+  private api = inject(ApiService);
   private snackBar = inject(MatSnackBar);
+
+  // ── revocación ──────────────────────────────────────────────────────────
+  /** Momento de la revocación de la identidad activa, o `null` si está vigente. */
+  revokedAt = signal<string | null>(null);
+  revoking = signal(false);
+  revokeText = signal('');
+
+  constructor() {
+    // Cada vez que cambia la identidad (crear, restaurar, borrar) se pregunta a
+    // la red si sigue vigente: una identidad restaurada puede estar revocada.
+    effect(() => {
+      const id = this.identityService.identity();
+      this.revokedAt.set(null);
+      if (!id) return;
+      this.api.getRevocation(id.pubkey).subscribe({
+        next: (st) => {
+          if (this.identityService.identity()?.pubkey === st.pubkey) this.revokedAt.set(st.revoked_at);
+        },
+        error: () => {},
+      });
+    });
+  }
 
   readonly minPass = MIN_PASSPHRASE;
   readonly passkeys = this.identityService.passkeysSupported();
@@ -431,6 +501,82 @@ export class IdentityComponent {
     input.value = '';
   }
 
+  /** Firma el certificado de revocación y lo descarga. No revoca nada todavía. */
+  async downloadRevocation() {
+    try {
+      const cert = await this.identityService.revocationCertificate();
+      this.download(cert, 'revocacion');
+      this.snackBar.open('Certificado descargado. Guardalo aparte de tu respaldo.', 'Cerrar',
+                         { duration: 5000 });
+    } catch (err: any) {
+      this.snackBar.open(friendlyError(err, 'No se pudo generar el certificado.'), 'Cerrar',
+                         { duration: 5000 });
+    }
+  }
+
+  /** Revoca la identidad activa: firma el certificado y lo presenta en el acto. */
+  async revokeNow() {
+    if (!confirm(
+      '¿Revocar tu identidad?\n\n' +
+      'La red va a dejar de aceptar todo lo que firmes con ella, para siempre: ' +
+      'propuestas, mineros y equipos. No se puede deshacer, ni siquiera con tu ' +
+      'respaldo. Usalo si creés que alguien más tiene tu clave.')) {
+      return;
+    }
+    this.revoking.set(true);
+    try {
+      const cert = parseRevocation(await this.identityService.revocationCertificate());
+      await this.submitRevocation(cert);
+    } catch (err: any) {
+      this.snackBar.open(friendlyError(err, 'No se pudo revocar la identidad.'), 'Cerrar',
+                         { duration: 5000 });
+    } finally {
+      this.revoking.set(false);
+    }
+  }
+
+  async revokeWithCertificate() {
+    let cert: { pubkey: string; signature: string };
+    try {
+      cert = parseRevocation(this.revokeText().trim());
+    } catch (err: any) {
+      this.snackBar.open(err.message, 'Cerrar', { duration: 5000 });
+      return;
+    }
+    if (!confirm('¿Revocar esa identidad para siempre? No se puede deshacer.')) return;
+    this.revoking.set(true);
+    try {
+      await this.submitRevocation(cert);
+      this.revokeText.set('');
+    } catch (err: any) {
+      this.snackBar.open(friendlyError(err, 'No se pudo revocar la identidad.'), 'Cerrar',
+                         { duration: 5000 });
+    } finally {
+      this.revoking.set(false);
+    }
+  }
+
+  private submitRevocation(cert: { pubkey: string; signature: string }): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.api.revokeIdentity(cert).subscribe({
+        next: (st) => {
+          if (this.identityService.identity()?.pubkey === st.pubkey) this.revokedAt.set(st.revoked_at);
+          this.snackBar.open('Identidad revocada. Ya no puede firmar nada en la red.', 'Cerrar',
+                             { duration: 5000 });
+          resolve();
+        },
+        error: reject,
+      });
+    });
+  }
+
+  async loadRevocationFile(event: Event) {
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0];
+    if (file && file.size <= 64 * 1024) this.revokeText.set(await file.text());
+    input.value = '';
+  }
+
   async unlock() {
     try {
       await this.identityService.requestUnlock();
@@ -445,13 +591,16 @@ export class IdentityComponent {
    */
   downloadBackup() {
     const json = this.identityService.backupJson();
-    if (!json) return;
+    if (json) this.download(json, 'respaldo');
+  }
+
+  private download(json: string, kind: string) {
     const name = (this.identityService.getUsername() || 'identidad')
       .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'identidad';
     const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
     const a = document.createElement('a');
     a.href = url;
-    a.download = `voxchain-${name}-respaldo.json`;
+    a.download = `voxchain-${name}-${kind}.json`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }

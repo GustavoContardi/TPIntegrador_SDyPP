@@ -298,8 +298,11 @@ minero CPU de Pilar 1, que vive fuera de este directorio.
   `'0'`.
 - **Seguridad**: cero secretos en el repo; URLs y credenciales por
   variables de entorno; las **claves privadas nunca** se persisten ni viajan por
-  RabbitMQ (sólo `author_pubkey`). En el navegador, la clave del ciudadano es un
-  `CryptoKey` no extraíble en IndexedDB (AGENT.md 3.1).
+  RabbitMQ (sólo `author_pubkey`). La clave del ciudadano vive en una
+  **passkey** (WebAuthn, cada firma pide huella o PIN) o, como alternativa,
+  **cifrada con una contraseña** en IndexedDB; una clave filtrada se puede
+  **revocar** y desde ahí el API y el NCT rechazan todo lo que firme
+  (AGENT.md 3.1, `docs/informe/identidad-y-firmas.md`).
 - **Tolerancia a fallos del NCT** (4): cada NCT que no es líder corre un
   `NCTHeartbeatMonitor`; si el líder deja de emitir durante `HEARTBEAT_TIMEOUT`,
   intenta tomar el lease de liderazgo en Redis. **El arbitraje es atómico en

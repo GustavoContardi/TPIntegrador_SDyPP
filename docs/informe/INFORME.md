@@ -75,7 +75,9 @@ alternativa, la clave vive en el navegador **cifrada con una
 contraseña** (PBKDF2-SHA256 + AES-GCM, `wrapKey`): en IndexedDB sólo hay el blob
 cifrado, y la clave utilizable existe en memoria como `CryptoKey` no extraíble
 mientras la identidad está desbloqueada. El respaldo es ese mismo blob, que el
-CLI (`propose_law.py --backup`) también sabe abrir. La verificación de firma es configurable
+CLI (`propose_law.py --backup`) también sabe abrir. Una clave filtrada se puede
+**revocar** con un certificado de revocación firmado por ella misma: desde ese
+momento el API y el NCT rechazan todo lo que firme. La verificación de firma es configurable
 (`REQUIRE_SIGNATURES`). El despliegue corre en modo estricto
 (`REQUIRE_SIGNATURES=true` en `voxchain-config.yaml` y en los compose): el API y
 el NCT rechazan toda propuesta y todo nonce sin firma válida. El modo permisivo
@@ -784,6 +786,18 @@ lo sumo 50x a un minero solo — tenga 50 miembros o un millón. Ese cociente, y
 global, y el valor que encarece la ley para el pool grande deja al minero
 individual fuera del sistema (con `n=8` un equipo de 50 tarda medio minuto y un
 minero solo, más de una hora). No hay `n` que empareje una brecha de 50x.
+
+**De las identidades.** La clave del ciudadano pasó por tres niveles de
+protección (no extraíble, cifrada con contraseña, passkey) y ahora se puede
+revocar; el registro completo está en `identidad-y-firmas.md`. Lo que queda
+abierto:
+- **No hay rotación de claves.** Revocar anula la identidad, pero no pasa sus
+  mineros y equipos a una clave nueva.
+- **El dominio `sslip.io` depende de la IP del LoadBalancer.** Si esa IP cambia de
+  dueño, otra persona sirve el mismo origen.
+- **El anti-replay de las acciones firmadas se puede esquivar** con otra
+  codificación de la misma firma.
+- **El diálogo de passkey no muestra qué se firma.**
 
 ### 7.1.bis Dificultad dinámica: por qué se cambió de opinión
 
