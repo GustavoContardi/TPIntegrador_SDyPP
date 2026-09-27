@@ -67,9 +67,11 @@ esfuerzo computacional.
 
 Cada nodo tiene par de claves. Las propuestas viajan firmadas y con
 `author_pubkey`; **las claves privadas nunca se persisten ni viajan por
-RabbitMQ**. La clave del ciudadano vive en el navegador como `CryptoKey` **no
-extraíble** en IndexedDB: la aplicación puede pedirle firmas, pero no leer el
-material de la clave. La verificación de firma es configurable
+RabbitMQ**. La clave del ciudadano vive en el navegador **cifrada con una
+contraseña** (PBKDF2-SHA256 + AES-GCM, `wrapKey`): en IndexedDB sólo hay el blob
+cifrado, y la clave utilizable existe en memoria como `CryptoKey` no extraíble
+mientras la identidad está desbloqueada. El respaldo es ese mismo blob, que el
+CLI (`propose_law.py --backup`) también sabe abrir. La verificación de firma es configurable
 (`REQUIRE_SIGNATURES`). El despliegue corre en modo estricto
 (`REQUIRE_SIGNATURES=true` en `voxchain-config.yaml` y en los compose): el API y
 el NCT rechazan toda propuesta y todo nonce sin firma válida. El modo permisivo

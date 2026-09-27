@@ -7,6 +7,7 @@ firmas del lado servidor (NCT/API); la firma del lado cliente la hace el
 frontend (Web Crypto) o ``scripts/propose_law.py`` con la privkey local.
 """
 
+from .backup import BackupError, decrypt_backup, encrypt_backup, load_backup
 from .signing import (
     generate_private_key,
     load_private_key,
@@ -22,4 +23,5 @@ __all__ = [
     "proposal_message", "nonce_message", "verify", "sign",
     "public_key_b64", "load_private_key",
     "generate_private_key", "private_key_pem",
+    "BackupError", "encrypt_backup", "decrypt_backup", "load_backup",
 ]

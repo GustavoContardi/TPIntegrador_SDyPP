@@ -5,7 +5,11 @@ propuesta con su clave privada local** y publica. La clave privada nunca se
 transmite (AGENT.md 3.1/10): firma localmente y sólo viaja la firma + la
 author_pubkey, que se deriva de la propia clave.
 
-Uso (firmado, recomendado):
+Uso con el respaldo que se descarga desde el navegador (recomendado):
+    python scripts/propose_law.py --text "Texto de la ley" --backup voxchain-yo-respaldo.json
+    (pide la contraseña; o VOXCHAIN_BACKUP_PASSPHRASE en el entorno)
+
+Uso con una clave PEM en claro:
     python scripts/propose_law.py --text "Texto de la ley" --privkey id_ec.pem
     python scripts/propose_law.py --text "..." --category economia --privkey id_ec.pem
     python scripts/propose_law.py --law-id ley-x --action derogacion --privkey id_ec.pem
@@ -22,7 +26,9 @@ Requiere RABBITMQ_URL en el entorno (por defecto el del docker-compose).
 from __future__ import annotations
 
 import argparse
+import getpass
 import hashlib
+import os
 import uuid
 from datetime import datetime, timezone
 
@@ -33,7 +39,7 @@ from common.blockchain import (
     compress_text,
     validate_category,
 )
-from common.identity import proposal_message, public_key_b64, sign
+from common.identity import BackupError, load_backup, proposal_message, public_key_b64, sign
 from common.messaging import build_rabbitmq
 
 
@@ -51,6 +57,8 @@ def main() -> None:
                     help="hash del texto ya calculado (alternativa a --text)")
     ap.add_argument("--privkey", default=None,
                     help="ruta a la clave privada EC P-256 (PEM); firma la propuesta")
+    ap.add_argument("--backup", default=None,
+                    help="respaldo cifrado descargado del navegador (.json); pide la contraseña")
     ap.add_argument("--author", default=None,
                     help="author_pubkey (si no se usa --privkey; modo legacy sin firma)")
     ap.add_argument("--law-id", default=None,
@@ -65,8 +73,9 @@ def main() -> None:
     # y no dentro de un log del coordinador diez segundos después.
     category = validate_category(args.category)
 
-    if not args.privkey and not args.author:
-        ap.error("hace falta --privkey (firmado) o --author (legacy sin firma)")
+    if sum(bool(x) for x in (args.privkey, args.backup, args.author)) != 1:
+        ap.error("hace falta exactamente uno de --backup, --privkey (firmado) "
+                 "o --author (legacy sin firma)")
 
     if args.text:
         text_hash = hashlib.sha256(args.text.encode()).hexdigest()
@@ -79,7 +88,17 @@ def main() -> None:
     else:
         ap.error("hace falta --text o --text-hash")
 
-    private_key = _load_private_key(args.privkey) if args.privkey else None
+    if args.backup:
+        # La contraseña no va por argumento: quedaría en el historial del shell y
+        # en `ps`. Del entorno sí, para poder usarlo desde scripts.
+        passphrase = (os.environ.get("VOXCHAIN_BACKUP_PASSPHRASE")
+                      or getpass.getpass("Contraseña del respaldo: "))
+        try:
+            private_key = load_backup(args.backup, passphrase)
+        except BackupError as exc:
+            ap.error(f"no se pudo abrir el respaldo: {exc}")
+    else:
+        private_key = _load_private_key(args.privkey) if args.privkey else None
     author = public_key_b64(private_key) if private_key else args.author
     law_id = args.law_id or f"ley-{uuid.uuid4().hex[:8]}"
     created_at = datetime.now(timezone.utc).isoformat()

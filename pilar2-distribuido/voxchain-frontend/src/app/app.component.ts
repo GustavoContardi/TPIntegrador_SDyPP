@@ -2,6 +2,7 @@ import { Component, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { RouterModule } from '@angular/router';
 import { IdentityService } from './core/services/identity.service';
+import { UnlockPromptComponent } from './core/components/unlock-prompt.component';
 
 /**
  * El caparazón: barra superior y salida del router.
@@ -17,7 +18,7 @@ import { IdentityService } from './core/services/identity.service';
 @Component({
   selector: 'app-root',
   standalone: true,
-  imports: [CommonModule, RouterModule],
+  imports: [CommonModule, RouterModule, UnlockPromptComponent],
   template: `
     <div class="vc-shell">
       <header class="hdr">
@@ -42,7 +43,7 @@ import { IdentityService } from './core/services/identity.service';
             <ng-container *ngIf="identityService.identity() as id; else anon">
               <!-- El punto late mientras haya sesión: es el mismo semáforo que
                    usan los mineros, acá aplicado a tu propia identidad. -->
-              <span class="session__dot"></span>
+              <span class="session__dot" [class.session__dot--off]="identityService.locked()"></span>
               <span class="session__label">{{ sessionLabel() }}</span>
               <!-- No hay botón de "cerrar sesión": no hay sesión que cerrar. La
                    identidad es la clave guardada en este navegador, y el único
@@ -50,6 +51,14 @@ import { IdentityService } from './core/services/identity.service';
                    así que vive en /identity, detrás de una confirmación. Antes
                    había acá una × que la borraba de un clic. -->
               <a class="btn btn-ghost session__btn" routerLink="/identity">Mi identidad</a>
+              <!-- Bloquear sí es lo que uno espera de "salir": olvida la clave de
+                   memoria sin borrar nada, y para volver alcanza la contraseña. -->
+              <ng-container *ngIf="identityService.protection() === 'vault'">
+                <button class="btn btn-ghost session__btn" *ngIf="!identityService.locked()"
+                        (click)="identityService.lock()" title="Olvidar la clave hasta que vuelvas a escribir tu contraseña">Bloquear</button>
+                <button class="btn btn-ghost session__btn" *ngIf="identityService.locked()"
+                        (click)="unlock()">Desbloquear</button>
+              </ng-container>
             </ng-container>
             <ng-template #anon>
               <a class="btn btn-primary session__in" routerLink="/identity">Crear mi identidad</a>
@@ -60,6 +69,7 @@ import { IdentityService } from './core/services/identity.service';
       </header>
 
       <router-outlet></router-outlet>
+      <app-unlock-prompt></app-unlock-prompt>
     </div>
   `,
   styles: [`
@@ -102,6 +112,7 @@ import { IdentityService } from './core/services/identity.service';
       background: var(--color-accent); box-shadow: 0 0 10px var(--color-accent);
       animation: vc-pulse 1.8s ease-in-out infinite;
     }
+    .session__dot--off { animation: none; background: var(--color-neutral-500); box-shadow: none; }
     .session__label { font-size: 12.5px; white-space: nowrap; color: var(--color-neutral-300); }
     .session__btn { font-size: 12px; color: var(--color-neutral-500); }
     .session__btn:hover { color: var(--color-text); background: transparent; }
@@ -125,5 +136,10 @@ export class AppComponent {
     const id = this.identityService.identity();
     if (!id) return '';
     return id.username || 'Tu identidad';
+  }
+
+  unlock() {
+    // Cancelar es una respuesta válida: la identidad sigue bloqueada y listo.
+    this.identityService.requestUnlock().catch(() => {});
   }
 }

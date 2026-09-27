@@ -56,22 +56,29 @@ Estas reglas son normativas. Cualquier implementación debe respetarlas exactame
 
 #### Dónde vive la clave del ciudadano
 
-En el navegador, como `CryptoKey` **no extraíble** guardado en IndexedDB. El material de la clave nunca es representable en JavaScript: `exportKey`, `wrapKey` y `JSON.stringify` devuelven nada o lanzan `InvalidAccessError`. Lo único que se puede hacer con ese handle es pedirle firmas.
+En el navegador, **cifrada con una contraseña que sólo conoce el usuario** (`identity.service.ts`). En IndexedDB hay un único registro (`vault`): el PKCS#8 de la privada cifrado con AES-GCM-256 (`wrapKey`), con una clave derivada de la contraseña por PBKDF2-SHA256 (600.000 iteraciones, sal aleatoria) y la pubkey como dato autenticado (AAD), de modo que un registro al que le cambien la pubkey no se descifra. No se guarda ningún hash de la contraseña: una contraseña equivocada simplemente no descifra.
 
-Antes se guardaba exportada en `localStorage`, en texto plano. Un XSS —propio o de una dependencia npm— la leía y se quedaba con la identidad **para siempre**, en silencio. Ahora el peor caso de un XSS es pedirle firmas mientras la pestaña esté abierta: sigue siendo grave, pero termina al cerrarla y no sobrevive a nada.
+La clave utilizable existe **sólo en memoria**, como `CryptoKey` no extraíble obtenido con `unwrapKey`: sus bytes en claro nunca pasan por JavaScript, ni al crearla (el PKCS#8 lo produce `wrapKey` ya cifrado) ni al usarla. Al abrir la app la identidad está **bloqueada**; `sign()` pide la contraseña (un único diálogo global, `UnlockPromptComponent`) y sigue firmando hasta que el usuario toca "Bloquear" o cierra la pestaña. Ninguna pantalla que firma sabe de bloqueos.
+
+Qué cambia esto frente a guardar un `CryptoKey` no extraíble sin cifrar (el diseño anterior):
+
+- **Robo del disco o del perfil del navegador:** en disco sólo hay el blob cifrado. Sin la contraseña hay que forzarla, y cada intento cuesta 600.000 iteraciones de PBKDF2.
+- **XSS almacenado:** en una visita futura no puede firmar nada hasta que el usuario escriba su contraseña, porque la clave no está en IndexedDB en forma usable.
+- **Lo que empeora:** un XSS activo *en el momento* de escribir la contraseña puede capturarla junto con el blob y descifrarlo fuera del navegador, y entonces sí se lleva la identidad. Antes, un XSS podía usar la clave pero nunca robarla. Es la razón por la que la CSP y Trusted Types (abajo) son parte de este diseño y no un agregado.
 
 Consecuencias que hay que asumir, no esconder:
 
-- **El respaldo se muestra una sola vez**, al crear la identidad. Después ni la app ni el usuario pueden volver a leer la clave. Si no la guardó en ese momento, no hay recuperación — y no la hay porque no existe ninguna autoridad que pueda dársela de vuelta.
-- **Con el respaldo, la identidad se restaura** desde `/identity` ("Restaurar desde respaldo"): se pega el PEM, la pública se deriva de la privada y la clave se guarda otra vez no extraíble. Sirve para recuperarla tras borrar los datos del sitio o para usarla en otro navegador.
-- **Borrar la identidad es explícito y confirmado.** No hay "cerrar sesión" —no hay sesión—: la única salida es borrar la clave, que vive en `/identity` detrás de un `confirm`. Crear o restaurar encima de una identidad existente también pregunta, porque la pisa.
+- **El respaldo es el mismo registro cifrado**, descargable como `.json` cuando se quiera ("Descargar respaldo"), también con la identidad bloqueada: sin la contraseña no sirve para nada. `scripts/propose_law.py --backup` lo usa para firmar desde la terminal (`common/identity/backup.py` implementa el mismo formato, versionado).
+- **Si se olvida la contraseña, la identidad se pierde**: el respaldo está cifrado con la misma. No existe ninguna autoridad que pueda devolverla.
+- **Restaurar** (`/identity`) acepta el respaldo cifrado (con su contraseña) y el PEM en claro de antes (con una contraseña nueva, que es también la forma de proteger una identidad vieja).
+- **Identidades sin contraseña (`legacy`):** las creadas antes siguen funcionando como `CryptoKey` no extraíble sin cifrar, con un aviso. No se pueden cifrar retroactivamente —`wrapKey` sólo acepta claves extraíbles—: se protegen restaurándolas desde su PEM.
+- **Borrar la identidad es explícito y confirmado**, y está en `/identity`. "Bloquear" es lo que se parece a cerrar sesión: olvida la clave de memoria sin borrar nada. Crear o restaurar encima de una identidad existente también pregunta, porque la pisa.
 - **IndexedDB es best-effort**: el navegador puede desalojarlo (falta de espacio, o Safari tras 7 días sin visitas). Al crear o restaurar se pide `navigator.storage.persist()`, y si no se concede la pantalla lo avisa.
-- Las identidades viejas **se migran solas** al abrir la app: se reimporta el PKCS#8 como clave no extraíble, se pasa a IndexedDB y recién entonces se borra el original de `localStorage`. Si el guardado falla, la identidad sigue siendo recuperable en el próximo arranque.
 - `localStorage` conserva **sólo la parte pública** (`pubkey` y nombre para mostrar). Es información pública y se lee de forma síncrona, que es lo que necesitan los guards de ruta y las plantillas.
 
 La otra mitad de esta defensa es la **CSP** que sirve `voxchain-frontend/nginx.conf`: `script-src 'self'` sin `unsafe-inline` ni `unsafe-eval` es lo que intenta que no haya XSS en primer lugar. Para poder ponerla hay que compilar con `inlineCritical: false` (`angular.json`), porque el inliner de CSS crítico de Angular mete un `<style>` y un `onload=` en el `index.html` que obligarían a aflojar la directiva. `style-src` sí lleva `unsafe-inline` porque Angular Material inyecta estilos en tiempo de ejecución; es un residuo mucho menor, con CSS no se ejecuta JavaScript. **Trusted Types es obligatorio** (`require-trusted-types-for 'script'; trusted-types angular`): cierra el DOM-XSS por `innerHTML` y compañía; sólo la política del sanitizador de Angular puede escribir en esos sumideros.
 
-**Lo que esto NO cubre:** que un XSS que logre ejecutarse **le pida firmas** a la clave mientras la página esté abierta (no extraíble impide copiarla, no usarla), y el robo del perfil del navegador o del disco: "no extraíble" es una restricción de la API, no cifrado. La clave está protegida contra lectura por script, no contra alguien que se lleve la máquina. Eso requiere cifrarla en reposo con una passphrase (`wrapKey` con una KEK derivada por PBKDF2/Argon2id), que está identificado como el paso siguiente y no está implementado.
+**Lo que esto NO cubre:** un XSS que logre ejecutarse mientras la identidad está desbloqueada puede pedirle firmas, y si la captura al tipearla, llevarse la contraseña. La solución de fondo es que cada firma exija un gesto del usuario sobre una clave en hardware (passkeys/WebAuthn); requiere cambiar la verificación en API y NCT y un dominio estable (las passkeys se atan al dominio, y `<ip>.sslip.io` cambia con la IP del LoadBalancer).
 
 #### Para qué se usa una clave privada
 
