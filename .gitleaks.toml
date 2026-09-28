@@ -11,11 +11,18 @@
 useDefault = true
 
 [allowlist]
-description = "allowlisted files"
+description = "allowlisted files y hosts públicos"
 paths = [
     ".gitignore",
     ".gitleaks.toml",
     ".gitleaksignore",
+]
+# Hosts de sslip.io (voxchain.<IP>.sslip.io): son el nombre público del
+# Ingress, no un secreto, pero su entropía dispara generic-api-key (pasó con
+# WEBAUTHN_RP_IDS en voxchain-config.yaml).
+regexTarget = "match"
+regexes = [
+    '''\.sslip\.io''',
 ]
 
 [[rules]]

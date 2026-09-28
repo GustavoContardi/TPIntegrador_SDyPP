@@ -344,6 +344,37 @@ resource "google_service_account_iam_member" "cicd_wif" {
   )
 }
 
+# ---- Namespace de la app y permisos del CI dentro de él ----
+# container.developer (IAM) da acceso a casi todo el API de Kubernetes salvo
+# RBAC, así que 02-services no podía crear el Role de peer discovery de
+# RabbitMQ (rabbitmq-rbac.yaml): los tres nodos arrancaban como tres clústeres
+# separados. En vez de subir la SA a container.admin (todo el clúster), se le
+# da el ClusterRole `admin` sólo en este namespace: puede gestionar Roles y
+# RoleBindings de sus propias apps, y la prevención de escalada de Kubernetes
+# le impide otorgar permisos que no tiene.
+resource "kubernetes_namespace_v1" "voxchain" {
+  metadata {
+    name = "voxchain"
+  }
+}
+
+resource "kubernetes_role_binding_v1" "cicd_admin" {
+  metadata {
+    name      = "cicd-admin"
+    namespace = kubernetes_namespace_v1.voxchain.metadata[0].name
+  }
+  role_ref {
+    api_group = "rbac.authorization.k8s.io"
+    kind      = "ClusterRole"
+    name      = "admin"
+  }
+  subject {
+    api_group = "rbac.authorization.k8s.io"
+    kind      = "User"
+    name      = google_service_account.cicd.email
+  }
+}
+
 # ---- Pipeline 01: SA de infraestructura ----
 # La SA de cicd sólo despliega sobre un clúster que ya existe; para que 01-infra
 # pueda crear la VPC, el clúster y los IAM hacen falta permisos de proyecto. Van
