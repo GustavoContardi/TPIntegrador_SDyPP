@@ -395,13 +395,13 @@ POOL_COORDINATOR_MAPPING = {
     "worker-2": "worker-2",  # worker-2 can also become a pool coordinator
 }
 
-# Mapping from owner_id to their owned workers
-OWNER_WORKERS_MAPPING = {
-    "default": ["worker-1", "worker-2", "pool-coordinator-1"],  # For local dev
-}
+# Mineros precargados del docker-compose (dueño `default`). En Kubernetes la
+# lista viene vacía (PRELOADED_WORKER_IDS en voxchain-config): ahí no existen, y
+# listarlos mostraba mineros fantasma y dejaba abierto el camino por cabecera.
+ALL_REGISTERED_WORKER_IDS = list(config.PRELOADED_WORKER_IDS)
 
-# Combined list of all registered worker IDs
-ALL_REGISTERED_WORKER_IDS = ["worker-1", "worker-2", "pool-coordinator-1"]
+# Mapping from owner_id to their owned workers
+OWNER_WORKERS_MAPPING = {"default": ALL_REGISTERED_WORKER_IDS} if ALL_REGISTERED_WORKER_IDS else {}
 
 
 # --- Autorización de acciones de administración (AGENT.md 3.1) ---------------
@@ -658,7 +658,8 @@ async def get_all_workers_status(redis: RedisReader = Depends(get_redis_reader))
             "worker-2": "http://worker-2:9090",
             "pool-coordinator-1": "http://worker-pool-coordinator:9090"
         }
-        base_url = local_url_mapping.get(worker_id)
+        # Sólo los precargados del compose tienen servicio HTTP con ese nombre.
+        base_url = local_url_mapping.get(worker_id) if worker_id in ALL_REGISTERED_WORKER_IDS else None
         if base_url:
             try:
                 async with httpx.AsyncClient() as client:
@@ -716,7 +717,8 @@ async def get_worker_status(worker_id: str, redis: RedisReader = Depends(get_red
         "worker-2": "http://worker-2:9090",
         "pool-coordinator-1": "http://worker-pool-coordinator:9090"
     }
-    base_url = local_url_mapping.get(worker_id)
+    # Sólo los precargados del compose tienen servicio HTTP con ese nombre.
+    base_url = local_url_mapping.get(worker_id) if worker_id in ALL_REGISTERED_WORKER_IDS else None
     if base_url:
         try:
             async with httpx.AsyncClient() as client:

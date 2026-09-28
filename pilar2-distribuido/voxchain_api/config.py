@@ -12,6 +12,13 @@ def _as_bool(raw: str | None, default: bool) -> bool:
     return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
+def _as_ids(raw: str | None, default: tuple[str, ...]) -> tuple[str, ...]:
+    """Lista separada por comas. Ausente → el default; vacía → ninguno."""
+    if raw is None:
+        return default
+    return tuple(i.strip() for i in raw.split(",") if i.strip())
+
+
 @dataclass
 class Config:
     REDIS_URL: str
@@ -36,6 +43,12 @@ class Config:
     # verificación autoritativa; acá sirve para responder un 403 con el motivo
     # en vez de aceptar una propuesta que el NCT va a descartar en silencio.
     RESTRICT_PROPOSERS: bool = True
+    # Mineros precargados: los servicios fijos del docker-compose local, con
+    # dueño `default`. El API los lista siempre (como "apagado" si no reportan)
+    # y los autoriza por cabecera. En Kubernetes no existen —todo minero es de
+    # un ciudadano— así que el despliegue la define vacía; si no, la UI de un
+    # sistema recién creado mostraba tres mineros fantasma.
+    PRELOADED_WORKER_IDS: tuple[str, ...] = ("worker-1", "worker-2", "pool-coordinator-1")
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -49,6 +62,8 @@ class Config:
             MIN_WORKERS_FOR_WINDOW=int(os.getenv("MIN_WORKERS_FOR_WINDOW") or 1),
             QUORUM_BY_CATEGORY=_as_bool(os.getenv("QUORUM_BY_CATEGORY"), True),
             RESTRICT_PROPOSERS=_as_bool(os.getenv("RESTRICT_PROPOSERS"), True),
+            PRELOADED_WORKER_IDS=_as_ids(os.getenv("PRELOADED_WORKER_IDS"),
+                                         cls.PRELOADED_WORKER_IDS),
         )
 
 

@@ -81,6 +81,10 @@ data:
   # necesitan los inyectores de carga, que proponen con identidades inventadas).
   # Compartido por NCT y API.
   RESTRICT_PROPOSERS: "true"
+  # Vacía a propósito: worker-1, worker-2 y pool-coordinator-1 son servicios del
+  # docker-compose local. Sin esto el API los listaba como mineros "apagados" en
+  # un sistema recién creado, y los autorizaba por cabecera con dueño `default`.
+  PRELOADED_WORKER_IDS: ""
   HEARTBEAT_INTERVAL: "3"
   HEARTBEAT_TIMEOUT: "12"
   LEADER_LEASE_TTL: "15"
