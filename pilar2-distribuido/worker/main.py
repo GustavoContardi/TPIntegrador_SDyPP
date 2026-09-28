@@ -66,8 +66,9 @@ class WorkerManager:
         # controlamos, porque adivinarla es frágil: en Compose el hostname del
         # contenedor no tiene por qué coincidir con el WORKER_ID (el servicio
         # `worker-pool-coordinator` corre con WORKER_ID `pool-coordinator-1`), y
-        # en Kubernetes los pods de un Deployment no tienen DNS estable — ahí la
-        # dirección buena es la IP del pod, que llega por `MY_POD_IP`.
+        # en Kubernetes los pods de un Deployment no tienen DNS estable — ahí el
+        # API le crea un Service por minero y pasa su nombre; la IP del pod
+        # (`MY_POD_IP`) queda como respaldo si el Service no se pudo crear.
         self.address = self._resolve_address()
         self._bully = None
         self._report_thread = None
@@ -136,6 +137,25 @@ class WorkerManager:
                 config.get("STANDALONE_DEFAULT_DECISION", "").strip())
                 if self._mode == "standalone" else ""),
         }
+
+    def readiness(self) -> tuple[bool, dict]:
+        """¿Le tiene que llegar tráfico del Service de este minero?
+
+        El Service de cada minero existe para que los miembros de su equipo lo
+        alcancen por un nombre estable en vez de por la IP del pod (ver
+        `_spawn_k8s_worker` en el API). Sólo lo usa quien coordina un equipo, así
+        que la única respuesta negativa es la de un `pool-coordinator` que **no
+        tiene el lease** de su pool: si hubiera dos (un rollout, una réplica),
+        los mineros tienen que ir al que manda, no repartirse entre los dos.
+
+        En cualquier otro modo no hay tráfico que dirigir y se responde listo:
+        marcar NotReady a un standalone no protegería nada y ensuciaría el estado
+        del Deployment.
+        """
+        if self._mode != "pool-coordinator":
+            return True, {"mode": self._mode}
+        leader = bool(getattr(self._worker, "is_leader", False))
+        return leader, {"mode": self._mode, "pool_leader": leader}
 
     def switch_mode(self, target: str, pool_url: str = "") -> dict:
         if target not in ("pool-worker", "standalone", "pool-coordinator", "pool-auto"):
@@ -533,7 +553,7 @@ def main() -> None:
 
     start_health_server(config.HEALTH_PORT, lambda: {
         "status": "ok",
-    })
+    }, readiness_provider=manager.readiness)
 
     signal.pause()
     log.info("deteniendo worker...")

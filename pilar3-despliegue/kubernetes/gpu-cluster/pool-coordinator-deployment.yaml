@@ -67,13 +67,23 @@ spec:
               value: /etc/rabbitmq-ca/ca.crt
             - name: RABBITMQ_TLS_SERVER_NAME
               value: rabbitmq.voxchain.svc.cluster.local
+            # Este pod corre en el k3s: el nombre interno de GKE
+            # (redis.voxchain.svc.cluster.local) no resuelve acá. Va por el
+            # LoadBalancer externo, como el resto de los mineros. Con el nombre
+            # de GKE el coordinador nunca conseguía el lease y, con la
+            # readinessProbe en /ready, quedaría fuera de su Service para siempre.
+            - name: REDIS_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: worker-config
+                  key: redis-host
             - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: redis-credentials
                   key: password
             - name: REDIS_URL
-              value: "redis://:$(REDIS_PASSWORD)@redis.voxchain.svc.cluster.local:6379/0"
+              value: "redis://:$(REDIS_PASSWORD)@$(REDIS_HOST):6379/0"
             - name: WORKER_MODE
               value: "pool-coordinator"
             # Identidad de nodo (AGENT.md 3.1): el pod genera su par acá al
@@ -102,9 +112,12 @@ spec:
               port: 8080
             initialDelaySeconds: 15
             periodSeconds: 15
+          # /ready y no /health: el Service `pool-coordinator` le manda tráfico
+          # sólo si tiene el lease de su pool. La liveness sigue en /health: un
+          # coordinador esperando el lease está sano y no hay que reiniciarlo.
           readinessProbe:
             httpGet:
-              path: /health
+              path: /ready
               port: 8080
             initialDelaySeconds: 5
             periodSeconds: 10

@@ -2,6 +2,7 @@
 
 Levanta un servidor ``http.server`` en un hilo daemon que responde en:
 - ``/health`` → JSON ``{servicio: status}``
+- ``/ready`` → 200/503 según si el proceso debe recibir tráfico de su Service
 - ``/metrics`` → texto plano Prometheus
 """
 
@@ -49,6 +50,7 @@ def start_health_server(
     port: int,
     status_provider: Callable[[], dict],
     ok_values: tuple[str, ...] = ("ok",),
+    readiness_provider: Callable[[], tuple[bool, dict]] | None = None,
 ) -> ThreadingHTTPServer:
     """Arranca el server en un hilo daemon y devuelve la instancia.
 
@@ -59,6 +61,14 @@ def start_health_server(
     conectado, al día y listo para tomar el relevo— respondía 503, su
     readinessProbe fallaba para siempre y su Deployment nunca terminaba de
     desplegarse. Un rol no es un diagnóstico.
+
+    ``readiness_provider`` responde otra pregunta: no "¿está vivo?" sino "¿le
+    tiene que llegar tráfico?". Devuelve ``(listo, detalle)`` y se sirve en
+    ``/ready``, separado de ``/health`` a propósito: ``/health`` es la
+    livenessProbe, y un proceso que no debe recibir tráfico —un coordinador de
+    pool sin el lease— está perfectamente sano; si fallara la liveness,
+    Kubernetes lo reiniciaría en bucle. Sin provider, ``/ready`` responde lo
+    mismo que ``/health``.
     """
 
     class Handler(BaseHTTPRequestHandler):
@@ -71,7 +81,12 @@ def start_health_server(
                 self.end_headers()
                 self.wfile.write(body)
                 return
-            if self.path not in ("/health", "/", "/healthz"):
+            if self.path in ("/ready", "/readyz") and readiness_provider is not None:
+                ready, detail = readiness_provider()
+                json_response(self, {"ready": ready, **detail},
+                              200 if ready else 503)
+                return
+            if self.path not in ("/health", "/", "/healthz", "/ready", "/readyz"):
                 self.send_response(404)
                 self.end_headers()
                 return

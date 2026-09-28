@@ -22,11 +22,11 @@ import pytest
 
 from common.health import start_health_server
 
-def _pedir(server) -> tuple[int, dict]:
-    """GET /health contra el server, devolviendo (status, cuerpo)."""
+def _pedir(server, path: str = "/health") -> tuple[int, dict]:
+    """GET ``path`` contra el server, devolviendo (status, cuerpo)."""
     puerto = server.server_address[1]
     try:
-        resp = urllib.request.urlopen(f"http://127.0.0.1:{puerto}/health", timeout=5)
+        resp = urllib.request.urlopen(f"http://127.0.0.1:{puerto}{path}", timeout=5)
         return resp.status, json.loads(resp.read())
     except urllib.error.HTTPError as exc:
         return exc.code, json.loads(exc.read())
@@ -113,3 +113,35 @@ def test_los_errores_que_no_son_de_conexion_se_siguen_reportando(servidor, capsy
     except BrokenPipeError:
         s.handle_error(None, ("127.0.0.1", 0))
     assert capsys.readouterr().err == ""
+
+
+# -- /ready: separada de /health ---------------------------------------------
+#
+# El Service de un minero manda tráfico sólo a pods listos, y un coordinador de
+# pool sin el lease no tiene que recibirlo. Pero sigue sano: si esa respuesta
+# saliera por /health, que es la livenessProbe, Kubernetes lo reiniciaría en
+# bucle mientras espera el lease.
+
+def test_ready_sin_provider_responde_lo_mismo_que_health(servidor):
+    s = servidor({"redis": "ok"})
+    assert _pedir(s, "/ready")[0] == 200
+    caido = servidor({"redis": "down"})
+    assert _pedir(caido, "/ready")[0] == 503
+
+
+def test_ready_con_provider_listo_devuelve_200(servidor):
+    s = servidor({"status": "ok"},
+                 readiness_provider=lambda: (True, {"mode": "standalone"}))
+    codigo, cuerpo = _pedir(s, "/ready")
+    assert codigo == 200
+    assert cuerpo == {"ready": True, "mode": "standalone"}
+
+
+def test_no_listo_da_503_en_ready_pero_health_sigue_sano(servidor):
+    s = servidor({"status": "ok"},
+                 readiness_provider=lambda: (False, {"pool_leader": False}))
+    codigo, cuerpo = _pedir(s, "/ready")
+    assert codigo == 503
+    assert cuerpo["ready"] is False
+    # La liveness no se entera: el proceso está vivo, sólo no debe recibir tráfico.
+    assert _pedir(s, "/health")[0] == 200

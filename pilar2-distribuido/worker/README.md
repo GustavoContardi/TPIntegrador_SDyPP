@@ -154,7 +154,11 @@ docker compose up --build worker-pool-coordinator
 WORKER_MODE=pool-worker POOL_COORDINATOR_URL=http://pool:9001 docker compose up --build worker
 ```
 
-Health: `GET :8080/health` → `{"worker_id":"...", "mode":"standalone", "status":"ok"}`.
+Health (liveness): `GET :8080/health` → `{"status":"ok"}`. El estado real
+(modo, dirección, hashrate) está en `GET :9090/status` y en `worker:status:<id>`.
+
+Readiness: `GET :8080/ready` → `{"ready": true, "mode": "..."}`; 503 sólo si es
+`pool-coordinator` sin el lease de su pool (`"pool_leader": false`).
 
 ## Configuración
 
@@ -167,8 +171,8 @@ Health: `GET :8080/health` → `{"worker_id":"...", "mode":"standalone", "status
 | `WORKER_MODE` | `standalone` | Modo inicial: `standalone`, `pool-coordinator`, o `pool-worker`. |
 | `POOL_COORDINATOR_URL` | `http://pool-coordinator:9001` | URL del Pool Coordinator (modo pool-worker). |
 | `POOL_HTTP_PORT` | `9001` | Puerto HTTP del pool coordinator embebido (modo pool-coordinator). |
-| `WORKER_ADDRESS` | `http://<MY_POD_IP o hostname>:<POOL_HTTP_PORT>` | Dirección con la que otros mineros lo alcanzan si coordina un equipo. Se publica en el estado y el backend se la entrega a quien se una. Conviene fijarla explícitamente: el hostname del contenedor no tiene por qué coincidir con el `WORKER_ID`. |
-| `MY_POD_IP` | (vacío) | IP del pod, inyectada por `fieldRef` en Kubernetes. Respaldo de `WORKER_ADDRESS`. |
+| `WORKER_ADDRESS` | `http://<MY_POD_IP o hostname>:<POOL_HTTP_PORT>` | Dirección con la que otros mineros lo alcanzan si coordina un equipo. Se publica en el estado y el backend se la entrega a quien se una. Conviene fijarla explícitamente: el hostname del contenedor no tiene por qué coincidir con el `WORKER_ID`. En los mineros que despliega el API es el nombre de su Service (`http://worker-svc-<slug>.<ns>.svc:9001`). |
+| `MY_POD_IP` | (vacío) | IP del pod, inyectada por `fieldRef` en Kubernetes. Respaldo de `WORKER_ADDRESS` si no se pudo crear el Service. |
 | `NONCE_SPACE` | `50000000` | Tamaño total del espacio de nonces a fragmentar (pool-coordinator/standalone). |
 | `FRAGMENT_SIZE` | `1000000` | Tamaño de cada fragmento (modo pool-coordinator). |
 | `STANDALONE_NONCE_SPACE` | `50000000` | Tamaño del espacio de nonces (modo standalone). |
@@ -197,6 +201,13 @@ Health: `GET :8080/health` → `{"worker_id":"...", "mode":"standalone", "status
   permite que un usuario se una al equipo de otro sin averiguar ninguna URL, y
   lo único que funciona en Kubernetes, donde los pods de un Deployment no tienen
   DNS estable.
+- **Dirección estable por Service, tráfico sólo al que manda**: en Kubernetes el
+  API crea un Service por minero y el worker anuncia su nombre, que sobrevive al
+  reemplazo del pod. `GET :8080/ready` responde 503 sólo si el worker es
+  `pool-coordinator` y no tiene el lease de su pool; es la readinessProbe, y por
+  eso el Service no le manda mineros a un coordinador que no manda. Va separado
+  de `/health` (la liveness) para que un coordinador esperando el lease no sea
+  reiniciado. Ver [`docs/workers.md`](../../docs/workers.md) §5.bis.
 - **La intención se persiste, el mensaje es una optimización**: el modo deseado
   vive en Redis y el worker lo reconcilia; el comando por RabbitMQ sólo evita
   esperar hasta 5 s. Al revés —confiando sólo en el mensaje— asignar un minero

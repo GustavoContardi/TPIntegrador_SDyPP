@@ -170,6 +170,79 @@ def _k8s_slug(worker_id: str) -> str:
     return slug
 
 
+POOL_PORT = 9001
+
+
+def _k8s_service_name(slug: str) -> str:
+    """Nombre del Service del minero.
+
+    Un Service es una etiqueta DNS RFC 1035, más estricta que el resto de los
+    nombres: tiene que **empezar con letra**. El slug puede empezar con un
+    dígito, así que el prefijo no es decorativo.
+    """
+    return f"worker-svc-{slug}"
+
+
+def _k8s_service_address(slug: str) -> str:
+    """URL estable del coordinador embebido del minero, vía su Service.
+
+    Se usa ``<svc>.<namespace>.svc`` y no el FQDN con ``cluster.local``: el
+    dominio del clúster es configurable, y la búsqueda DNS del pod completa el
+    resto en cualquier clúster.
+    """
+    return f"http://{_k8s_service_name(slug)}.{NAMESPACE}.svc:{POOL_PORT}"
+
+
+def _create_k8s_service(core_api, slug: str) -> Optional[str]:
+    """Crea el Service del minero y devuelve su URL, o ``None`` si no se pudo.
+
+    **Qué resuelve.** Los miembros de un equipo le piden trabajo a su
+    coordinador por HTTP, y antes lo hacían contra la IP del pod. Esa IP cambia
+    cada vez que el pod se reemplaza (un nodo que se cae, una evicción, un
+    redespliegue), y la corrección de la URL de los miembros sólo corría cuando
+    alguien consultaba los equipos en el API: si nadie abría la UI, el equipo
+    quedaba pidiéndole trabajo a una dirección muerta indefinidamente. Con un
+    Service el nombre no cambia nunca y el pod nuevo lo hereda solo.
+
+    **Por qué uno por minero y no uno por equipo.** Cualquier minero puede
+    terminar coordinando un equipo, y su dirección tiene que existir desde que
+    arranca: el worker la fija al iniciar y la publica en su estado. Crearlo al
+    fundar el equipo obligaría a reiniciar el pod para que la anuncie. Un
+    Service sin tráfico cuesta una regla de red, no un proceso.
+
+    **Readiness.** El Service manda tráfico sólo a pods listos, y el pod de un
+    `pool-coordinator` está listo sólo si tiene el lease de su pool (``/ready``
+    del worker). Con un solo pod es casi siempre él; si hay dos a la vez —un
+    rollout— los mineros van al que manda.
+
+    **Si falla, se sigue.** La cuenta con la que el API opera sobre el clúster
+    externo no es nuestra y puede no tener permiso sobre Services. Sin Service
+    el minero anuncia la IP de su pod, que es como funcionaba antes: peor ante
+    un reemplazo del pod, pero el alta no se cae por esto. Un 409 es el Service
+    de un alta anterior del mismo id, y sirve igual.
+    """
+    name = _k8s_service_name(slug)
+    body = client.V1Service(
+        api_version="v1",
+        kind="Service",
+        metadata=client.V1ObjectMeta(name=name, namespace=NAMESPACE),
+        spec=client.V1ServiceSpec(
+            selector={"app": f"worker-gpu-{slug}"},
+            ports=[client.V1ServicePort(name="pool", port=POOL_PORT,
+                                        target_port=POOL_PORT)],
+        ),
+    )
+    try:
+        logger.info("Creating K8s Service %s in namespace %s...", name, NAMESPACE)
+        core_api.create_namespaced_service(namespace=NAMESPACE, body=body)
+    except Exception as e:  # noqa: BLE001
+        if getattr(e, "status", None) != 409:
+            logger.warning("no se pudo crear el Service %s (%s): el minero "
+                           "anunciará la IP de su pod", name, e)
+            return None
+    return _k8s_service_address(slug)
+
+
 def _spawn_k8s_worker(worker_id: str, enrollment_token: str):
     """Levanta el Deployment del minero con un token de enrolamiento de un solo uso.
 
@@ -186,6 +259,14 @@ def _spawn_k8s_worker(worker_id: str, enrollment_token: str):
         return
 
     slug = _k8s_slug(worker_id)
+    core_api = client.CoreV1Api()
+    apps_api = client.AppsV1Api()
+
+    # 0. Service con nombre estable para el coordinador embebido. Va antes que
+    # el Deployment porque su dirección entra en el env del pod. Si el alta
+    # falla más adelante no se borra: sin pods no enruta nada, y la próxima alta
+    # del mismo id lo reutiliza.
+    service_address = _create_k8s_service(core_api, slug)
 
     # 1. Secret con el token de enrolamiento (NO una clave privada).
     secret_name = f"secret-{slug}"
@@ -226,16 +307,18 @@ def _spawn_k8s_worker(worker_id: str, enrollment_token: str):
             ),
             client.V1EnvVar(name="VOXCHAIN_API_URL", value=INTERNAL_API_URL),
             # Dirección con la que los mineros de su equipo lo alcanzan si el
-            # usuario lo promueve a coordinador. Tiene que ser la IP del pod: es
-            # un Deployment, así que no hay DNS estable al que apuntar, y el
-            # worker_id no resuelve a nada dentro del clúster.
+            # usuario lo promueve a coordinador: el nombre de su Service, que
+            # sobrevive al reemplazo del pod. Sin Service (la cuenta del clúster
+            # no pudo crearlo) se cae a la IP del pod, que cambia en cada
+            # reemplazo. El worker_id no resuelve a nada dentro del clúster.
             client.V1EnvVar(
                 name="MY_POD_IP",
                 value_from=client.V1EnvVarSource(
                     field_ref=client.V1ObjectFieldSelector(field_path="status.podIP")
                 )
             ),
-            client.V1EnvVar(name="WORKER_ADDRESS", value="http://$(MY_POD_IP):9001"),
+            client.V1EnvVar(name="WORKER_ADDRESS",
+                            value=service_address or f"http://$(MY_POD_IP):{POOL_PORT}"),
             client.V1EnvVar(
                 name="RABBITMQ_USER",
                 value_from=client.V1EnvVarSource(
@@ -277,8 +360,18 @@ def _spawn_k8s_worker(worker_id: str, enrollment_token: str):
             client.V1ContainerPort(container_port=8080, name="health"),
             # Puerto del coordinator embebido: el pod lo abre en cuanto pasa a
             # coordinar un equipo.
-            client.V1ContainerPort(container_port=9001, name="pool"),
+            client.V1ContainerPort(container_port=POOL_PORT, name="pool"),
         ],
+        # `/ready` y no `/health`: decide si el Service le manda tráfico, y un
+        # coordinador sin el lease de su pool está sano pero no debe recibirlo.
+        # Sin livenessProbe sobre `/ready` a propósito: si no, Kubernetes
+        # reiniciaría en bucle a un coordinador que sólo está esperando el lease.
+        readiness_probe=client.V1Probe(
+            http_get=client.V1HTTPGetAction(path="/ready", port=8080),
+            initial_delay_seconds=5,
+            period_seconds=5,
+            failure_threshold=2,
+        ),
         resources=resources,
         security_context=client.V1SecurityContext(
             allow_privilege_escalation=False,
@@ -339,9 +432,6 @@ def _spawn_k8s_worker(worker_id: str, enrollment_token: str):
         spec=spec
     )
     
-    core_api = client.CoreV1Api()
-    apps_api = client.AppsV1Api()
-    
     try:
         logger.info(f"Creating K8s Secret {secret_name} in namespace {NAMESPACE}...")
         core_api.create_namespaced_secret(namespace=NAMESPACE, body=secret_body)
@@ -379,6 +469,13 @@ def _delete_k8s_worker(worker_id: str):
         core_api.delete_namespaced_secret(name=secret_name, namespace=NAMESPACE)
     except Exception as e:
         logger.warning(f"Failed to delete Secret {secret_name}: {e}")
+
+    service_name = _k8s_service_name(slug)
+    try:
+        logger.info(f"Deleting K8s Service {service_name} in namespace {NAMESPACE}...")
+        core_api.delete_namespaced_service(name=service_name, namespace=NAMESPACE)
+    except Exception as e:
+        logger.warning(f"Failed to delete Service {service_name}: {e}")
 
 
 # Worker admin URLs - these should be configured via environment variables

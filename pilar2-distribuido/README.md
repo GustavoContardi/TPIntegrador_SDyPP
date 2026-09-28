@@ -314,9 +314,12 @@ minero CPU de Pilar 1, que vive fuera de este directorio.
 - **El modo cooperativo se administra por equipos, no por URL**: para poner un
   minero en `pool-worker` hay que decirle la URL del coordinador, y esa URL un
   usuario no la puede averiguar (en Kubernetes los pods de un Deployment no
-  tienen DNS estable; la buena es la IP del pod). Se invirtió quién la sabe: el
-  **worker anuncia su dirección** (`WORKER_ADDRESS`/`MY_POD_IP`) en el estado que
-  publica en Redis, y el backend se la entrega a quien se une al equipo. En
+  tienen DNS estable). Se invirtió quién la sabe: el **worker anuncia su
+  dirección** (`WORKER_ADDRESS`) en el estado que publica en Redis, y el backend
+  se la entrega a quien se une al equipo. En Kubernetes esa dirección es el
+  **nombre de un Service por minero** que crea el alta, no la IP del pod: así
+  sobrevive a que el pod del coordinador se reemplace, y el Service manda
+  tráfico sólo al pod que tiene el lease del pool (readiness en `/ready`). En
   consecuencia `POST /api/workers/{id}/switch-mode` **sólo acepta `standalone`**:
   si se pudiera cambiar el modo por un lado y la membresía por otro, la lista de
   miembros del equipo mentiría. Ver [`docs/workers.md`](../docs/workers.md).

@@ -34,6 +34,14 @@ Diagrama completo: [`docs/diagrams/arquitecturaVoxChain.jpeg`](../docs/diagrams/
   despliega mineros: los levanta el alta desde la UI. `worker-deployment.yaml` +
   `worker-hpa.yaml` (2→10 por CPU) y `pool-miner-*` son alternativas que se
   aplican a mano.
+- Cada alta crea en el k3s un **Secret** (token de enrolamiento), un
+  **Deployment** y un **Service** (`worker-svc-<id>`, puerto 9001). El Service
+  es la dirección estable del minero si coordina un equipo: sus miembros le
+  piden trabajo por ese nombre y no por la IP del pod, que cambia cada vez que
+  el pod se reemplaza. La readinessProbe va en `/ready`, que da 503 si el
+  coordinador no tiene el lease de su pool, así el Service sólo enruta al que
+  manda. Si la cuenta del kubeconfig no puede crear Services, el alta sigue y el
+  minero anuncia la IP de su pod, como antes.
 - **GPU opt-in**: los manifests piden `nvidia.com/gpu` sólo si se descomenta el
   recurso junto con las variables `NVIDIA_*` (ver el comentario en
   `gpu-cluster/worker-deployment.yaml`). Sin eso, el minero detecta que no hay
@@ -266,6 +274,10 @@ kubectl apply -f pilar3-despliegue/kubernetes/gpu-cluster/worker-modes-configmap
 En el k3s del profesor el namespace ya existe y nuestra ServiceAccount no
 puede crear Roles: `worker-rbac.yaml` y `backend-proxy-rbac.yaml` se aplican
 best-effort y los pods corren con la SA `default`.
+
+Los mineros de altas anteriores a la creación de Services siguen anunciando la
+IP de su pod: para pasarlos al esquema nuevo hay que darlos de baja y volver a
+registrarlos.
 
 > No se aplica `kustomization.yaml` completo: los tres `*-secret.yaml` del
 > directorio son plantillas con valores vacíos, y aplicarlos pisaría los

@@ -549,6 +549,33 @@ había red y no alcanzó, la ley queda `discarded` y su `text_hash` se marca par
 detectar reproposición. Y si la red ya estaba vacía antes, la ventana
 directamente no se abre.
 
+### 5.1.bis Si cae el coordinador de un equipo
+
+El coordinador de un equipo lo designa su fundador, así que ningún miembro
+toma su lugar: mientras no vuelve, el equipo no mina. Los miembros no se caen:
+siguen vivos y reintentan. Cuando Kubernetes repone el pod, el coordinador
+arranca con el registro vacío, y cada miembro recibe "no te conozco" en su
+próximo heartbeat y se re-registra solo.
+
+Lo que decidía si el equipo se recuperaba era la **dirección**. Los miembros le
+pedían trabajo a la IP del pod, y un pod reemplazado (nodo caído, evicción,
+redespliegue) tiene otra. La corrección de la URL de los miembros sólo corría
+cuando alguien consultaba los equipos en el API: sin nadie mirando la UI, el
+equipo quedaba pidiéndole trabajo a una dirección muerta, sin ningún error
+visible. Ahora el alta crea un **Service por minero** y el pod anuncia su
+nombre, que sobrevive a cualquier reemplazo. El Service enruta sólo a pods
+listos, y la readiness del worker (`/ready`) es el lease del pool: con dos pods
+del mismo coordinador a la vez, los mineros van al que manda. El NCT probó este
+mismo criterio y lo dejó, porque su standby vive en un Deployment propio que así
+nunca terminaba de desplegarse; el de un minero es un solo pod que normalmente
+tiene el lease, y sólo queda fuera los segundos que tarda en tomarlo.
+
+Queda abierto: la ventana en curso se pierde para ese equipo (el pod nuevo no la
+recupera), y la identidad de nodo del pod nuevo no queda vinculada al dueño,
+porque el token de enrolamiento es de un solo uso. Una réplica en espera del
+coordinador acortaría la caída al TTL del lease; el Service es el prerequisito
+para agregarla.
+
 ### 5.2 Si cae el NCT
 
 Cada NCT que no es líder corre un `NCTHeartbeatMonitor` suscrito a

@@ -421,6 +421,9 @@ Detalles:
   que el resto del sistema.
 - **`WORKER_ADDRESS`** se arma con la IP del pod (`status.podIP` vía `fieldRef`),
   porque los pods no tienen DNS estable — un `Deployment`, no un `StatefulSet`.
+  En `pool-auto` eso alcanza: la dirección viaja en el heartbeat del
+  coordinador y los mineros la reaprenden en cada elección. Los mineros que
+  despliega el API, en cambio, anuncian el nombre de su Service (§5.bis).
 
 ### ⚠️ Hay DOS elecciones de coordinator distintas, y no interoperan
 
@@ -484,20 +487,80 @@ Para poner un minero en modo `pool-worker` hay que decirle la URL del
 coordinador. Averiguarla a mano es, en la práctica, imposible para un usuario:
 en Compose el hostname del contenedor no tiene por qué coincidir con el
 `WORKER_ID`, y en Kubernetes los pods de un `Deployment` no tienen DNS estable —
-la dirección buena es la IP del pod, que cambia en cada reinicio.
+la IP del pod cambia cada vez que el pod se reemplaza.
 
 La solución es invertir quién sabe la dirección: **el worker la anuncia**.
 `WorkerManager._resolve_address` (`worker/main.py`) la resuelve una vez al
 arrancar, en este orden:
 
 1. `WORKER_ADDRESS` explícita — se fija en todos los despliegues que
-   controlamos (Compose, y el spawner de Kubernetes con `http://$(MY_POD_IP):9001`).
+   controlamos: en Compose el nombre del contenedor, y en Kubernetes el
+   **nombre del Service del minero** (ver abajo).
 2. `MY_POD_IP` (inyectada por `fieldRef: status.podIP`).
 3. El hostname del contenedor, como último recurso.
 
 Esa dirección va en `get_status()` y de ahí al estado que el worker publica en
 Redis cada 5 s (`worker:status:<id>`). El backend la lee y se la entrega a quien
 se una al equipo.
+
+### Un Service por minero: la dirección no cambia nunca
+
+Anunciar la IP del pod resolvía el alta, pero no el reemplazo. Si el pod del
+coordinador se reemplazaba (un nodo caído, una evicción, un redespliegue), el
+pod nuevo anunciaba otra IP y los miembros seguían pidiéndole trabajo a la
+vieja. La corrección existía —`_hydrate` reescribe el `pool_url` de los
+miembros cuando ve que la dirección cambió—, pero **sólo corría cuando alguien
+consultaba los equipos en el API**. Si nadie abría la pantalla de Minería, el
+equipo quedaba pidiéndole trabajo a una dirección muerta indefinidamente, y el
+síntoma era mudo: los miembros figuran conectados y el equipo no mina.
+
+Por eso el alta en Kubernetes (`_spawn_k8s_worker`) crea además un **Service**
+por minero, `worker-svc-<slug>`, que selecciona su pod por el puerto 9001, y le
+pasa al pod `WORKER_ADDRESS=http://worker-svc-<slug>.<namespace>.svc:9001`. El
+nombre sobrevive a cualquier reemplazo del pod: el nuevo lo hereda solo, y los
+miembros no se enteran de que cambió algo más allá de un "no te conozco" en el
+próximo heartbeat, que los hace re-registrarse.
+
+Decisiones:
+
+- **Uno por minero, no uno por equipo.** Cualquier minero puede terminar
+  coordinando, y su dirección tiene que existir desde que arranca, porque el
+  worker la fija al iniciar. Crearlo al fundar el equipo obligaría a reiniciar
+  el pod para que la anuncie. Un Service sin tráfico es una regla de red, no un
+  proceso.
+- **Readiness por liderazgo.** El pod tiene `readinessProbe` en **`/ready`**,
+  que responde 503 sólo si el worker es `pool-coordinator` y no tiene el lease
+  de su pool (`WorkerManager.readiness`). Con un pod es casi siempre él; si hay
+  dos a la vez —un rollout, o una réplica en el futuro—, el Service manda a los
+  mineros al que manda. El NCT usó este criterio y lo abandonó: su standby es un
+  Deployment aparte cuyo único pod no habría estado listo nunca, y el despliegue
+  no terminaba (hoy su `/health` acepta `standby` como sano). Acá no pasa: el
+  Deployment de un minero es un solo pod que normalmente tiene el lease, y queda
+  NotReady sólo mientras lo toma al arrancar: unos segundos, o hasta ~30 s si
+  se reinicia dentro de la misma época de elección en la que ya había ganado
+  (la elección por Redis es por épocas de 30 s).
+- **`/ready` y no `/health`.** `/health` es la livenessProbe. Un coordinador
+  esperando el lease está sano; si fallara la liveness, Kubernetes lo
+  reiniciaría en bucle. Por eso la readiness va en una ruta aparte
+  (`common/health.py`, parámetro `readiness_provider`).
+- **Si no se puede crear, se sigue.** La cuenta con la que el API opera sobre el
+  k3s no es nuestra y puede no tener permiso sobre Services. Sin Service el pod
+  anuncia `http://$(MY_POD_IP):9001`, que es como funcionaba antes. Un 409 es el
+  Service de un alta anterior del mismo id y se reutiliza.
+- **La baja lo borra**, junto con el Deployment y el Secret. Si el alta falla a
+  mitad, el Service queda: sin pods no enruta nada y la próxima alta del mismo id
+  lo reutiliza.
+
+Qué **no** resuelve: el pod nuevo sigue arrancando con el estado vacío (sin
+registro de mineros ni fragmentos) y sin la ventana en curso; y su identidad de
+nodo no queda vinculada al dueño, porque el token de enrolamiento ya se quemó.
+Tampoco hay réplica: mientras el pod se reemplaza, el equipo no mina. El Service
+es el prerequisito para esa réplica, no la réplica.
+
+En Compose no hace falta nada de esto: el nombre del contenedor ya es un DNS
+estable. El pool estático del k3s (`gpu-cluster/pool-coordinator-*.yaml`) ya
+usaba un Service (`pool-coordinator`); ahora su readiness también mira
+`/ready`.
 
 ### Modelo de datos
 
@@ -909,6 +972,10 @@ El estado real (modo, pool_url, bully_state, running, pubkey) existe —
 clave `worker:status:<id>` en Redis. Sería un cambio de una línea hacer que
 `/health` devuelva `get_status()`.
 
+Lo que sí se agregó es **`/ready`** (§5.bis): no es un health más informativo sino
+la readiness de un `pool-coordinator` según el lease de su pool. `/health` sigue
+siendo la liveness y sigue devolviendo la constante.
+
 Relacionado: `worker-deployment.yaml` fija `REDIS_URL: ""`, así que los workers de
 k3s en modo `pool-auto` **no reportan estado a Redis**; la UI los ve sólo si
 están en el set `registered_workers`, y no pueden participar de un equipo con
@@ -977,7 +1044,7 @@ El fallback a CPU es automático en los cuatro modos, porque vive dentro de
 | `FRAGMENT_SIZE` | — | ✅ grano del reparto | — | ✅ (si gana) |
 | `POOL_HTTP_PORT` | — | ✅ escucha | — | ✅ escucha/conecta |
 | `WORKER_ADDRESS` | ⚪ se publica igual | ✅ es la URL del equipo | ⚪ se publica igual | ✅ dónde encontrarlo |
-| `MY_POD_IP` | ⚪ respaldo de address | ⚪ respaldo | ⚪ respaldo | ⚪ respaldo |
+| `MY_POD_IP` | ⚪ respaldo de address | ⚪ respaldo (si no hay Service) | ⚪ respaldo | ⚪ respaldo |
 | `POOL_COORDINATOR_URL` | — | — | ✅ a quién pedirle | ⚪ default |
 | `POOL_ID` | — | — | — | ✅ ámbito de la elección |
 | `POOL_ELECTION_N_ZEROS` | — | ✅ mini-PoW de la elección por Redis | — | ✅ mini-PoW del bully |
