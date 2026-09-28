@@ -2,6 +2,19 @@ data "google_project" "project" {
   project_id = var.project_id
 }
 
+# IP pública del Ingress. La reserva bootstrap-secrets.sh, no este código, para
+# que sobreviva a un `tofu destroy`: de ella sale el host voxchain.<IP>.sslip.io,
+# y con él el certificado, la URL de Grafana y el rpId de las passkeys.
+data "google_compute_address" "ingress" {
+  name   = "voxchain-ingress-ip"
+  region = var.region
+}
+
+locals {
+  app_host     = "voxchain.${data.google_compute_address.ingress.address}.sslip.io"
+  grafana_host = "grafana.${local.app_host}"
+}
+
 # ---- VPC nativa ----
 resource "google_compute_network" "vpc" {
   name                    = "${var.cluster_name}-vpc"
@@ -307,6 +320,15 @@ resource "google_project_iam_member" "cicd_secret_viewer" {
   member  = "serviceAccount:${google_service_account.cicd.email}"
 }
 
+# Lo mínimo que GKE exige a una SA de nodos propia: escribir logs y métricas.
+# Sin esto el Fluent Bit gestionado recolecta pero Cloud Logging le rechaza la
+# escritura, y el colector de N servicios × M réplicas queda vacío.
+resource "google_project_iam_member" "nodes_default" {
+  project = var.project_id
+  role    = "roles/container.defaultNodeServiceAccount"
+  member  = "serviceAccount:${google_service_account.nodes.email}"
+}
+
 resource "google_project_iam_member" "nodes_artifact_reader" {
   project = var.project_id
   role    = "roles/artifactregistry.reader"
@@ -397,8 +419,12 @@ resource "helm_release" "kube_prometheus_stack" {
       ingress = {
         enabled = false
       }
-      extraEnvVars = {
-        GF_SERVER_ROOT_URL = "https://grafana.voxchain.34.95.245.215.sslip.io"
+      # Antes iba como extraEnvVars.GF_SERVER_ROOT_URL, una clave que el chart
+      # de Grafana no conoce y que por eso se ignoraba sin avisar.
+      "grafana.ini" = {
+        server = {
+          root_url = "https://${local.grafana_host}"
+        }
       }
       persistence = {
         enabled = true
@@ -438,6 +464,10 @@ resource "helm_release" "ingress_nginx" {
   set {
     name  = "controller.service.type"
     value = "LoadBalancer"
+  }
+  set {
+    name  = "controller.service.loadBalancerIP"
+    value = data.google_compute_address.ingress.address
   }
 
   depends_on = [google_container_cluster.cluster]

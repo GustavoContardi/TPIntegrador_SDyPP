@@ -33,6 +33,21 @@ output "infra_service_account" {
   value       = google_service_account.infra.email
 }
 
+output "ingress_ip" {
+  description = "IP estática del Ingress (la reserva bootstrap-secrets.sh)"
+  value       = data.google_compute_address.ingress.address
+}
+
+output "app_url" {
+  description = "URL pública de la app"
+  value       = "https://${local.app_host}"
+}
+
+output "grafana_url" {
+  description = "URL pública de Grafana"
+  value       = "https://${local.grafana_host}"
+}
+
 output "get_credentials" {
   description = "Command to configure kubectl"
   value       = "gcloud container clusters get-credentials ${google_container_cluster.cluster.name} --zone ${var.zone} --project ${var.project_id}"

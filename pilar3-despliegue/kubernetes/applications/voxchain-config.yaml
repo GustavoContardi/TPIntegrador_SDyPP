@@ -44,9 +44,11 @@ data:
   # Passkeys (WebAuthn, AGENT.md 3.1): el dominio (rpId) y el origen del
   # frontend. Tienen que coincidir con el host del Ingress: si cambia la IP del
   # LoadBalancer cambia el host de sslip.io, y las passkeys creadas con el
-  # dominio viejo dejan de servir (el autenticador las ata a su rpId).
-  WEBAUTHN_RP_IDS: "voxchain.34.39.171.193.sslip.io"
-  WEBAUTHN_ORIGINS: "https://voxchain.34.39.171.193.sslip.io"
+  # dominio viejo dejan de servir (el autenticador las ata a su rpId). Por eso
+  # la IP es estática (voxchain-ingress-ip, la reserva bootstrap-secrets.sh) y
+  # sobrevive a un `tofu destroy`.
+  WEBAUTHN_RP_IDS: "voxchain.35.199.68.144.sslip.io"
+  WEBAUTHN_ORIGINS: "https://voxchain.35.199.68.144.sslip.io"
   # Anti-replay: antigüedad máxima de created_at en una propuesta firmada (segundos).
   PROPOSAL_MAX_AGE_SECONDS: "300"
   WINDOW_SECONDS_PROMULGACION: "120"

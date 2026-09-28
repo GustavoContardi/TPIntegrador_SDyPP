@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Crea en GCP Secret Manager los 7 secretos que consumen los ExternalSecret de
-# kubernetes/infrastructure/, y el bucket del estado de OpenTofu. Se corre UNA
+# kubernetes/infrastructure/ (más la contraseña de Grafana), el bucket del
+# estado de OpenTofu y la IP estática del Ingress. Se corre UNA
 # VEZ por entorno, antes del primer `tofu init` y del pipeline 02-services (que
 # verifica que los secretos existan y falla con un mensaje claro si no).
 #
@@ -81,6 +82,9 @@ subir rabbitmq-user           "voxchain"
 subir rabbitmq-pass           "$(password_de rabbitmq-pass)"
 subir rabbitmq-erlang-cookie  "$(password_de rabbitmq-erlang-cookie)"
 subir redis-pass              "$(password_de redis-pass)"
+# No lo lee ningún ExternalSecret: lo consume OpenTofu como
+# TF_VAR_grafana_admin_password (local) o el secret GRAFANA_ADMIN_PASSWORD (CI).
+subir grafana-admin-password  "$(password_de grafana-admin-password)"
 
 # -- bucket del estado de OpenTofu -------------------------------------------
 # Lo usa el backend "gcs" de terraform/gke/versions.tf. Va acá y no en el propio
@@ -97,6 +101,26 @@ else
   echo "  + $TFSTATE_BUCKET (creado)"
 fi
 gcloud storage buckets update "$TFSTATE_BUCKET" --versioning >/dev/null
+
+# -- IP estática del Ingress ---------------------------------------------------
+# El host público es voxchain.<IP>.sslip.io, y de él dependen el certificado de
+# Let's Encrypt, la URL de Grafana y el rpId de las passkeys (una passkey creada
+# con un dominio no sirve con otro). Con una IP efímera cada `tofu destroy` +
+# `apply` cambiaba el host. Se reserva acá, fuera del estado de OpenTofu, para
+# que sobreviva al destroy: terraform/gke/main.tf sólo la lee (data source).
+INGRESS_IP_NAME="voxchain-ingress-ip"
+info "== IP estática del Ingress =="
+if gcloud compute addresses describe "$INGRESS_IP_NAME" --project="$PROJECT" \
+     --region=southamerica-east1 >/dev/null 2>&1; then
+  echo "  ~ $INGRESS_IP_NAME (ya existe)"
+else
+  gcloud compute addresses create "$INGRESS_IP_NAME" --project="$PROJECT" \
+    --region=southamerica-east1 --network-tier=PREMIUM >/dev/null
+  echo "  + $INGRESS_IP_NAME (creada)"
+fi
+INGRESS_IP="$(gcloud compute addresses describe "$INGRESS_IP_NAME" \
+  --project="$PROJECT" --region=southamerica-east1 --format='value(address)')"
+echo "  $INGRESS_IP → https://voxchain.$INGRESS_IP.sslip.io"
 
 echo
 verde "Listo. Secretos en Secret Manager:"

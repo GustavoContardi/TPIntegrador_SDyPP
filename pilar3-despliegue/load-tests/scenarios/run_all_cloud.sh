@@ -17,7 +17,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
-API_URL="${1:-https://voxchain.34.95.245.215.sslip.io}"
+API_URL="${1:-https://voxchain.35.199.68.144.sslip.io}"
 OUT_DIR="${2:-$SCRIPT_DIR/../resultados}"
 
 GKE_CTX="gke-token"
