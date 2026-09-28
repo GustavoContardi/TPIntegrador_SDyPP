@@ -197,6 +197,26 @@ async def broadcast_sse_event(app: FastAPI, event_type: str, data: dict):
     app.state.sse_clients -= disconnected
 
 
+# Cada cuánto se manda un comentario SSE cuando no hay eventos. ingress-nginx
+# corta la conexión si el upstream no escribe nada en 60 s (proxy-read-timeout);
+# sin esto, un stream sin actividad moría cada minuto con
+# ERR_HTTP2_PROTOCOL_ERROR y el cliente perdía los eventos mientras reconectaba.
+SSE_HEARTBEAT_SECONDS = 15.0
+
+
+async def sse_messages(queue: asyncio.Queue, heartbeat: float = SSE_HEARTBEAT_SECONDS):
+    """Mensajes del stream: los eventos de `queue`, o `: ping` si no llega ninguno.
+
+    Las líneas que empiezan con `:` son comentarios en SSE: `EventSource` las
+    descarta, así que el cliente no ve nada, pero el proxy ve bytes.
+    """
+    while True:
+        try:
+            yield await asyncio.wait_for(queue.get(), timeout=heartbeat)
+        except asyncio.TimeoutError:
+            yield ": ping\n\n"
+
+
 @app.get("/api/events")
 async def events_stream():
     """SSE endpoint for real-time events."""
@@ -205,12 +225,10 @@ async def events_stream():
 
     async def event_generator():
         try:
-            while True:
-                message = await queue.get()
+            async for message in sse_messages(queue):
                 yield message
-        except asyncio.CancelledError:
+        finally:
             app.state.sse_clients.discard(queue)
-            raise
 
     return StreamingResponse(
         event_generator(),
