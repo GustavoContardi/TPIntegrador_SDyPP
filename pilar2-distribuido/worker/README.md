@@ -176,6 +176,7 @@ su pool (`"standby": true`).
 | `MY_POD_IP` | (vacío) | IP del pod, inyectada por `fieldRef` en Kubernetes. Respaldo de `WORKER_ADDRESS` si no se pudo crear el Service. |
 | `WORKER_ENROLL_TOKEN` | (vacío) | Token de un solo uso para vincular la identidad del nodo con su dueño. |
 | `WORKER_ENROLL_TOKEN_REPLICA` | (vacío) | Segundo token, para la réplica en espera de un coordinador de equipo. Se prueba si el primero da 401. |
+| `WORKER_ENROLL_TOKEN_DIR` | (vacío) | Directorio con los tokens como archivos (`enrollment-token`, `enrollment-token-replica`): el Secret montado como volumen en los pods que despliega el API. Tiene prioridad sobre las variables y, como cambia con el pod vivo, con él el worker reintenta el enrolamiento hasta lograrlo. |
 | `NONCE_SPACE` | `50000000` | Tamaño total del espacio de nonces a fragmentar (pool-coordinator/standalone). |
 | `FRAGMENT_SIZE` | `1000000` | Tamaño de cada fragmento (modo pool-coordinator). |
 | `STANDALONE_NONCE_SPACE` | `50000000` | Tamaño del espacio de nonces (modo standalone). |
@@ -217,8 +218,10 @@ su pool (`"standby": true`).
   pod (`<worker_id>@<hostname>`) para distinguirlos; el que no lo tiene
   fragmenta los desafíos pero no mina ni reparte ni publica estado, y si el
   líder cae toma el lease y sigue la ventana en curso. Cada réplica se enrola con
-  su propio token (`WORKER_ENROLL_TOKEN` y `WORKER_ENROLL_TOKEN_REPLICA`: el
-  worker prueba los dos).
+  su propio token (el worker prueba los dos).
+- **Un pod que reemplaza a otro también se enrola**: arranca con tokens gastados,
+  el API le repone uno en el Secret al rechazarle el token, y el worker lo lee
+  del volumen montado al reintentar (30 s, con espera creciente hasta 10 min).
 - **La intención se persiste, el mensaje es una optimización**: el modo deseado
   vive en Redis y el worker lo reconcilia; el comando por RabbitMQ sólo evita
   esperar hasta 5 s. Al revés —confiando sólo en el mensaje— asignar un minero

@@ -585,9 +585,15 @@ token es de un solo uso. Al escalar se emite un segundo token, cada réplica
 prueba los dos, y el vínculo nodo → dueño admite varias claves a la vez, para
 que los bloques se sigan imputando al fundador gane la réplica que gane.
 
-Queda abierto: un pod que **reemplaza** a otro (después de que se cae un nodo)
-no tiene token válido y mina sin dueño; y la réplica repite algo del trabajo que
-el líder ya había hecho, porque no sabe qué fragmentos se barrieron.
+Un pod que **reemplaza** a otro (después de que se cae un nodo) arranca con los
+dos tokens ya gastados. Para que se enrole igual, los tokens llegan como archivos
+del Secret montado, que Kubernetes actualiza en el pod vivo; cuando el API
+rechaza un token de un minero suyo, deja uno nuevo en el Secret, y el worker lo
+encuentra al reintentar. El token nunca viaja en la respuesta, así que usarlo
+sigue exigiendo poder leer el Secret.
+
+Queda abierto: la réplica repite algo del trabajo que el líder ya había hecho,
+porque no sabe qué fragmentos se barrieron.
 
 ### 5.2 Si cae el NCT
 

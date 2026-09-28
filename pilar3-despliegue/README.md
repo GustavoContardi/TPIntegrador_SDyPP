@@ -34,7 +34,9 @@ Diagrama completo: [`docs/diagrams/arquitecturaVoxChain.jpeg`](../docs/diagrams/
   despliega mineros: los levanta el alta desde la UI. `worker-deployment.yaml` +
   `worker-hpa.yaml` (2→10 por CPU) y `pool-miner-*` son alternativas que se
   aplican a mano.
-- Cada alta crea en el k3s un **Secret** (token de enrolamiento), un
+- Cada alta crea en el k3s un **Secret** (tokens de enrolamiento, montado en el
+  pod como volumen para que el API pueda reponer uno a un pod que reemplaza a
+  otro), un
   **Deployment** y un **Service** (`worker-svc-<id>`, puerto 9001). El Service
   es la dirección estable del minero si coordina un equipo: sus miembros le
   piden trabajo por ese nombre y no por la IP del pod, que cambia cada vez que
@@ -48,7 +50,8 @@ Diagrama completo: [`docs/diagrams/arquitecturaVoxChain.jpeg`](../docs/diagrams/
   que el Deployment muestra **1/2 disponible** de forma permanente: es a
   propósito, y el Service sólo enruta a la que manda. Necesita permiso para
   `deployments/scale` y para parchear Secrets en el namespace; sin él, el
-  equipo corre con un solo pod como antes.
+  equipo corre con un solo pod como antes, y un pod que reemplaza a otro mina
+  sin dueño porque el API no puede reponerle el token.
 - **GPU opt-in**: los manifests piden `nvidia.com/gpu` sólo si se descomenta el
   recurso junto con las variables `NVIDIA_*` (ver el comentario en
   `gpu-cluster/worker-deployment.yaml`). Sin eso, el minero detecta que no hay

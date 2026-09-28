@@ -610,19 +610,17 @@ el token de enrolamiento es de un solo uso: con uno solo, la primera réplica en
 enrolarse lo quemaba y la otra minaba sin dueño — y si ésa llegaba a mandar, los
 bloques del equipo dejaban de imputarse al fundador. Al escalar, el API emite un
 segundo token (`worker:enroll:<id>:replica` en Redis, `enrollment-token-replica`
-en el Secret, opcional en el pod como `WORKER_ENROLL_TOKEN_REPLICA`) y el worker
-prueba los dos: si uno da 401 prueba el otro. El vínculo nodo → dueño ahora
+en el Secret) y el worker prueba los dos: si uno da 401 prueba el otro. El vínculo nodo → dueño ahora
 **se agrega** en vez de reemplazarse (`worker:node_pubkeys:<id>`), porque hay
 dos claves vivas a la vez; se borran todas al re-registrar o dar de baja. Y un
 nodo que ya está vinculado no gasta token: es el contenedor que se reinicia
 dentro de su pod, que conserva su clave y si no se llevaría el de la réplica.
 
+Un pod que **reemplaza** a otro (no una réplica: el pod nuevo después de que se
+cae un nodo) arranca con los dos tokens ya gastados; cómo se enrola igual está
+en "La identidad del minero no es la del ciudadano", más abajo.
+
 **Qué sigue abierto.**
-- Un pod que **reemplaza** a otro (no una réplica: el pod nuevo después de que
-  un nodo cae) no tiene token válido —los dos ya se usaron o vencieron a los 15
-  min— y mina sin dueño. Si llega a mandar, los bloques del equipo no se imputan
-  al fundador. Re-registrar el minero lo resuelve; emitir un token por pod
-  reemplazado es lo pendiente.
 - Sin Redis las dos réplicas no pueden arbitrarse y trabajan en paralelo.
   Duplican trabajo y los mineros se reparten entre las dos, pero el NCT sella
   igual el primer nonce válido: se prefirió eso a dejar al equipo sin
@@ -848,6 +846,51 @@ El enrolamiento es **best-effort**: si falla, el minero mina igual y firma con s
 identidad, pero sus bloques no se le imputan a ningún ciudadano — y la regla 3.4
 (el autor no gana su propia ventana) no lo alcanza. Prefiere eso a que un minero
 no arranque por un problema de red con el API.
+
+Ése es **todo** el efecto de no estar enrolado, y conviene tenerlo claro: el
+único que consulta el vínculo `node:owner` es el NCT, para la regla 3.4. Los
+nonces se aceptan igual (la firma se verifica contra la clave del propio nodo),
+y ni la deliberación, ni quién puede proponer, ni la dificultad dependen de él.
+Lo que se pierde es silencioso: el autor de una ley podría ganar su propia
+ventana con un minero suyo sin enrolar.
+
+#### El pod que reemplaza a otro
+
+Los tokens son de un solo uso y vencen a los 15 minutos. Un pod que **reemplaza**
+a otro —se cayó el nodo, hubo una evicción, se reinició el pod entero— arranca
+con los tokens que dejó el alta, ya gastados, y quedaba sin dueño. Con la réplica
+del coordinador es el caso esperable: cuando el líder muere, Kubernetes repone
+ese pod, y el día que le vuelve a tocar mandar el equipo firmaba como anónimo.
+
+El pod no puede pedir un token por su cuenta: no tiene cómo probar que es de su
+dueño, y ésa es toda la función del token. La solución usa el único canal que sí
+lo prueba, el Secret del minero:
+
+1. **Los tokens llegan como archivos**, no como variables de entorno: el API
+   monta el Secret como volumen en `/etc/voxchain/enroll` y pasa
+   `WORKER_ENROLL_TOKEN_DIR`. Una variable se fija al arrancar el contenedor;
+   el volumen, Kubernetes lo actualiza en el pod vivo.
+2. **Cuando el API rechaza un token** de un minero con Deployment nuestro, y no
+   hay otro token vigente en ninguno de los dos slots, **deja uno nuevo en el
+   Secret** (`reissue_enrollment_token`). La respuesta sigue siendo 401: el token
+   no viaja en ella.
+3. **El worker reintenta** si su primer enrolamiento falló
+   (`enroll_until_bound`), releyendo los archivos, con espera creciente desde
+   30 s hasta 10 min. El archivo nuevo aparece en uno o dos minutos (lo que
+   tarda el kubelet en sincronizar el volumen) y el reintento pasa.
+
+Por qué no abre ningún agujero: el token repuesto aterriza donde aterrizaba el
+original, así que usarlo sigue exigiendo poder leer el Secret. Quien no pueda
+leerlo, a lo sumo provoca que se emita un token que no puede ver. Y como no se
+emite mientras haya uno vigente, son como mucho uno cada 15 minutos por minero.
+La emisión es atómica (`SET NX`): dos rechazos simultáneos no pueden dejar en el
+Secret un token distinto del que quedó en Redis.
+
+No aplica a un minero levantado a mano (no hay Secret donde dejarle nada: se
+resuelve re-registrándolo) ni al compose local, donde `reconcile_docker_workers`
+relanza cada contenedor con un token nuevo. De paso cubre un caso que antes
+tampoco estaba: el pod que no pudo enrolarse al arrancar porque el API no
+respondía.
 
 En local, el token lo muestra la UI al registrar:
 
@@ -1126,4 +1169,5 @@ El fallback a CPU es automático en los cuatro modos, porque vive dentro de
 | `STANDALONE_CATEGORIES` | ✅ voto propio (por área) | — | — | — |
 | `WORKER_PRIVKEY_PEM` | ✅ firma nonces | ✅ firma nonces | — (firma el coord.) | ✅ |
 | `WORKER_ENROLL_TOKEN` | ✅ vincula al dueño | ✅ | ⚪ | ✅ |
+| `WORKER_ENROLL_TOKEN_DIR` | ✅ tokens como archivos (pods del API) | ✅ | ⚪ | ✅ |
 | `MINER_GPU_BIN` / `MINER_CPU_SCRIPT` | ✅ | ✅ | ✅ | ✅ |

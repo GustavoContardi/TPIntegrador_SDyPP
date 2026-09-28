@@ -61,9 +61,13 @@ SPAWN_REQUEST_GPU = os.getenv("SPAWN_REQUEST_GPU", "false").lower() == "true"
 # URL con la que el pod del minero alcanza a esta API para enrolar su identidad.
 INTERNAL_API_URL = os.getenv("INTERNAL_API_URL", "http://voxchain-api.voxchain.svc.cluster.local:8000")
 
+# Dónde el pod del minero encuentra sus tokens de enrolamiento (Secret montado).
+ENROLL_TOKEN_DIR = "/etc/voxchain/enroll"
+
 # Vida del token de enrolamiento. Corta a propósito: sólo tiene que sobrevivir el
-# arranque del pod. Un token vencido se resuelve re-registrando el mismo id, que
-# ya es un camino soportado.
+# arranque del pod. Un pod que llega con el token vencido o gastado recibe uno
+# nuevo en su Secret (`reissue_enrollment_token`); un minero levantado a mano se
+# resuelve re-registrando el mismo id.
 ENROLL_TOKEN_TTL = int(os.getenv("ENROLL_TOKEN_TTL", "900"))
 
 
@@ -93,19 +97,24 @@ ENROLL_REPLICA_KEY = "worker:enroll:{worker_id}:replica"
 
 
 def _issue_enrollment_token(redis_client, worker_id: str, *,
-                            replica: bool = False) -> str:
+                            replica: bool = False, only_if_free: bool = False) -> str:
     """Emite un token de un solo uso para que un pod reclame el slot de nodo.
 
     En Redis queda sólo el SHA-256 del token: si alguien lee la base no obtiene
     un token usable. El valor en claro existe únicamente en la respuesta a este
     alta y en el Secret que monta el pod. ``replica`` elige el segundo slot
     (ver ``ENROLL_REPLICA_KEY``).
+
+    ``only_if_free`` no pisa un token vigente en ese slot y devuelve ``""`` si lo
+    había. Es atómico (SET NX): dos pedidos simultáneos no pueden emitir dos
+    tokens y dejar en el Secret uno distinto del que quedó en Redis.
     """
     token = secrets.token_urlsafe(32)
     digest = hashlib.sha256(token.encode()).hexdigest()
     key = ENROLL_REPLICA_KEY if replica else ENROLL_KEY
-    redis_client.set(key.format(worker_id=worker_id), digest, ex=ENROLL_TOKEN_TTL)
-    return token
+    stored = redis_client.set(key.format(worker_id=worker_id), digest,
+                              ex=ENROLL_TOKEN_TTL, nx=only_if_free)
+    return token if stored else ""
 
 
 def _consume_enrollment_token(redis_client, worker_id: str, token: str) -> bool:
@@ -316,24 +325,13 @@ def _spawn_k8s_worker(worker_id: str, enrollment_token: str):
             # La clave la genera el propio pod en este path (volumen efímero,
             # no un Secret): nace y muere con el minero y nunca la vio nadie más.
             client.V1EnvVar(name="WORKER_PRIVKEY_PEM", value="/app/keys/node-key.pem"),
-            client.V1EnvVar(
-                name="WORKER_ENROLL_TOKEN",
-                value_from=client.V1EnvVarSource(
-                    secret_key_ref=client.V1SecretKeySelector(
-                        name=secret_name, key="enrollment-token")
-                )
-            ),
-            # Segundo token, para la réplica en espera de un coordinador de
-            # equipo (`scale_k8s_coordinator`). Opcional: sólo existe mientras
-            # el minero coordina, y el worker prueba los dos.
-            client.V1EnvVar(
-                name="WORKER_ENROLL_TOKEN_REPLICA",
-                value_from=client.V1EnvVarSource(
-                    secret_key_ref=client.V1SecretKeySelector(
-                        name=secret_name, key="enrollment-token-replica",
-                        optional=True)
-                )
-            ),
+            # Los tokens de enrolamiento se leen de archivos del Secret montado
+            # como volumen, no de variables de entorno. Una variable se fija al
+            # arrancar el contenedor; el volumen, Kubernetes lo actualiza en el
+            # pod vivo. Es lo que deja enrolarse a un pod que reemplaza a otro:
+            # arranca con tokens gastados, el API le repone uno en el Secret
+            # (`reissue_enrollment_token`) y el worker lo ve al reintentar.
+            client.V1EnvVar(name="WORKER_ENROLL_TOKEN_DIR", value=ENROLL_TOKEN_DIR),
             client.V1EnvVar(name="VOXCHAIN_API_URL", value=INTERNAL_API_URL),
             # Dirección con la que los mineros de su equipo lo alcanzan si el
             # usuario lo promueve a coordinador: el nombre de su Service, que
@@ -412,6 +410,7 @@ def _spawn_k8s_worker(worker_id: str, enrollment_token: str):
             client.V1VolumeMount(name="key-volume", mount_path="/app/keys"),
             client.V1VolumeMount(name="tmp", mount_path="/tmp"),
             client.V1VolumeMount(name="rabbitmq-ca", mount_path="/etc/rabbitmq-ca", read_only=True),
+            client.V1VolumeMount(name="enroll", mount_path=ENROLL_TOKEN_DIR, read_only=True),
             client.V1VolumeMount(name="logs", mount_path="/var/log/voxchain"),
         ]
     )
@@ -454,6 +453,14 @@ def _spawn_k8s_worker(worker_id: str, enrollment_token: str):
                 client.V1Volume(
                     name="rabbitmq-ca",
                     secret=client.V1SecretVolumeSource(secret_name="rabbitmq-ca")
+                ),
+                # Un archivo por slot: `enrollment-token` y, mientras el minero
+                # coordina un equipo, `enrollment-token-replica`. Sin `items`:
+                # un slot que no existe es un archivo que no está, no un error.
+                client.V1Volume(
+                    name="enroll",
+                    secret=client.V1SecretVolumeSource(secret_name=secret_name,
+                                                       default_mode=0o440)
                 ),
                 client.V1Volume(
                     name="logs",
@@ -559,6 +566,59 @@ def scale_k8s_coordinator(worker_id: str, replicas: int, redis_client) -> bool:
                        deployment_name, replicas, e)
         return False
     logger.info("minero %s: %d réplica(s)", worker_id, replicas)
+    return True
+
+
+def reissue_enrollment_token(redis_client, worker_id: str) -> bool:
+    """Deja un token nuevo en el Secret de un minero cuyo pod no pudo enrolarse.
+
+    **El problema.** Los tokens de enrolamiento son de un solo uso y vencen a los
+    `ENROLL_TOKEN_TTL` segundos. Un pod que **reemplaza** a otro —se cayó el
+    nodo, hubo una evicción, se reinició el pod entero— arranca con los tokens
+    que dejó el alta, ya gastados o vencidos, y queda sin dueño: mina, pero el
+    NCT no puede atribuir sus bloques a nadie ni aplicarle la regla 3.4 (el
+    autor no gana su propia ley). Con la réplica del coordinador es lo esperable,
+    no un caso raro.
+
+    **La solución.** El pod monta el Secret como volumen, que Kubernetes
+    actualiza en pods que ya corren, y reintenta el enrolamiento releyéndolo.
+    Cuando el API le rechaza un token, llama acá, y esto deja uno nuevo en el
+    Secret. En uno o dos minutos el archivo cambia en el pod y el reintento pasa.
+
+    **Por qué no le da nada a quien no debe.** El token nuevo aterriza en el
+    Secret, no en la respuesta: usarlo exige poder leer el Secret, exactamente
+    como el del alta. Quien no pueda, a lo sumo provoca que se emita uno que no
+    puede ver. Y no se emite si ya hay uno vigente en cualquiera de los dos
+    slots —puede ser el que el pod todavía no terminó de recibir—, así que es
+    como mucho un token cada `ENROLL_TOKEN_TTL` por minero.
+
+    Sólo aplica a mineros con Deployment nuestro en Kubernetes: a uno levantado
+    a mano no tenemos dónde dejarle el token, y el del compose local lo relanza
+    `reconcile_docker_workers` con un token nuevo. Devuelve si emitió.
+    """
+    if not K8S_ENABLED:
+        return False
+    if redis_client.exists(ENROLL_REPLICA_KEY.format(worker_id=worker_id)):
+        return False
+    slug = _k8s_slug(worker_id)
+    try:
+        client.AppsV1Api().read_namespaced_deployment(
+            name=f"worker-dep-{slug}", namespace=NAMESPACE)
+    except Exception:  # noqa: BLE001
+        return False
+    token = _issue_enrollment_token(redis_client, worker_id, only_if_free=True)
+    if not token:
+        return False
+    try:
+        client.CoreV1Api().patch_namespaced_secret(
+            name=f"secret-{slug}", namespace=NAMESPACE,
+            body={"stringData": {"enrollment-token": token}})
+    except Exception as e:  # noqa: BLE001
+        redis_client.delete(ENROLL_KEY.format(worker_id=worker_id))
+        logger.warning("no se pudo reponer el token de enrolamiento de %s: %s",
+                       worker_id, e)
+        return False
+    logger.info("minero %s: token de enrolamiento repuesto en su Secret", worker_id)
     return True
 
 
@@ -1395,7 +1455,14 @@ async def enroll_node(
         return {"ok": True, "worker_id": worker_id, "owner_pubkey": owner}
 
     if not _consume_enrollment_token(redis_client, worker_id, request.enrollment_token):
-        raise HTTPException(status_code=401, detail="Enrollment token inválido o ya usado")
+        # El pod que reemplaza a otro llega acá con tokens ya gastados. Se le
+        # deja uno nuevo en su Secret y él lo levanta en su próximo reintento
+        # (ver `reissue_enrollment_token`).
+        repuesto = reissue_enrollment_token(redis_client, worker_id)
+        raise HTTPException(
+            status_code=401,
+            detail="Enrollment token inválido o ya usado"
+                   + ("; se dejó uno nuevo en el Secret del minero" if repuesto else ""))
 
     # El vínculo se **agrega**, no reemplaza al anterior. Con réplicas del
     # coordinador hay dos pods vivos del mismo minero, cada uno con su clave:

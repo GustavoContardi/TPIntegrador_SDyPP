@@ -26,7 +26,7 @@ from common.logging_setup import setup_logging
 from common.messaging import build_rabbitmq
 from common.redis import create_redis
 from worker_pkg.admin_server import start_admin_server
-from worker_pkg.identity import WorkerSigner, enroll
+from worker_pkg.identity import WorkerSigner, enroll, enroll_until_bound
 from worker_pkg.miner import gpu_usable, run_miner, ultimo_hashrate
 from worker_pkg.pool_worker import PoolWorker
 from worker_pkg.pool_coordinator import PoolCoordinator
@@ -576,7 +576,14 @@ def main() -> None:
     signer = WorkerSigner.from_env()
     # Vincula la identidad recién generada con el ciudadano que registró este
     # minero. Best-effort a propósito: sin enrolar el worker mina igual.
-    enroll(worker_id, signer)
+    if not enroll(worker_id, signer) and signer.enabled \
+            and os.getenv("WORKER_ENROLL_TOKEN_DIR"):
+        # Los tokens vienen de un volumen que puede cambiar con el pod vivo: el
+        # pod que reemplaza a otro arranca con tokens gastados, el API le repone
+        # uno en el Secret, y esto lo levanta. En un hilo aparte para no
+        # demorar el arranque: mientras tanto el minero mina igual.
+        threading.Thread(target=enroll_until_bound, args=(worker_id, signer),
+                         daemon=True, name="enroll-retry").start()
     if mode == "pool-auto":
         pool_url = os.getenv("POOL_COORDINATOR_URL",
                              f"http://{worker_id}:{int(os.getenv('POOL_HTTP_PORT', '9001'))}")

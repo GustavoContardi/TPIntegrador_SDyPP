@@ -156,16 +156,25 @@ def test_la_baja_borra_tambien_el_service(cluster):
 # -- réplica en espera del coordinador de un equipo ---------------------------
 
 
-def test_el_pod_lee_un_segundo_token_opcional_para_la_replica(cluster):
+def test_los_tokens_llegan_por_volumen_y_no_por_entorno(cluster):
+    # Una variable de entorno se fija al arrancar el contenedor; el volumen,
+    # Kubernetes lo actualiza en el pod vivo. Sin eso, un pod que reemplaza a
+    # otro no podría recibir el token que le repone el API.
     _core, apps = cluster()
     workers._spawn_k8s_worker("worker-1", "token")
-    contenedor = apps.deployments[0].spec.template.spec.containers[0]
-    replica = next(e for e in contenedor.env if e.name == "WORKER_ENROLL_TOKEN_REPLICA")
-    ref = replica.value_from.secret_key_ref
-    assert ref.key == "enrollment-token-replica"
-    # Opcional: sólo existe mientras el minero coordina un equipo. Sin esto el
-    # pod de cualquier minero no arrancaría (CreateContainerConfigError).
-    assert ref.optional is True
+    pod = apps.deployments[0].spec.template.spec
+    contenedor = pod.containers[0]
+    env = {e.name: e for e in contenedor.env}
+    assert "WORKER_ENROLL_TOKEN" not in env
+    assert env["WORKER_ENROLL_TOKEN_DIR"].value == workers.ENROLL_TOKEN_DIR
+
+    [volumen] = [v for v in pod.volumes if v.name == "enroll"]
+    assert volumen.secret.secret_name == "secret-worker-1"
+    # Sin `items`: el slot de la réplica sólo existe mientras el minero
+    # coordina, y un archivo que falta no puede impedir que el pod arranque.
+    assert volumen.secret.items is None
+    [montaje] = [m for m in contenedor.volume_mounts if m.name == "enroll"]
+    assert montaje.mount_path == workers.ENROLL_TOKEN_DIR and montaje.read_only
 
 
 def test_las_replicas_prefieren_nodos_distintos(cluster):
@@ -216,3 +225,57 @@ def test_un_minero_sin_deployment_nuestro_no_se_toca(cluster):
     assert apps.escalas == []
     assert not r.exists("worker:enroll:worker-1:replica")
     assert r.get("worker:enroll:worker-1") == "digest-del-alta"
+
+
+# -- reposición del token para un pod que reemplaza a otro --------------------
+
+
+def _redis():
+    import fakeredis
+    return fakeredis.FakeRedis(decode_responses=True)
+
+
+def test_sin_token_vigente_se_repone_uno_en_el_secret(cluster):
+    r = _redis()
+    core, _apps = cluster()
+    assert workers.reissue_enrollment_token(r, "worker-1") is True
+
+    [(secreto, cuerpo)] = core.parches
+    assert secreto == "secret-worker-1"
+    token = cuerpo["stringData"]["enrollment-token"]
+    # El token va al Secret, no a quien preguntó; y en Redis queda su hash.
+    assert workers._consume_enrollment_token(r, "worker-1", token)
+
+
+@pytest.mark.parametrize("slot", ["worker:enroll:worker-1",
+                                  "worker:enroll:worker-1:replica"])
+def test_con_un_token_vigente_no_se_emite_otro(cluster, slot):
+    # Puede ser el que el pod todavía no terminó de recibir en su volumen.
+    # También acota el abuso: un token cada ENROLL_TOKEN_TTL por minero.
+    r = _redis()
+    r.set(slot, "digest-pendiente")
+    core, _apps = cluster()
+    assert workers.reissue_enrollment_token(r, "worker-1") is False
+    assert getattr(core, "parches", []) == []
+    assert r.get(slot) == "digest-pendiente"
+
+
+def test_a_un_minero_sin_deployment_nuestro_no_se_le_repone(cluster):
+    # Levantado a mano: no hay Secret donde dejarle nada.
+    r = _redis()
+    core, _apps = cluster(existe=False)
+    assert workers.reissue_enrollment_token(r, "worker-1") is False
+    assert not r.exists("worker:enroll:worker-1")
+
+
+def test_si_no_se_puede_escribir_el_secret_no_queda_un_token_huerfano(cluster):
+    r = _redis()
+    core, _apps = cluster()
+
+    def falla(**_kw):
+        raise ErrorDeApi(403)
+
+    core.patch_namespaced_secret = falla
+    assert workers.reissue_enrollment_token(r, "worker-1") is False
+    # Si quedara en Redis bloquearía la próxima reposición durante todo su TTL.
+    assert not r.exists("worker:enroll:worker-1")

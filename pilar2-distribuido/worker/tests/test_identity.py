@@ -178,3 +178,70 @@ class TestEnrolamiento:
         assert enroll("minero-7", signer) is False
         # 404 = el minero no está registrado: el otro token no lo cambia.
         assert len(intentos) == 1
+
+
+class TestTokensDelVolumen:
+    """En los pods que despliega el API los tokens llegan como archivos.
+
+    El Secret montado como volumen se actualiza con el pod vivo; una variable de
+    entorno, no. Es lo que deja enrolarse a un pod que reemplaza a otro.
+    """
+
+    def test_lee_los_dos_archivos_y_los_prefiere_al_entorno(self, tmp_path, monkeypatch):
+        from worker_pkg.identity import enrollment_tokens
+
+        (tmp_path / "enrollment-token").write_text("del-volumen\n")
+        (tmp_path / "enrollment-token-replica").write_text("de-la-replica")
+        monkeypatch.setenv("WORKER_ENROLL_TOKEN_DIR", str(tmp_path))
+        monkeypatch.setenv("WORKER_ENROLL_TOKEN", "del-entorno")
+        monkeypatch.delenv("WORKER_ENROLL_TOKEN_REPLICA", raising=False)
+        assert enrollment_tokens() == ["del-volumen", "de-la-replica", "del-entorno"]
+
+    def test_un_archivo_que_falta_no_es_un_error(self, tmp_path, monkeypatch):
+        from worker_pkg.identity import enrollment_tokens
+
+        (tmp_path / "enrollment-token").write_text("unico")
+        monkeypatch.setenv("WORKER_ENROLL_TOKEN_DIR", str(tmp_path))
+        monkeypatch.delenv("WORKER_ENROLL_TOKEN", raising=False)
+        monkeypatch.delenv("WORKER_ENROLL_TOKEN_REPLICA", raising=False)
+        assert enrollment_tokens() == ["unico"]
+
+    def test_relee_el_volumen_en_cada_llamada(self, tmp_path, monkeypatch):
+        # El API repone el token con el pod corriendo: leerlo una sola vez al
+        # arrancar sería volver al problema de la variable de entorno.
+        from worker_pkg.identity import enrollment_tokens
+
+        archivo = tmp_path / "enrollment-token"
+        archivo.write_text("gastado")
+        monkeypatch.setenv("WORKER_ENROLL_TOKEN_DIR", str(tmp_path))
+        monkeypatch.delenv("WORKER_ENROLL_TOKEN", raising=False)
+        monkeypatch.delenv("WORKER_ENROLL_TOKEN_REPLICA", raising=False)
+        assert enrollment_tokens() == ["gastado"]
+        archivo.write_text("repuesto")
+        assert enrollment_tokens() == ["repuesto"]
+
+    def test_reintenta_hasta_quedar_enrolado(self, tmp_path, monkeypatch):
+        import threading
+
+        from worker_pkg import identity
+
+        intentos = []
+        # Falla dos veces (tokens gastados, el nuevo todavía no llegó) y a la
+        # tercera pasa.
+        monkeypatch.setattr(identity, "enroll",
+                            lambda *_a: intentos.append(1) or len(intentos) >= 3)
+        signer = WorkerSigner(str(tmp_path / "node-key.pem"))
+        assert identity.enroll_until_bound("minero-7", signer, first_wait=0.01,
+                                           max_wait=0.02) is True
+        assert len(intentos) == 3
+
+    def test_se_puede_cortar_el_ciclo(self, tmp_path, monkeypatch):
+        import threading
+
+        from worker_pkg import identity
+
+        monkeypatch.setattr(identity, "enroll", lambda *_a: False)
+        signer = WorkerSigner(str(tmp_path / "node-key.pem"))
+        stop = threading.Event()
+        stop.set()
+        assert identity.enroll_until_bound("minero-7", signer, stop=stop) is False

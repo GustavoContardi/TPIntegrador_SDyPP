@@ -142,6 +142,8 @@ Un token filtrado permite, como máximo, ocupar el slot de nodo de ese minero du
 
 Un minero puede tener **más de una** identidad de nodo a la vez: el coordinador de un equipo corre en dos pods (4.2), cada uno con su par. Por eso hay dos tokens (el del pod original y el de la réplica, que se emite al fundar el equipo) y el vínculo `node:owner` se agrega en vez de reemplazarse; se borran todos al re-registrar o dar de baja el minero. Un nodo ya vinculado que se vuelve a enrolar (el contenedor que se reinicia dentro de su pod) no gasta token.
 
+Un pod que **reemplaza** a otro arranca con tokens ya gastados. Para él, los tokens llegan como archivos del Secret montado (Kubernetes los actualiza con el pod vivo): al rechazarle el token, el API deja uno nuevo en el Secret si no hay otro vigente, y el worker lo levanta al reintentar. El token nunca viaja en la respuesta: usarlo sigue exigiendo poder leer el Secret, que es la misma garantía que el token del alta.
+
 **Consecuencia para las reglas de gobierno:** `winning_node_or_pool` es la pubkey del **nodo**, no la del ciudadano. Toda regla que hable del ciudadano (3.4: el autor no gana su propia ventana) tiene que resolver nodo → dueño con `owner_of_node` antes de comparar. Un nodo sin vincular se representa a sí mismo: mina y gana válidamente, pero su bloque no se le imputa a ningún ciudadano.
 
 ### 3.2 Ciclo de vida de una ley

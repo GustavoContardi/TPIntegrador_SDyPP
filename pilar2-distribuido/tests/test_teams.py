@@ -1479,3 +1479,56 @@ class TestReplicaDelCoordinador:
         for nodo in nodos:
             assert r.get(f"node:owner:{nodo}") is None
         assert not r.exists(f"worker:node_pubkeys:{alta['worker_id']}")
+
+
+class TestPodQueReemplazaAOtro:
+    """Un pod que reemplaza a otro arranca con tokens gastados.
+
+    El API le rechaza el token y, en el mismo rechazo, le deja uno nuevo en su
+    Secret (``reissue_enrollment_token``); el worker lo levanta del volumen al
+    reintentar. Acá se prueba el cableado del endpoint; la reposición en sí está
+    en ``test_k8s_service.py``.
+    """
+
+    @pytest.fixture
+    def alta(self, r, monkeypatch):
+        from voxchain_api.routers import workers as workers_router
+        monkeypatch.setattr(workers_router, "K8S_ENABLED", False)
+        yo = _Identidad()
+        resp = workers_router.persist_worker_registration(yo.registro("coord-rep"), r)
+        return {"worker_id": "coord-rep", "token": resp["enrollment_token"]}
+
+    def test_el_rechazo_pide_reponer_el_token(self, api, r, alta, monkeypatch):
+        from voxchain_api.routers import workers as workers_router
+
+        pedidos = []
+        monkeypatch.setattr(workers_router, "reissue_enrollment_token",
+                            lambda _r, wid: pedidos.append(wid) or True)
+        primero = api.post("/api/workers/enroll", json={
+            "worker_id": alta["worker_id"], "node_pubkey": _pubkey_valida(),
+            "enrollment_token": alta["token"]})
+        assert primero.status_code == 200
+
+        # El pod de reemplazo: otra clave, el mismo token (ya gastado).
+        resp = api.post("/api/workers/enroll", json={
+            "worker_id": alta["worker_id"], "node_pubkey": _pubkey_valida(),
+            "enrollment_token": alta["token"]})
+        assert resp.status_code == 401
+        assert pedidos == [alta["worker_id"]]
+        assert "Secret" in resp.json()["detail"]
+
+    def test_un_pedido_invalido_no_repone_nada(self, api, r, alta, monkeypatch):
+        # Una pubkey inválida o un minero inexistente no llegan a pedir token:
+        # no tiene sentido escribir en un Secret por un pedido que no prospera.
+        from voxchain_api.routers import workers as workers_router
+
+        pedidos = []
+        monkeypatch.setattr(workers_router, "reissue_enrollment_token",
+                            lambda _r, wid: pedidos.append(wid) or True)
+        api.post("/api/workers/enroll", json={
+            "worker_id": alta["worker_id"], "node_pubkey": "no-es-una-clave",
+            "enrollment_token": "x"})
+        api.post("/api/workers/enroll", json={
+            "worker_id": "no-existe", "node_pubkey": _pubkey_valida(),
+            "enrollment_token": "x"})
+        assert pedidos == []

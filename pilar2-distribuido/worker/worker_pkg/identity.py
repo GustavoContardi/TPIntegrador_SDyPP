@@ -18,6 +18,11 @@ Configuración:
   genera uno nuevo ahí. Sin la variable, el worker corre sin identidad y publica
   su ``worker_id`` textual como ``winning_node_or_pool``, como siempre.
 - ``WORKER_ENROLL_TOKEN`` + ``VOXCHAIN_API_URL``: para enrolar la pubkey.
+- ``WORKER_ENROLL_TOKEN_DIR``: directorio con los tokens como archivos (el Secret
+  del minero montado como volumen, en los pods que despliega el API). Tiene
+  prioridad sobre las variables y, a diferencia de ellas, cambia con el pod
+  vivo: por eso con este directorio el worker reintenta el enrolamiento hasta
+  lograrlo (``enroll_until_bound``).
 """
 
 from __future__ import annotations
@@ -90,6 +95,58 @@ def _load_or_create(path: str):
     return key
 
 
+# Archivos del Secret montado, en el orden en que se prueban.
+_TOKEN_FILES = ("enrollment-token", "enrollment-token-replica")
+
+
+def enrollment_tokens() -> list[str]:
+    """Tokens de enrolamiento disponibles ahora, sin repetir.
+
+    Primero los archivos de ``WORKER_ENROLL_TOKEN_DIR`` —se releen en cada
+    llamada, porque el API puede reponer un token con el pod corriendo— y
+    después las variables de entorno, que es como llegan en los despliegues
+    viejos y en un minero levantado a mano.
+    """
+    tokens: list[str] = []
+    directorio = os.getenv("WORKER_ENROLL_TOKEN_DIR", "")
+    if directorio:
+        for nombre in _TOKEN_FILES:
+            try:
+                with open(os.path.join(directorio, nombre), encoding="utf-8") as fh:
+                    tokens.append(fh.read().strip())
+            except OSError:
+                continue
+    tokens += [os.getenv("WORKER_ENROLL_TOKEN", ""),
+               os.getenv("WORKER_ENROLL_TOKEN_REPLICA", "")]
+    return list(dict.fromkeys(t for t in tokens if t))
+
+
+def enroll_until_bound(worker_id: str, signer: WorkerSigner, *,
+                       first_wait: float = 30.0, max_wait: float = 600.0,
+                       stop=None) -> bool:
+    """Reintenta el enrolamiento hasta que quede vinculado, con espera creciente.
+
+    Es el camino del pod que **reemplaza** a otro: arranca con los tokens que
+    dejó el alta, ya gastados, y el primer intento da 401. Ese rechazo hace que
+    el API le deje un token nuevo en su Secret; Kubernetes actualiza el archivo
+    montado en uno o dos minutos, y el reintento siguiente lo encuentra.
+
+    La espera se duplica en cada fallo hasta ``max_wait``: si el minero se dio
+    de baja, el API va a contestar 404 para siempre y no tiene sentido
+    preguntarle cada 30 s. ``stop`` es un ``threading.Event`` opcional para
+    cortar el ciclo (los tests; en producción el hilo muere con el proceso).
+    """
+    import threading
+
+    stop = stop or threading.Event()
+    espera = first_wait
+    while not stop.wait(espera):
+        if enroll(worker_id, signer):
+            return True
+        espera = min(espera * 2, max_wait)
+    return False
+
+
 def enroll(worker_id: str, signer: WorkerSigner) -> bool:
     """Publica la pubkey del nodo y la vincula al ciudadano dueño del minero.
 
@@ -103,8 +160,7 @@ def enroll(worker_id: str, signer: WorkerSigner) -> bool:
     uno en espera): cada token sirve una sola vez, así que se prueban en orden y
     el primero que el API rechaza por usado deja paso al siguiente.
     """
-    tokens = [t for t in (os.getenv("WORKER_ENROLL_TOKEN", ""),
-                          os.getenv("WORKER_ENROLL_TOKEN_REPLICA", "")) if t]
+    tokens = enrollment_tokens()
     api = os.getenv("VOXCHAIN_API_URL", "").rstrip("/")
     if not (signer.enabled and tokens and api):
         if signer.enabled and not tokens:
