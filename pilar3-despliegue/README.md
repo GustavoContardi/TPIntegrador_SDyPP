@@ -43,8 +43,12 @@ Diagrama completo: [`docs/diagrams/arquitecturaVoxChain.jpeg`](../docs/diagrams/
 
 ## Guía de setup paso a paso
 
-> Los pasos 2 a 8 son lo que hacen los pipelines de `.github/workflows/`. La
-> guía manual sirve para entenderlos o para un entorno sin CI.
+> Los pasos 1, 2 y 4 son manuales, una vez por entorno. El 3 lo hace `01-infra`
+> desde el segundo despliegue (el primero es local), y los pasos 5 a 7 los hacen
+> los pipelines `02`–`04` de `.github/workflows/`. La guía manual sirve para
+> entenderlos o para un entorno sin CI. La bitácora de un despliegue real, con
+> los problemas que aparecieron, está en
+> [`docs/informe/despliegue-gcp.md`](../docs/informe/despliegue-gcp.md).
 
 ### Paso 1: Certs TLS autofirmados
 
@@ -60,36 +64,79 @@ Esto genera:
 Detalle completo (SANs, qué se versiona y qué no, cómo validan los workers
 contra la IP del LoadBalancer, limitaciones): **[`certs/README.md`](certs/README.md)**.
 
-### Paso 2: Subir los secretos a GCP Secret Manager
+### Paso 2: Bootstrap del entorno (secretos, bucket e IP)
 
 ```bash
-./kubernetes/scripts/bootstrap-secrets.sh            # crea los 7 secretos
+./kubernetes/scripts/bootstrap-secrets.sh            # reusa las contraseñas que ya existan
 ./kubernetes/scripts/bootstrap-secrets.sh --rotate   # regenera las contraseñas
 ```
 
-Crea `rabbitmq-user`, `rabbitmq-pass`, `rabbitmq-erlang-cookie`,
-`rabbitmq-tls-crt`, `rabbitmq-tls-key`, `rabbitmq-ca-crt` y `redis-pass`, que son
-los que leen los `ExternalSecret` de `kubernetes/infrastructure/`. Si faltan los
-certificados, los genera con el script del paso 1. Se corre **una vez por
-entorno**, a mano: para que lo hiciera el CI, la clave privada de la CA y las
-contraseñas tendrían que vivir en el CI, y eso contradice *zero static keys*. El
-pipeline `02` verifica que estén y falla con un mensaje claro si falta alguno.
+Deja listo todo lo que tiene que existir **antes** del primer `tofu init` y
+sobrevivir a un `tofu destroy`:
+
+- **8 secretos en Secret Manager.** `rabbitmq-user`, `rabbitmq-pass`,
+  `rabbitmq-erlang-cookie`, `rabbitmq-tls-crt`, `rabbitmq-tls-key`,
+  `rabbitmq-ca-crt` y `redis-pass` son los que leen los `ExternalSecret` de
+  `kubernetes/infrastructure/`. `grafana-admin-password` lo consume OpenTofu
+  (paso 3) y el secret `GRAFANA_ADMIN_PASSWORD` de `01-infra`.
+- **Bucket del estado de OpenTofu** (`gs://voxchain-unlu-tfstate`, con
+  versionado).
+- **IP estática del Ingress** (`voxchain-ingress-ip`, hoy `35.199.68.144`). De
+  ella sale el host `voxchain.<IP>.sslip.io`, y con él el certificado, la URL de
+  Grafana y el `rpId` de las passkeys. Si la IP cambiara, las passkeys
+  registradas dejarían de servir. Terraform sólo la lee. Mientras el clúster
+  está apagado cuesta unos US$7 por mes.
+
+Si en `certs/` no están los `*.pem`, genera una CA nueva con el script del paso
+1. La clave privada de la CA no se versiona, así que en otra máquina eso
+significa una CA nueva: hay que actualizar el secret `RABBITMQ_CA_CERT` (paso 4)
+y volver a correr `04`.
+
+Se corre **una vez por entorno**, a mano: para que lo hiciera el CI, la clave
+privada de la CA y las contraseñas tendrían que vivir en el CI, y eso contradice
+*zero static keys*. El pipeline `02` verifica que los secretos estén y falla con
+un mensaje claro si falta alguno.
+
+Después de `--rotate`, la versión anterior de cada secreto sigue siendo legible.
+Para revocarla (es reversible, a diferencia de `destroy`):
+
+```bash
+gcloud secrets versions disable <versión> --secret <nombre> --project voxchain-unlu
+```
 
 ### Paso 3: OpenTofu — crear el clúster GKE
 
 ```bash
 cd terraform/gke
 cp terraform.tfvars.example terraform.tfvars   # revisar project_id y github_repository
-export TF_VAR_grafana_admin_password='...'     # sin default, a propósito
+# sin default, a propósito: se lee de Secret Manager y no queda en el historial
+export TF_VAR_grafana_admin_password="$(gcloud secrets versions access latest --secret grafana-admin-password --project voxchain-unlu)"
 tofu init
-tofu plan
-tofu apply   # ~15 min
+tofu plan -out=plan.out
+tofu apply plan.out   # ~15 min
+rm plan.out           # guarda la contraseña de Grafana en texto plano
 ```
 
-Crea VPC, clúster GKE **zonal** (`southamerica-east1-a`), node pools `infra`
-(1→2, con taint) y `apps` (2→3), Artifact Registry, Workload Identity
-Federation para GitHub Actions, las service accounts, y por Helm: External
-Secrets Operator, kube-prometheus-stack, ingress-nginx y cert-manager.
+Crea:
+
+- La VPC y el clúster GKE **zonal** (`southamerica-east1-a`) con Dataplane V2.
+- Los node pools `infra` (1→2, con taint) y `apps` (2→3).
+- Artifact Registry y Workload Identity Federation para GitHub Actions.
+- Las service accounts. La de los nodos lleva
+  `roles/container.defaultNodeServiceAccount`: sin ese rol, Cloud Logging
+  rechaza los logs.
+- Por Helm: External Secrets Operator, kube-prometheus-stack, ingress-nginx
+  (con la IP del paso 2) y cert-manager.
+- El namespace `voxchain`, más un RoleBinding que le da a la SA de CI el
+  ClusterRole `admin` **sólo en ese namespace**. `roles/container.developer` no
+  incluye RBAC, y sin esto `02` no puede crear el Role de peer discovery de
+  RabbitMQ (ver [Decisiones de diseño](#decisiones-de-diseño)).
+
+> **Migrar un clúster donde `voxchain` ya existe:** si el namespace se creó
+> antes con `kubectl` (por ejemplo, lo creó el pipeline `02`), hay que
+> importarlo antes del `apply`, o fallará con "already exists":
+> `tofu import kubernetes_namespace_v1.voxchain voxchain`. En un entorno nuevo
+> no hace falta.
 
 Grafana:
 - La contraseña del admin es la de `TF_VAR_grafana_admin_password`; no hay
@@ -98,8 +145,10 @@ Grafana:
   través del `ExternalName` de `monitoring/grafana-bridge-service.yaml`.
 - Tiene un PVC de 10 Gi para que los dashboards persistan.
 
-`tofu output` devuelve `workload_identity_provider` (para el paso 4),
-`artifact_registry` y `get_credentials` (el comando de kubectl).
+`tofu output` devuelve lo que se necesita para el paso 4
+(`workload_identity_provider` e `infra_service_account`), además de
+`artifact_registry`, `app_url`, `grafana_url`, `ingress_ip` y `get_credentials`
+(el comando de kubectl).
 
 > El estado de OpenTofu vive en `gs://voxchain-unlu-tfstate` (backend de
 > `versions.tf`), que crea el script del paso 2. Este primer `apply` tiene que
@@ -113,7 +162,7 @@ Grafana:
 | `GCP_WIF_PROVIDER` | `workload_identity_provider` de `tofu output` |
 | `GCP_SERVICE_ACCOUNT` | `voxchain-cicd@voxchain-unlu.iam.gserviceaccount.com` (pipelines 02-04) |
 | `GCP_INFRA_SERVICE_ACCOUNT` | `infra_service_account` de `tofu output` (sólo `01-infra`) |
-| `GRAFANA_ADMIN_PASSWORD` | la misma de `TF_VAR_grafana_admin_password` (la inyecta `01-infra`) |
+| `GRAFANA_ADMIN_PASSWORD` | `gcloud secrets versions access latest --secret grafana-admin-password --project voxchain-unlu` (la inyecta `01-infra`) |
 | `K3S_KUBECONFIG` | kubeconfig del clúster k3s, en base64 |
 | `RABBITMQ_USER` | `voxchain-worker` |
 | `RABBITMQ_PASS` | `gcloud secrets versions access latest --secret rabbitmq-pass --project voxchain-unlu` |
@@ -122,6 +171,13 @@ Grafana:
 Ninguno es una llave de GCP: los workflows se autentican por **Workload
 Identity Federation** (OIDC). La única credencial estática es el kubeconfig del
 k3s, porque es un clúster ajeno.
+
+Los valores sensibles se pasan con un pipe, para que no queden en pantalla ni
+en el historial de la shell:
+
+```bash
+gcloud secrets versions access latest --secret rabbitmq-pass --project voxchain-unlu | gh secret set RABBITMQ_PASS
+```
 
 Además, dos **variables** del repo (Settings → Secrets and variables → Actions →
 Variables):
@@ -161,10 +217,26 @@ kubectl get pods -n voxchain
 `02-services` además crea el secreto `k3s-kubeconfig`, que usa la API para dar de
 alta mineros en el k3s desde la web, y el usuario `voxchain-worker` en RabbitMQ.
 
-Los hosts del Ingress (`voxchain-ingress.yaml`) y el `GF_SERVER_ROOT_URL` de
-Grafana (`terraform/gke/main.tf`) llevan la IP del LoadBalancer de
-ingress-nginx en formato `sslip.io`. **Cambia en cada redespliegue** y hay que
-actualizar los dos.
+Los hosts del Ingress (`voxchain-ingress.yaml`), `WEBAUTHN_RP_IDS` y
+`WEBAUTHN_ORIGINS` (`voxchain-config.yaml`) y los ClusterIssuers llevan la IP
+estática del paso 2 en formato `sslip.io`. **No cambia al redesplegar**: sólo
+hay que tocarlos en un proyecto nuevo, o si se libera `voxchain-ingress-ip`. La
+URL de Grafana la arma Terraform a partir de la misma IP.
+
+Para verificar que RabbitMQ formó **un solo** clúster: si falla el peer
+discovery, los tres pods quedan `Ready` pero como tres brokers separados (pasó
+en el redespliegue de septiembre, ver
+[`despliegue-gcp.md` §8.7](../docs/informe/despliegue-gcp.md)):
+
+```bash
+kubectl exec -n voxchain rabbitmq-0 -- rabbitmqctl cluster_status   # 3 running nodes
+```
+
+Todo el despliegue se verifica desde afuera con:
+
+```bash
+curl https://voxchain.35.199.68.144.sslip.io/api/health
+```
 
 ### Paso 7: Desplegar los workers en el k3s
 
@@ -290,6 +362,16 @@ contra el cual autenticar; por eso `02`–`04` sólo corren por push si la varia
 - External Secrets Operator en GKE para sincronizar los secretos de GCP Secret
   Manager, por Workload Identity.
 - Workload Identity Federation para CI/CD (sin llaves estáticas de GCP).
+- **Permisos del CI acotados por namespace**: la SA `voxchain-cicd` tiene
+  `roles/container.developer` en IAM (todo el API de Kubernetes menos RBAC) y el
+  ClusterRole `admin` sólo en `voxchain`, vía un RoleBinding de Terraform. Así
+  puede crear los Roles de sus propias apps sin tener `container.admin` sobre
+  todo el clúster. La prevención de escalada de Kubernetes le impide otorgar
+  permisos que no tiene.
+- **IP del Ingress estática y fuera del estado de OpenTofu**: el host
+  `sslip.io` ata el certificado, Grafana y las passkeys. Si la IP fuera un
+  recurso de Terraform, `destroy` la liberaría. Con `prevent_destroy`, el
+  `destroy` fallaría.
 - **Autoscaling**: HPA por CPU al 70% (`api-hpa` 2→5; `worker-hpa` 2→10 y
   `pool-miner-hpa` 1→10 en el k3s) y Cluster Autoscaler de GKE sobre los node
   pools. No hay HPA por métricas específicas.
@@ -331,7 +413,9 @@ El colector centralizado es **Cloud Logging de GKE**, activo por defecto en el
 cluster: un agente Fluent Bit corre como DaemonSet gestionado en cada nodo y
 recolecta el stdout/stderr de **todos los pods de todas las réplicas** (API ×2,
 NCT ×2, RabbitMQ ×3, Redis ×3+3, frontend ×2, workers), lo etiqueta con
-namespace/pod/container y lo indexa en Logs Explorer de GCP.
+namespace/pod/container y lo indexa en Logs Explorer de GCP. Para que Cloud
+Logging acepte lo que manda el agente, la SA propia de los nodos necesita
+`roles/container.defaultNodeServiceAccount` (está en el Terraform).
 
 La capa de aplicación complementa esto desde `common/logging_setup.py`:
 

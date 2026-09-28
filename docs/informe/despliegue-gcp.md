@@ -1,9 +1,13 @@
 # Despliegue en GCP — Qué se hizo y por qué
 
-> Bitácora del despliegue del proyecto en Google Cloud (proyecto `voxchain-unlu`,
-> 2026-07-13). Documenta cada paso, el comando ejecutado y **la razón detrás**,
-> para poder explicarlo en la exposición. Complementa la guía genérica de
+> Bitácora del despliegue del proyecto en Google Cloud (proyecto `voxchain-unlu`).
+> Documenta cada paso, el comando ejecutado y **la razón detrás**, para poder
+> explicarlo en la exposición. Complementa la guía genérica de
 > `pilar3-despliegue/README.md` con los valores concretos de esta instalación.
+>
+> - §0–§7: primer despliegue, **2026-07-13**.
+> - §8: redespliegue desde cero, **2026-09-27/28**. Es el que está vivo: IP fija,
+>   pipelines 02/03 corriendo desde CI y los problemas que eso destapó.
 
 ---
 
@@ -173,6 +177,7 @@ El plan creó **21 recursos**:
    (challenge HTTP-01).
    - URL app: `https://voxchain.34.95.245.215.sslip.io`
    - URL Grafana: `https://grafana.voxchain.34.95.245.215.sslip.io`
+   - *Desde septiembre la IP es estática y estas URLs ya no valen (ver §8.3).*
 4. **Manifests aplicados** (namespace, cert-manager, infrastructure,
    applications, hpa, monitoring — incluido el PrometheusRule con las 5
    alertas propias). *Gotcha encontrado:* el `ClusterSecretStore` tenía el
@@ -232,7 +237,274 @@ https://grafana.voxchain.34.95.245.215.sslip.io  → HTTP 200
 
 `workers: unknown` es lo esperado hasta conectar el cluster k3s (paso 7.7).
 
-## 8. Resumen en una frase (para abrir la explicación)
+## 8. Redespliegue desde cero (2026-09-27/28)
+
+La infraestructura se había dado de baja tras el despliegue de agosto. Para la
+presentación se reconstruyó sobre el mismo proyecto, esta vez con los
+pipelines 02 y 03 corriendo desde GitHub Actions y no desde
+`scripts/deploy-manual.sh`. Eso destapó cuatro problemas que el despliegue
+manual escondía.
+
+### 8.1 Punto de partida
+
+| Pieza | Estado encontrado |
+|---|---|
+| Proyecto `voxchain-unlu` | Activo, pero con la **cuenta de facturación cerrada** (`open: false`): el free trial había terminado. Se reactivó a mano como cuenta paga. |
+| Recursos | Ninguno: sin clúster, bucket, discos, IPs ni pool de WIF de GitHub. Sólo quedaban los 7 secretos de agosto en Secret Manager. |
+| Certificados | La clave privada de la CA no estaba en ningún lado, y el `certs/ca.crt` del repo **no coincidía** con el `rabbitmq-ca-crt` de Secret Manager. |
+| GitHub Secrets | Los de julio, apuntando a un WIF inexistente. Faltaban `GCP_INFRA_SERVICE_ACCOUNT` y `GRAFANA_ADMIN_PASSWORD`. |
+| k3s | Inalcanzable: `181.229.77.252:19500` da timeout. La IP resuelve a una conexión de cable hogareña (`*.cab.prima.com.ar`), probablemente con IP dinámica. Consultado a la cátedra. |
+
+Herramientas agregadas en la máquina local: OpenTofu 1.12, Helm 4 y
+`gke-gcloud-auth-plugin` (con gcloud de Homebrew queda fuera del `PATH`: hay
+que enlazarlo a mano en `/opt/homebrew/bin`).
+
+### 8.2 Bootstrap con rotación
+
+```bash
+./pilar3-despliegue/kubernetes/scripts/bootstrap-secrets.sh --rotate
+```
+
+- **CA nueva**: sin la clave privada, la CA vieja no podía firmar nada más.
+  `generate-certs.sh` genera CA y certificado del servidor. Los `*.pem` están en
+  `.gitignore`; sólo `ca.crt` (público) se versiona.
+- **Contraseñas rotadas**: RabbitMQ, cookie de Erlang y Redis. Además se
+  agrega `grafana-admin-password` (antes se creaba a mano).
+- **Versiones viejas deshabilitadas**: rotar agrega una versión, pero la
+  anterior sigue legible. Se deshabilitó la versión 1 de cada secreto con
+  `gcloud secrets versions disable 1 --secret <nombre>`, que es reversible, a
+  diferencia de `destroy`.
+- **Bucket del estado de OpenTofu** (`gs://voxchain-unlu-tfstate`, con
+  versionado).
+
+### 8.3 IP estática del Ingress
+
+**Problema:** el host público es `voxchain.<IP>.sslip.io`, y la IP del
+LoadBalancer de ingress-nginx era efímera: cambiaba en cada `destroy` +
+`apply`. Estaba escrita a mano en 6 archivos, con **tres IPs distintas entre
+sí** (restos de despliegues anteriores). Además, del host dependen:
+
+- el certificado de Let's Encrypt,
+- la URL de Grafana,
+- el `rpId` de las **passkeys**: una passkey queda atada al dominio con el que
+  se creó, así que un host nuevo invalida todas las identidades registradas
+  con passkey.
+
+**Solución:** `bootstrap-secrets.sh` reserva una IP regional
+(`voxchain-ingress-ip` = **`35.199.68.144`**) y Terraform sólo la lee:
+
+```hcl
+data "google_compute_address" "ingress" {
+  name   = "voxchain-ingress-ip"
+  region = var.region
+}
+# ingress-nginx: controller.service.loadBalancerIP = esa IP
+# Grafana:       grafana.ini.server.root_url = https://grafana.voxchain.<IP>.sslip.io
+```
+
+**Por qué fuera del estado de OpenTofu:** si la IP fuera un recurso de
+Terraform, `tofu destroy` la liberaría y volveríamos al problema. Con
+`lifecycle { prevent_destroy = true }` el `destroy` completo fallaría. Como el
+bucket, es un recurso "de entorno" que vive más que el clúster.
+
+**Costo:** una IP reservada sin usar sale unos US$7 por mes. Es el precio de que
+las URLs, el certificado y las passkeys sobrevivan a apagar el clúster.
+
+Las IPs de RabbitMQ y Redis siguen siendo efímeras a propósito: sólo las
+consume el pipeline 04, que las lee del Service en cada corrida.
+
+### 8.4 OpenTofu: dos arreglos antes del apply
+
+Revisando `main.tf` antes de aplicar aparecieron dos configuraciones que se
+ignoraban en silencio:
+
+1. **Los nodos no podían escribir logs.** La SA propia de los nodos sólo tenía
+   `artifactregistry.reader`. GKE exige `roles/container.defaultNodeServiceAccount`
+   (escribir logs y métricas) cuando no se usa la SA por defecto de Compute.
+   Sin ese rol, el Fluent Bit gestionado recolecta, pero Cloud Logging rechaza
+   la escritura: la "plataforma de logging" del checklist quedaba vacía.
+2. **La URL de Grafana no se aplicaba.** Iba como
+   `grafana.extraEnvVars.GF_SERVER_ROOT_URL`, una clave que el chart de Grafana
+   no conoce. Pasó a `grafana.ini.server.root_url`.
+
+```bash
+cd pilar3-despliegue/terraform/gke
+tofu init
+TF_VAR_grafana_admin_password="$(gcloud secrets versions access latest --secret grafana-admin-password)" \
+  tofu plan -out=plan.out     # 31 to add, 0 to change, 0 to destroy
+tofu apply plan.out
+rm plan.out                   # el plan guarda la contraseña de Grafana en claro
+```
+
+Resultado: GKE 1.35, 2 nodos `apps` + 1 `infra` (con el taint `pool`),
+Dataplane V2 activo (pods de Cilium) y las 4 releases de Helm desplegadas.
+
+### 8.5 Secretos de GitHub y primer push
+
+Los valores sensibles pasan de Secret Manager a `gh` por un pipe, sin quedar en
+pantalla ni en el historial de la shell:
+
+```bash
+gcloud secrets versions access latest --secret rabbitmq-pass | gh secret set RABBITMQ_PASS
+```
+
+| Secret / variable | Valor |
+|---|---|
+| `GCP_WIF_PROVIDER` | `tofu output -raw workload_identity_provider` |
+| `GCP_SERVICE_ACCOUNT` | `voxchain-cicd@voxchain-unlu.iam.gserviceaccount.com` |
+| `GCP_INFRA_SERVICE_ACCOUNT` | `tofu output -raw infra_service_account` |
+| `GRAFANA_ADMIN_PASSWORD`, `RABBITMQ_PASS` | desde Secret Manager |
+| `RABBITMQ_USER` | `voxchain-worker` (no el admin) |
+| `RABBITMQ_CA_CERT` | `certs/ca.crt` |
+| `CLOUD_ENABLED` (variable) | `true`: los push vuelven a disparar 02/03 |
+
+**Por qué hace falta un push para desplegar:** el runner de Actions arranca
+vacío y hace `checkout` del repo. Lo que no está commiteado no existe para él.
+Es intencional: lo desplegado es siempre un commit concreto (las imágenes
+llevan su SHA), y nada depende del disco de alguien. Es lo opuesto a lo que
+pasó en julio (§7.1).
+
+Resultado del primer push: **03 en verde** (5 imágenes buildeadas en paralelo y
+apps desplegadas), **02 en rojo** y **gitleaks en rojo**.
+
+### 8.6 El CI no podía crear RBAC
+
+```
+roles.rbac.authorization.k8s.io is forbidden: User "voxchain-cicd@..." cannot
+create resource "roles" ... requires one of ["container.roles.create"]
+```
+
+**Causa:** la SA de CI tiene `roles/container.developer`, que da acceso a casi
+todo el API de Kubernetes **excepto RBAC**. `rabbitmq-rbac.yaml` nunca se había
+aplicado desde un pipeline: en los despliegues anteriores lo aplicaba a mano
+el owner del proyecto.
+
+**Alternativas descartadas:**
+
+- `roles/container.admin` para la SA de CI: le daría control de todo el clúster.
+- Un rol IAM propio con `container.roles.*`: vale para todo el proyecto, no
+  para un namespace.
+
+**Solución:** Terraform (que sí es admin) crea el namespace `voxchain` y le da
+a la SA de CI el ClusterRole `admin` **sólo en ese namespace**:
+
+```hcl
+resource "kubernetes_role_binding_v1" "cicd_admin" {
+  metadata {
+    name      = "cicd-admin"
+    namespace = "voxchain"
+  }
+  role_ref {
+    api_group = "rbac.authorization.k8s.io"
+    kind      = "ClusterRole"
+    name      = "admin"
+  }
+  subject {
+    api_group = "rbac.authorization.k8s.io"
+    kind      = "User"
+    name      = google_service_account.cicd.email
+  }
+}
+```
+
+Es el patrón habitual: la plataforma provisiona el namespace y el pipeline
+despliega adentro. Además, la prevención de escalada de Kubernetes impide que
+el CI otorgue permisos que él mismo no tiene. Como el namespace ya existía
+(lo había creado el 02), hubo que importarlo antes del apply:
+
+```bash
+tofu import kubernetes_namespace_v1.voxchain voxchain
+tofu apply      # 1 to add: el RoleBinding
+```
+
+Verificación:
+
+```bash
+kubectl auth can-i create roles -n voxchain   --as voxchain-cicd@voxchain-unlu.iam.gserviceaccount.com  # yes
+kubectl auth can-i create roles -n monitoring --as voxchain-cicd@voxchain-unlu.iam.gserviceaccount.com  # no
+```
+
+### 8.7 Split-brain silencioso de RabbitMQ
+
+Consecuencia directa de §8.6: sin el Role, el peer discovery de Kubernetes no
+pudo listar los endpoints, y **cada nodo arrancó como un clúster de un solo
+miembro**:
+
+```
+rabbitmq-0 → running_nodes: [rabbit@rabbitmq-0]     (cada uno con su propio cluster ID)
+```
+
+Los tres pods estaban `Running` y sus probes pasaban, así que nada lo
+señalaba. Pero el Service balanceaba entre **tres brokers independientes**: un
+mensaje publicado en uno no llegaba a un consumidor conectado a otro. Todas las
+colas y consumidores habían caído, por azar, en `rabbitmq-0`.
+
+**Arreglo:** con los nodos 1 y 2 vacíos (verificado con `list_queues`), se
+resetearon y se unieron a `rabbitmq-0`:
+
+```bash
+for i in 1 2; do kubectl exec -n voxchain rabbitmq-$i -- sh -c '
+  rabbitmqctl stop_app && rabbitmqctl reset &&
+  rabbitmqctl join_cluster rabbit@rabbitmq-0.rabbitmq.voxchain.svc.cluster.local &&
+  rabbitmqctl start_app'; done
+```
+
+Un nodo que ya tiene datos se reincorpora solo a su clúster al reiniciar, así
+que esto se hace una sola vez. Con el Role presente, un despliegue desde cero
+forma el clúster sin intervención.
+
+**Lección:** que un pod esté `Ready` no significa que el sistema esté bien. Queda
+como mejora una alerta sobre la cantidad de miembros del clúster de RabbitMQ
+(menos de 3).
+
+### 8.8 gitleaks: falso positivo con el host
+
+El host nuevo en `WEBAUTHN_RP_IDS` (`voxchain.35.199.68.144.sslip.io`) tiene
+suficiente entropía para que la regla `generic-api-key` lo tome por una clave.
+Se agregó a la allowlist global de `.gitleaks.toml` la expresión `\.sslip\.io`,
+contra el match completo. Verificado en local: con la config vieja aparece 1
+hallazgo, con la nueva 0, y el historial completo está limpio.
+
+### 8.9 Estado final
+
+Con el 02 relanzado a mano (`gh workflow run 02-services.yml`), todo quedó en
+verde:
+
+```
+$ curl https://voxchain.35.199.68.144.sslip.io/api/health
+{"api":"ok","nct":"ok","redis":"ok","rabbitmq":"ok","frontend":"ok",
+ "workers":"none","clock":"ok","clock_skew_ms":0.0}
+```
+
+| Comprobación | Resultado |
+|---|---|
+| HTTPS de la app y de Grafana | 200, certificado de Let's Encrypt (`CN=YR1`) válido hasta 2026-12-27 |
+| RabbitMQ | 3 nodos en un solo clúster, `partitions: {}` |
+| Usuario `voxchain-worker` | creado por el 02, con permisos en `/` |
+| AMQPS (`34.95.226.120:5671`) | `openssl s_client` con la CA nueva y SNI `rabbitmq.voxchain.svc.cluster.local` → `Verify return code: 0` |
+| ExternalSecrets | los 3 en `SecretSynced` |
+| Cloud Logging | recibe api, frontend, redis y rabbitmq. Los logs de la API llegan como `jsonPayload` con `service: voxchain-api`. |
+
+`workers: none` es lo esperado hasta conectar el k3s.
+
+URLs vigentes (fijas mientras exista `voxchain-ingress-ip`):
+
+- App: `https://voxchain.35.199.68.144.sslip.io`
+- Grafana: `https://grafana.voxchain.35.199.68.144.sslip.io`
+
+### 8.10 Pendiente
+
+- **k3s / pipeline 04**: a la espera de la IP y el puerto actuales del clúster.
+  Hay que actualizar `K3S_KUBECONFIG` y definir `K3S_EGRESS_CIDRS`.
+- **Mientras tanto, Redis está expuesto a internet sin TLS** (`34.39.157.247:6379`),
+  protegido sólo por una contraseña de 32 caracteres. `K3S_EGRESS_CIDRS` lo
+  acota a la IP del k3s. TLS en Redis sigue siendo deuda (informe §7.2).
+- **Cuota de IPs**: el límite regional es 8 IPs en uso. Con los nodos al máximo
+  (5, todos con IP pública) más 3 LoadBalancers se llega justo al límite, y un
+  upgrade con *surge* lo pasaría.
+- **Alerta de split-brain** de RabbitMQ (§8.7).
+
+## 9. Resumen en una frase (para abrir la explicación)
 
 *"Con una cuenta nueva y un comando de OpenTofu reconstruimos toda la
 plataforma — red, cluster, registry, identidad federada y observabilidad — en
