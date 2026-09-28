@@ -78,6 +78,23 @@ class WorkerManager:
 
     # -- API pública para admin_server --
 
+    @property
+    def instance_id(self) -> str:
+        """Este proceso, distinto del de cualquier otra réplica del mismo minero.
+
+        Dos pods del mismo Deployment comparten `WORKER_ID` (es el env del
+        template) y tienen hostnames distintos: en Kubernetes el hostname es el
+        nombre del pod. Un reinicio del contenedor conserva el pod y por lo tanto
+        el id, así que el proceso nuevo reconoce como propio el lease que dejó el
+        anterior y no espera a que venza.
+        """
+        return f"{self.worker_id}@{socket.gethostname()}"
+
+    def _coordinator_standby(self) -> bool:
+        """¿Soy un `pool-coordinator` en espera, con el lease en manos de otro pod?"""
+        return (self._mode == "pool-coordinator"
+                and bool(getattr(self._worker, "standby", False)))
+
     def _resolve_address(self) -> str:
         explicit = os.getenv("WORKER_ADDRESS", "").strip()
         if explicit:
@@ -144,9 +161,14 @@ class WorkerManager:
         El Service de cada minero existe para que los miembros de su equipo lo
         alcancen por un nombre estable en vez de por la IP del pod (ver
         `_spawn_k8s_worker` en el API). Sólo lo usa quien coordina un equipo, así
-        que la única respuesta negativa es la de un `pool-coordinator` que **no
-        tiene el lease** de su pool: si hubiera dos (un rollout, una réplica),
-        los mineros tienen que ir al que manda, no repartirse entre los dos.
+        que la única respuesta negativa es la de un `pool-coordinator` **en
+        espera**: otra réplica del mismo minero tiene el lease de su pool, y los
+        mineros tienen que ir a ésa, no repartirse entre las dos.
+
+        El criterio es "otro tiene el lease" y no "no lo tengo yo": un
+        coordinador solo que todavía no ganó la elección, o que no puede leer
+        Redis, no sabe de nadie más y sigue atendiendo. Sacarlo del Service ahí
+        dejaría al equipo sin coordinador por una falla de observación.
 
         En cualquier otro modo no hay tráfico que dirigir y se responde listo:
         marcar NotReady a un standalone no protegería nada y ensuciaría el estado
@@ -154,8 +176,14 @@ class WorkerManager:
         """
         if self._mode != "pool-coordinator":
             return True, {"mode": self._mode}
-        leader = bool(getattr(self._worker, "is_leader", False))
-        return leader, {"mode": self._mode, "pool_leader": leader}
+        if self._worker is None:
+            return False, {"mode": self._mode, "standby": False}
+        standby = self._coordinator_standby()
+        return not standby, {
+            "mode": self._mode,
+            "standby": standby,
+            "pool_leader": bool(getattr(self._worker, "is_leader", False)),
+        }
 
     def switch_mode(self, target: str, pool_url: str = "") -> dict:
         if target not in ("pool-worker", "standalone", "pool-coordinator", "pool-auto"):
@@ -241,9 +269,17 @@ class WorkerManager:
         while not self._stop_event.is_set():
             if redis_client:
                 try:
-                    status = self.get_status()
-                    import json
-                    redis_client.set(f"worker:status:{self.worker_id}", json.dumps(status), ex=15)
+                    # La réplica en espera no publica: `worker:status:<id>` es
+                    # uno por minero y lo escribiría a la par del líder, con su
+                    # pubkey y un hashrate en 0 porque no mina — la UI y la
+                    # dificultad dinámica verían el estado saltar entre los dos.
+                    # La reconciliación del modo sí corre: si el dueño disuelve
+                    # el equipo, la réplica también tiene que enterarse.
+                    if not self._coordinator_standby():
+                        status = self.get_status()
+                        import json
+                        redis_client.set(f"worker:status:{self.worker_id}",
+                                         json.dumps(status), ex=15)
                     if fallando:
                         log.info("reporte de estado a Redis restablecido")
                         fallando = False
@@ -437,6 +473,7 @@ class WorkerManager:
             mine=run_miner,
             capacity=config.get_int("WORKER_CAPACITY", 1),
             signer=self.signer,
+            instance_id=self.instance_id,
         )
         pc.wire()
         pc.start()

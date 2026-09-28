@@ -1392,3 +1392,90 @@ class TestAdministrarExigeFirma:
                               headers=headers)
         assert repetida.status_code == 401
         assert "utilizada" in repetida.json()["detail"]
+
+
+# --- Réplica en espera del coordinador de un equipo ------------------------
+
+
+class TestReplicaDelCoordinador:
+    """El coordinador de un equipo corre en dos pods: el que manda y uno en espera.
+
+    El API escala su Deployment al fundar el equipo y lo devuelve a un pod al
+    disolverlo. Las dos réplicas montan el mismo Secret, así que cada una
+    necesita su propio token de enrolamiento, y el vínculo nodo → dueño tiene
+    que admitir las dos claves a la vez.
+    """
+
+    @pytest.fixture
+    def escalados(self, monkeypatch):
+        from voxchain_api.routers import workers as workers_router
+
+        llamadas = []
+        monkeypatch.setattr(
+            workers_router, "scale_k8s_coordinator",
+            lambda worker_id, replicas, _r: llamadas.append((worker_id, replicas)))
+        return llamadas
+
+    def test_fundar_pide_la_replica_y_disolver_la_saca(self, api, r, escalados):
+        from voxchain_api.routers import workers as workers_router
+
+        _own(r, "coord", GUS.pubkey)
+        _online(r, "coord")
+        team_id = api.post("/api/teams", json={"name": "T", "worker_id": "coord"},
+                           headers={"X-Owner-Id": GUS.pubkey}).json()["team_id"]
+        assert escalados == [("coord", workers_router.TEAM_COORDINATOR_REPLICAS)]
+
+        api.delete(f"/api/teams/{team_id}", headers={"X-Owner-Id": GUS.pubkey})
+        # Sin equipo la réplica sobra: dos standalone del mismo minero barren
+        # el mismo rango.
+        assert escalados[-1] == ("coord", 1)
+
+    @pytest.fixture
+    def alta(self, r, monkeypatch):
+        from voxchain_api.routers import workers as workers_router
+        monkeypatch.setattr(workers_router, "K8S_ENABLED", False)
+        yo = _Identidad()
+        resp = workers_router.persist_worker_registration(yo.registro("coord-ha"), r)
+        replica = workers_router._issue_enrollment_token(r, "coord-ha", replica=True)
+        return {"worker_id": "coord-ha", "owner": yo.pubkey, "yo": yo,
+                "token": resp["enrollment_token"], "replica": replica}
+
+    def _enrolar(self, api, alta, node, token):
+        return api.post("/api/workers/enroll", json={
+            "worker_id": alta["worker_id"], "node_pubkey": node,
+            "enrollment_token": token})
+
+    def test_cada_replica_se_enrola_con_su_token(self, api, r, alta):
+        lider, espera = _pubkey_valida(), _pubkey_valida()
+        # Las dos montan el mismo Secret: el primer token lo gasta una y la otra
+        # lo intenta, recibe 401 y prueba el segundo (lo hace `enroll` del worker).
+        assert self._enrolar(api, alta, lider, alta["token"]).status_code == 200
+        assert self._enrolar(api, alta, espera, alta["token"]).status_code == 401
+        assert self._enrolar(api, alta, espera, alta["replica"]).status_code == 200
+
+        # Las dos quedan a nombre del fundador: si la réplica pasa a mandar, sus
+        # bloques se le siguen imputando.
+        assert r.get(f"node:owner:{lider}") == alta["owner"]
+        assert r.get(f"node:owner:{espera}") == alta["owner"]
+        assert r.smembers(f"worker:node_pubkeys:{alta['worker_id']}") == {lider, espera}
+
+    def test_un_nodo_ya_vinculado_no_gasta_token(self, api, r, alta):
+        # El contenedor que se reinicia dentro de su pod conserva la clave y se
+        # vuelve a enrolar con ella: no puede llevarse el token de la réplica.
+        nodo = _pubkey_valida()
+        assert self._enrolar(api, alta, nodo, alta["token"]).status_code == 200
+        assert self._enrolar(api, alta, nodo, "cualquier-cosa").status_code == 200
+        assert r.get(f"worker:enroll:{alta['worker_id']}:replica")
+
+    def test_re_registrar_desvincula_todas_las_replicas(self, api, r, alta):
+        from voxchain_api.routers import workers as workers_router
+
+        nodos = [_pubkey_valida(), _pubkey_valida()]
+        self._enrolar(api, alta, nodos[0], alta["token"])
+        self._enrolar(api, alta, nodos[1], alta["replica"])
+
+        workers_router.persist_worker_registration(
+            alta["yo"].registro(alta["worker_id"]), r)
+        for nodo in nodos:
+            assert r.get(f"node:owner:{nodo}") is None
+        assert not r.exists(f"worker:node_pubkeys:{alta['worker_id']}")

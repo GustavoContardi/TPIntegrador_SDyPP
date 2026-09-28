@@ -37,6 +37,7 @@ from voxchain_api.models import (
     TeamMember,
     TeamMembershipRequest,
 )
+from voxchain_api.routers import workers as workers_router
 from voxchain_api.routers.workers import (
     ADMIN_CREATE_TEAM,
     ADMIN_DISSOLVE_TEAM,
@@ -269,6 +270,13 @@ async def create_team(
         # haya arrancado — y si la escribiéramos antes, un pod que arranca en
         # modo standalone la ignoraría por completo.
         await push_voting_policy(worker_id, agenda, redis_client)
+        # Réplica en espera del coordinador. Va después del switch: el pod
+        # nuevo lee su modo de `worker:desired_mode` al arrancar, y tiene que
+        # encontrar `pool-coordinator` para quedar en espera y no como un
+        # standalone más. Por el módulo y no importada, para que los tests
+        # puedan reemplazarla.
+        workers_router.scale_k8s_coordinator(
+            worker_id, workers_router.TEAM_COORDINATOR_REPLICAS, redis_client)
     finally:
         publisher.close()
 
@@ -486,6 +494,11 @@ async def dissolve_team(
         # nadie, y dejarla puesta le impondría la agenda de este equipo si más
         # adelante funda otro.
         clear_voting_policy(team["coordinator_worker_id"], redis_client)
+        # Sin equipo la réplica sobra: dos standalone del mismo minero barren
+        # el mismo rango. Kubernetes baja primero los pods que no están listos;
+        # como para entonces los dos ya vuelven a standalone, baja cualquiera.
+        workers_router.scale_k8s_coordinator(
+            team["coordinator_worker_id"], 1, redis_client)
     finally:
         publisher.close()
 

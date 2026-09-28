@@ -115,10 +115,17 @@ def run_pool_election(
     lease_rank: str = LEASE_RANK_DESIGNATED,
     epoch_duration: int = ELECTION_EPOCH_SECONDS,
     clock=time.time,
+    instance_id: str | None = None,
 ) -> bool:
     """Participa en la elección de Pool Coordinator de ``pool_id``.
 
     Devuelve True si este candidato ganó y adquirió el liderazgo del pool.
+
+    ``instance_id`` es quién queda escrito en el lease. Por defecto es el
+    ``pool_id``, que alcanza cuando cada pool tiene un solo proceso candidato.
+    Con réplicas del mismo coordinador —mismo ``pool_id``, pods distintos— tiene
+    que ser distinto por pod: si no, las dos leen el lease, ven "su" nombre y se
+    creen líderes a la vez.
 
     ``lease_key`` se puede pasar explícita para casos raros, pero el default
     —derivado de ``pool_id``— es el correcto: el claim de la elección y el lease
@@ -126,6 +133,7 @@ def run_pool_election(
     aunque cada uno guardara su lease por separado.
     """
     lease_key = lease_key or lease_key_for(pool_id)
+    holder = instance_id or pool_id
     epoch = int(clock() / epoch_duration)
     election_key = election_key_for(pool_id, epoch)
 
@@ -150,11 +158,12 @@ def run_pool_election(
         return False
 
     # Claim atómico: solo el primero en llegar gana.
-    won = bool(redis.set(election_key, pool_id, nx=True, ex=lease_ttl * 3))
+    won = bool(redis.set(election_key, holder, nx=True, ex=lease_ttl * 3))
     if not won:
         log.info("pool %s: perdió el claim atómico (otro candidato más rápido)", pool_id)
         return False
 
-    redis.set(lease_key, encode_lease(pool_id, lease_rank), ex=lease_ttl)
-    log.info("pool %s: ¡GANÓ la elección! (nonce=%d, epoch=%d)", pool_id, nonce, epoch)
+    redis.set(lease_key, encode_lease(holder, lease_rank), ex=lease_ttl)
+    log.info("pool %s: ¡%s GANÓ la elección! (nonce=%d, epoch=%d)", pool_id,
+             holder, nonce, epoch)
     return True

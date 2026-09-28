@@ -529,16 +529,20 @@ Decisiones:
   el pod para que la anuncie. Un Service sin tráfico es una regla de red, no un
   proceso.
 - **Readiness por liderazgo.** El pod tiene `readinessProbe` en **`/ready`**,
-  que responde 503 sólo si el worker es `pool-coordinator` y no tiene el lease
-  de su pool (`WorkerManager.readiness`). Con un pod es casi siempre él; si hay
-  dos a la vez —un rollout, o una réplica en el futuro—, el Service manda a los
-  mineros al que manda. El NCT usó este criterio y lo abandonó: su standby es un
-  Deployment aparte cuyo único pod no habría estado listo nunca, y el despliegue
-  no terminaba (hoy su `/health` acepta `standby` como sano). Acá no pasa: el
-  Deployment de un minero es un solo pod que normalmente tiene el lease, y queda
-  NotReady sólo mientras lo toma al arrancar: unos segundos, o hasta ~30 s si
-  se reinicia dentro de la misma época de elección en la que ya había ganado
-  (la elección por Redis es por épocas de 30 s).
+  que responde 503 sólo si el worker es un `pool-coordinator` **en espera**:
+  otra réplica del mismo minero tiene el lease de su pool
+  (`WorkerManager.readiness`). Así, con dos pods del coordinador (la réplica de
+  abajo, o un rollout), el Service manda a los mineros al que manda. El
+  criterio es "otro tiene el lease" y no "no lo tengo yo": un coordinador solo
+  que todavía no ganó la elección, o que no puede leer Redis, no sabe de nadie
+  más y sigue atendiendo — sacarlo del Service dejaría al equipo sin
+  coordinador por una falla de observación.
+  El NCT usó un criterio parecido y lo abandonó: su standby es un Deployment
+  aparte cuyo único pod no habría estado listo nunca, y `kubectl rollout
+  status` en el pipeline no terminaba (hoy su `/health` acepta `standby` como
+  sano). Acá el Deployment del coordinador va a mostrar **1/2 disponible** de
+  forma permanente, a propósito; ningún pipeline espera el rollout de los
+  mineros del k3s.
 - **`/ready` y no `/health`.** `/health` es la livenessProbe. Un coordinador
   esperando el lease está sano; si fallara la liveness, Kubernetes lo
   reiniciaría en bucle. Por eso la readiness va en una ruta aparte
@@ -551,16 +555,85 @@ Decisiones:
   mitad, el Service queda: sin pods no enruta nada y la próxima alta del mismo id
   lo reutiliza.
 
-Qué **no** resuelve: el pod nuevo sigue arrancando con el estado vacío (sin
-registro de mineros ni fragmentos) y sin la ventana en curso; y su identidad de
-nodo no queda vinculada al dueño, porque el token de enrolamiento ya se quemó.
-Tampoco hay réplica: mientras el pod se reemplaza, el equipo no mina. El Service
-es el prerequisito para esa réplica, no la réplica.
-
 En Compose no hace falta nada de esto: el nombre del contenedor ya es un DNS
-estable. El pool estático del k3s (`gpu-cluster/pool-coordinator-*.yaml`) ya
-usaba un Service (`pool-coordinator`); ahora su readiness también mira
-`/ready`.
+estable.
+
+### Réplica en espera del coordinador de un equipo
+
+El Service resuelve que los miembros no se pierdan cuando el pod del
+coordinador se reemplaza, pero no la caída en sí: el coordinador lo designa una
+persona, así que ningún miembro puede tomar su lugar, y mientras Kubernetes
+repone el pod (programarlo, bajar la imagen con `imagePullPolicy: Always`,
+arrancar) el equipo no mina. Por eso el coordinador de un equipo corre en **dos
+pods del mismo minero**: el que manda y uno en espera.
+
+**Cuándo.** El API escala el Deployment del minero a `TEAM_COORDINATOR_REPLICAS`
+(default 2) al **fundar** el equipo y lo devuelve a 1 al **disolverlo**
+(`scale_k8s_coordinator`). No al darlo de alta: réplicas de un standalone no
+suman nada, barren el mismo rango y encuentran el mismo nonce. La réplica nueva
+lee `worker:desired_mode` al arrancar, encuentra `pool-coordinator` y queda en
+espera. El template del pod pide anti-afinidad *preferred* por nodo: una
+réplica en el mismo nodo no sobrevive a la caída del nodo, pero en un clúster
+de un solo nodo tiene que poder programarse igual.
+
+**Cuál manda: el lease, con un id por pod.** Las dos réplicas comparten
+`WORKER_ID` (es el env del template), y el lease `pool:leader:<pool_id>`
+guardaba el `pool_id`: las dos leían "su" nombre y se creían líderes. Ahora
+guarda un **id de instancia**, `<worker_id>@<hostname>` (el hostname es el
+nombre del pod). El `pool_id` no cambia: sigue siendo la identidad del pool
+(firma los nonces, nombra `pool:health:*`, lo busca la deliberación). Un
+reinicio del contenedor conserva el pod y por lo tanto el id, así que el proceso
+nuevo reconoce como propio el lease que dejó el anterior.
+
+**Qué hace la que espera: réplica caliente.** Recibe cada desafío por su
+propia suscripción y lo fragmenta igual que el líder, pero **no mina ni
+reparte** (`standby` en `PoolCoordinator`: `get_next_task` y el auto-minado
+devuelven nada). Tampoco publica `worker:status:<id>`, que es uno por minero:
+lo escribiría a la par del líder con otra pubkey y un hashrate en 0, y la UI y
+la dificultad dinámica verían el estado saltar entre los dos. La reconciliación
+del modo deseado sí corre, para que se entere si el equipo se disuelve.
+
+**El relevo.** Si el líder se apaga ordenadamente suelta el lease; si muere, el
+lease vence a los 10 s. La réplica lo ve en su próxima revisión (cada 3 s),
+gana la elección, pasa a `/ready` 200 y el Service le empieza a mandar
+tráfico. Los miembros reciben "no te conozco" en su próximo heartbeat y se
+re-registran solos. Como ya tenía la ventana fragmentada, **el equipo sigue
+minando la ventana en curso** en vez de perderla. Repite algo del trabajo que el
+líder ya había hecho, porque no sabe qué fragmentos se barrieron. Al asumir tira
+los fragmentos de las ventanas que ya cerraron: en espera no ve el sellado, así
+que consulta `active_window` en Redis. Caída total del equipo: entre 10 y ~40 s
+(TTL del lease más, en el peor caso, esperar a la próxima época de elección de
+30 s), contra lo que tarde Kubernetes en reponer el pod.
+
+**Enrolamiento: dos tokens.** Los pods de un Deployment montan el mismo Secret, y
+el token de enrolamiento es de un solo uso: con uno solo, la primera réplica en
+enrolarse lo quemaba y la otra minaba sin dueño — y si ésa llegaba a mandar, los
+bloques del equipo dejaban de imputarse al fundador. Al escalar, el API emite un
+segundo token (`worker:enroll:<id>:replica` en Redis, `enrollment-token-replica`
+en el Secret, opcional en el pod como `WORKER_ENROLL_TOKEN_REPLICA`) y el worker
+prueba los dos: si uno da 401 prueba el otro. El vínculo nodo → dueño ahora
+**se agrega** en vez de reemplazarse (`worker:node_pubkeys:<id>`), porque hay
+dos claves vivas a la vez; se borran todas al re-registrar o dar de baja. Y un
+nodo que ya está vinculado no gasta token: es el contenedor que se reinicia
+dentro de su pod, que conserva su clave y si no se llevaría el de la réplica.
+
+**Qué sigue abierto.**
+- Un pod que **reemplaza** a otro (no una réplica: el pod nuevo después de que
+  un nodo cae) no tiene token válido —los dos ya se usaron o vencieron a los 15
+  min— y mina sin dueño. Si llega a mandar, los bloques del equipo no se imputan
+  al fundador. Re-registrar el minero lo resuelve; emitir un token por pod
+  reemplazado es lo pendiente.
+- Sin Redis las dos réplicas no pueden arbitrarse y trabajan en paralelo.
+  Duplican trabajo y los mineros se reparten entre las dos, pero el NCT sella
+  igual el primer nonce válido: se prefirió eso a dejar al equipo sin
+  coordinador por un Redis caído.
+- En Compose no hay réplica.
+
+El pool estático del k3s (`gpu-cluster/pool-coordinator-deployment.yaml`) ya
+corría con `replicas: 2`, pero sin `WORKER_ID` fijo: cada pod tomaba su hostname
+como id y detrás del Service `pool-coordinator` había **dos pools distintos**.
+Un minero se registraba en uno y su heartbeat caía en el otro. Ahora comparten
+`WORKER_ID` y funcionan como un pool con réplica en espera.
 
 ### Modelo de datos
 

@@ -96,11 +96,18 @@ def enroll(worker_id: str, signer: WorkerSigner) -> bool:
     Best-effort: si falla, el worker mina igual y firma con su identidad, pero sus
     bloques quedan sin dueño imputable (y la regla 3.4 no puede alcanzarlo). Es
     preferible a que un minero no arranque por un problema de red con el API.
+
+    Puede haber dos tokens: ``WORKER_ENROLL_TOKEN`` y
+    ``WORKER_ENROLL_TOKEN_REPLICA``. Los pods de un mismo minero montan el mismo
+    Secret, y cuando el minero coordina un equipo corre en dos (el que manda y
+    uno en espera): cada token sirve una sola vez, así que se prueban en orden y
+    el primero que el API rechaza por usado deja paso al siguiente.
     """
-    token = os.getenv("WORKER_ENROLL_TOKEN", "")
+    tokens = [t for t in (os.getenv("WORKER_ENROLL_TOKEN", ""),
+                          os.getenv("WORKER_ENROLL_TOKEN_REPLICA", "")) if t]
     api = os.getenv("VOXCHAIN_API_URL", "").rstrip("/")
-    if not (signer.enabled and token and api):
-        if signer.enabled and not token:
+    if not (signer.enabled and tokens and api):
+        if signer.enabled and not tokens:
             log.info("sin WORKER_ENROLL_TOKEN: el nodo firma como identidad anónima")
         return False
 
@@ -108,28 +115,37 @@ def enroll(worker_id: str, signer: WorkerSigner) -> bool:
     import urllib.error
     import urllib.request
 
-    body = json.dumps({
-        "worker_id": worker_id,
-        "node_pubkey": signer.pubkey,
-        "enrollment_token": token,
-    }).encode()
-    req = urllib.request.Request(f"{api}/api/workers/enroll", data=body,
-                                 headers={"Content-Type": "application/json"},
-                                 method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            ok = 200 <= resp.status < 300
-    except urllib.error.HTTPError as exc:
-        log.warning("enrolamiento rechazado (%s): %s", exc.code,
-                    exc.read()[:200].decode("utf-8", "replace"))
-        return False
-    except Exception as exc:  # noqa: BLE001
-        log.warning("no se pudo enrolar la identidad de nodo: %s", exc)
-        return False
+    ok = False
+    for token in tokens:
+        body = json.dumps({
+            "worker_id": worker_id,
+            "node_pubkey": signer.pubkey,
+            "enrollment_token": token,
+        }).encode()
+        req = urllib.request.Request(f"{api}/api/workers/enroll", data=body,
+                                     headers={"Content-Type": "application/json"},
+                                     method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                ok = 200 <= resp.status < 300
+        except urllib.error.HTTPError as exc:
+            log.warning("enrolamiento rechazado (%s): %s", exc.code,
+                        exc.read()[:200].decode("utf-8", "replace"))
+            # 401 = token ya usado o vencido: el otro puede servir. Cualquier
+            # otro error lo sería también con el otro token.
+            if exc.code == 401:
+                continue
+            return False
+        except Exception as exc:  # noqa: BLE001
+            log.warning("no se pudo enrolar la identidad de nodo: %s", exc)
+            return False
+        if ok:
+            break
 
     if ok:
         log.info("identidad de nodo %s… enrolada para %s", signer.pubkey[:16], worker_id)
-        # El token es de un solo uso y ya se quemó: no dejarlo en el entorno del
-        # proceso, donde cualquier volcado o subproceso lo arrastraría.
+        # Los tokens son de un solo uso: no dejarlos en el entorno del proceso,
+        # donde cualquier volcado o subproceso los arrastraría.
         os.environ.pop("WORKER_ENROLL_TOKEN", None)
+        os.environ.pop("WORKER_ENROLL_TOKEN_REPLICA", None)
     return ok

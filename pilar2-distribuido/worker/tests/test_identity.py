@@ -116,3 +116,65 @@ class TestEnrolamiento:
         # El token es de un solo uso y ya se quemó: dejarlo en el entorno sólo
         # sirve para que un volcado o un subproceso lo arrastre.
         assert "WORKER_ENROLL_TOKEN" not in os.environ
+
+
+    def test_con_dos_tokens_prueba_el_segundo_si_el_primero_ya_se_uso(
+            self, tmp_path, monkeypatch):
+        """Las réplicas de un coordinador montan el mismo Secret.
+
+        El primer token lo gasta una; la otra recibe 401 y tiene que probar el
+        de la réplica en vez de rendirse y minar como anónima.
+        """
+        import io
+        import json
+        import urllib.error
+        import urllib.request
+
+        monkeypatch.setenv("WORKER_ENROLL_TOKEN", "usado")
+        monkeypatch.setenv("WORKER_ENROLL_TOKEN_REPLICA", "de-la-replica")
+        monkeypatch.setenv("VOXCHAIN_API_URL", "http://api:8000")
+        signer = WorkerSigner(str(tmp_path / "node-key.pem"))
+        probados = []
+
+        class Resp:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def fake_urlopen(req, timeout=None):
+            token = json.loads(req.data)["enrollment_token"]
+            probados.append(token)
+            if token == "usado":
+                raise urllib.error.HTTPError(req.full_url, 401, "ya usado", {},
+                                             io.BytesIO(b"ya usado"))
+            return Resp()
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        assert enroll("minero-7", signer) is True
+        assert probados == ["usado", "de-la-replica"]
+        assert "WORKER_ENROLL_TOKEN_REPLICA" not in os.environ
+
+    def test_un_error_que_no_es_401_no_prueba_el_otro_token(self, tmp_path, monkeypatch):
+        import io
+        import urllib.error
+        import urllib.request
+
+        monkeypatch.setenv("WORKER_ENROLL_TOKEN", "t1")
+        monkeypatch.setenv("WORKER_ENROLL_TOKEN_REPLICA", "t2")
+        monkeypatch.setenv("VOXCHAIN_API_URL", "http://api:8000")
+        signer = WorkerSigner(str(tmp_path / "node-key.pem"))
+        intentos = []
+
+        def fake_urlopen(req, timeout=None):
+            intentos.append(req)
+            raise urllib.error.HTTPError(req.full_url, 404, "no existe", {},
+                                         io.BytesIO(b"no existe"))
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        assert enroll("minero-7", signer) is False
+        # 404 = el minero no está registrado: el otro token no lo cambia.
+        assert len(intentos) == 1

@@ -82,33 +82,51 @@ def _is_valid_pubkey(pubkey_b64: str) -> bool:
         return False
 
 
-def _issue_enrollment_token(redis_client, worker_id: str) -> str:
+# Clave del token de enrolamiento de un minero. Hay dos: la del pod original y
+# la de la réplica en espera de un coordinador de equipo. Son dos porque los
+# pods de un Deployment montan el mismo Secret y el token es de un solo uso: con
+# uno solo, la primera réplica en enrolarse lo quemaba y la otra quedaba sin
+# dueño — y si ésa llegaba a líder, los bloques de su equipo dejaban de
+# imputarse al fundador.
+ENROLL_KEY = "worker:enroll:{worker_id}"
+ENROLL_REPLICA_KEY = "worker:enroll:{worker_id}:replica"
+
+
+def _issue_enrollment_token(redis_client, worker_id: str, *,
+                            replica: bool = False) -> str:
     """Emite un token de un solo uso para que un pod reclame el slot de nodo.
 
     En Redis queda sólo el SHA-256 del token: si alguien lee la base no obtiene
     un token usable. El valor en claro existe únicamente en la respuesta a este
-    alta y en el Secret que monta el pod.
+    alta y en el Secret que monta el pod. ``replica`` elige el segundo slot
+    (ver ``ENROLL_REPLICA_KEY``).
     """
     token = secrets.token_urlsafe(32)
     digest = hashlib.sha256(token.encode()).hexdigest()
-    redis_client.set(f"worker:enroll:{worker_id}", digest, ex=ENROLL_TOKEN_TTL)
+    key = ENROLL_REPLICA_KEY if replica else ENROLL_KEY
+    redis_client.set(key.format(worker_id=worker_id), digest, ex=ENROLL_TOKEN_TTL)
     return token
 
 
 def _consume_enrollment_token(redis_client, worker_id: str, token: str) -> bool:
-    """Valida y **quema** el token. Un token sirve para un solo enrolamiento."""
-    stored = redis_client.get(f"worker:enroll:{worker_id}")
-    if not stored:
-        return False
-    if isinstance(stored, bytes):
-        stored = stored.decode("utf-8")
+    """Valida y **quema** el token. Un token sirve para un solo enrolamiento.
+
+    Se prueba contra los dos slots; se quema sólo el que coincidió.
+    """
     digest = hashlib.sha256((token or "").encode()).hexdigest()
-    # compare_digest y no ==: el token es un secreto y la comparación no debe
-    # filtrar por dónde difiere.
-    if not hmac.compare_digest(stored, digest):
-        return False
-    redis_client.delete(f"worker:enroll:{worker_id}")
-    return True
+    for key in (ENROLL_KEY, ENROLL_REPLICA_KEY):
+        key = key.format(worker_id=worker_id)
+        stored = redis_client.get(key)
+        if not stored:
+            continue
+        if isinstance(stored, bytes):
+            stored = stored.decode("utf-8")
+        # compare_digest y no ==: el token es un secreto y la comparación no debe
+        # filtrar por dónde difiere.
+        if hmac.compare_digest(stored, digest):
+            redis_client.delete(key)
+            return True
+    return False
 
 try:
     from kubernetes import client, config as k8s_config
@@ -305,6 +323,17 @@ def _spawn_k8s_worker(worker_id: str, enrollment_token: str):
                         name=secret_name, key="enrollment-token")
                 )
             ),
+            # Segundo token, para la réplica en espera de un coordinador de
+            # equipo (`scale_k8s_coordinator`). Opcional: sólo existe mientras
+            # el minero coordina, y el worker prueba los dos.
+            client.V1EnvVar(
+                name="WORKER_ENROLL_TOKEN_REPLICA",
+                value_from=client.V1EnvVarSource(
+                    secret_key_ref=client.V1SecretKeySelector(
+                        name=secret_name, key="enrollment-token-replica",
+                        optional=True)
+                )
+            ),
             client.V1EnvVar(name="VOXCHAIN_API_URL", value=INTERNAL_API_URL),
             # Dirección con la que los mineros de su equipo lo alcanzan si el
             # usuario lo promueve a coordinador: el nombre de su Service, que
@@ -397,6 +426,25 @@ def _spawn_k8s_worker(worker_id: str, enrollment_token: str):
                 seccomp_profile=client.V1SeccompProfile(type="RuntimeDefault"),
             ),
             containers=[container],
+            # Si el minero coordina un equipo corre con una réplica en espera
+            # (`scale_k8s_coordinator`), y una réplica en el mismo nodo no
+            # sobrevive a la caída del nodo, que es justo el caso que cubre.
+            # *Preferred* y no *required*: en un clúster de un solo nodo la
+            # réplica tiene que poder programarse igual.
+            affinity=client.V1Affinity(
+                pod_anti_affinity=client.V1PodAntiAffinity(
+                    preferred_during_scheduling_ignored_during_execution=[
+                        client.V1WeightedPodAffinityTerm(
+                            weight=100,
+                            pod_affinity_term=client.V1PodAffinityTerm(
+                                topology_key="kubernetes.io/hostname",
+                                label_selector=client.V1LabelSelector(
+                                    match_labels={"app": f"worker-gpu-{slug}"}),
+                            ),
+                        )
+                    ]
+                )
+            ),
             volumes=[
                 # Escribible y efímero: el worker genera acá su par al arrancar.
                 client.V1Volume(
@@ -445,6 +493,73 @@ def _spawn_k8s_worker(worker_id: str, enrollment_token: str):
         except Exception:
             pass
         raise HTTPException(status_code=500, detail=f"Failed to spawn Kubernetes worker node: {e}")
+
+
+# Pods del coordinador de un equipo: el que manda y uno en espera. 1 = sin
+# réplica, que es como corre cualquier minero que no coordina.
+TEAM_COORDINATOR_REPLICAS = max(1, int(os.getenv("TEAM_COORDINATOR_REPLICAS", "2")))
+
+
+def scale_k8s_coordinator(worker_id: str, replicas: int, redis_client) -> bool:
+    """Ajusta los pods del minero: ``replicas`` al coordinar un equipo, 1 al dejarlo.
+
+    **Por qué.** El coordinador de un equipo lo designa una persona, así que
+    ningún miembro puede tomar su lugar: si su pod cae, el equipo no mina hasta
+    que Kubernetes lo reponga (programarlo, bajar la imagen, arrancar). Con una
+    segunda réplica del mismo minero en espera, la caída dura lo que tarda en
+    vencer el lease del pool (10 s), y la réplica ya tiene fragmentada la
+    ventana en curso. Cuál de las dos manda lo decide el lease; el Service del
+    minero sólo le manda tráfico a ésa (readiness en `/ready`).
+
+    **Por qué sólo al coordinar.** Réplicas de un standalone no suman nada:
+    barren el mismo rango y encuentran el mismo nonce. Por eso esto se llama al
+    fundar y al disolver un equipo, no al dar de alta el minero.
+
+    **Enrolamiento.** Antes de escalar se emite un token nuevo para la réplica y
+    se escribe en el Secret del minero (`enrollment-token-replica`): los pods
+    montan el mismo Secret y el token es de un solo uso, así que sin un segundo
+    token la réplica minaría sin dueño.
+
+    Best-effort: sin Kubernetes, o si el minero no tiene Deployment nuestro (lo
+    levantó el usuario a mano), no hace nada. Devuelve si escaló.
+    """
+    if not K8S_ENABLED:
+        return False
+    slug = _k8s_slug(worker_id)
+    deployment_name = f"worker-dep-{slug}"
+    secret_name = f"secret-{slug}"
+    core_api = client.CoreV1Api()
+    apps_api = client.AppsV1Api()
+    try:
+        apps_api.read_namespaced_deployment(name=deployment_name, namespace=NAMESPACE)
+    except Exception as e:  # noqa: BLE001
+        # 404: el minero no lo desplegamos nosotros. Emitir un token acá pisaría
+        # el que el usuario todavía no usó para enrolar su proceso manual.
+        logger.info("minero %s sin Deployment en %s (%s): sin réplica",
+                    worker_id, NAMESPACE, getattr(e, "status", e))
+        return False
+
+    if replicas > 1:
+        token = _issue_enrollment_token(redis_client, worker_id, replica=True)
+        try:
+            core_api.patch_namespaced_secret(
+                name=secret_name, namespace=NAMESPACE,
+                body={"stringData": {"enrollment-token-replica": token}})
+        except Exception as e:  # noqa: BLE001
+            # Sin token la réplica mina igual, sólo que como nodo anónimo.
+            redis_client.delete(ENROLL_REPLICA_KEY.format(worker_id=worker_id))
+            logger.warning("no se pudo dejar el token de la réplica de %s: %s",
+                           worker_id, e)
+    try:
+        apps_api.patch_namespaced_deployment_scale(
+            name=deployment_name, namespace=NAMESPACE,
+            body={"spec": {"replicas": replicas}})
+    except Exception as e:  # noqa: BLE001
+        logger.warning("no se pudo escalar %s a %d réplicas: %s",
+                       deployment_name, replicas, e)
+        return False
+    logger.info("minero %s: %d réplica(s)", worker_id, replicas)
+    return True
 
 
 def _delete_k8s_worker(worker_id: str):
@@ -1216,13 +1331,23 @@ def reconcile_docker_workers(redis_client) -> list[str]:
 
 
 def _clear_node_binding(redis_client, worker_id: str) -> None:
-    """Borra la identidad de nodo de un minero y su entrada en el índice inverso."""
-    prev = redis_client.get(f"worker:node_pubkey:{worker_id}")
-    if prev:
-        if isinstance(prev, bytes):
-            prev = prev.decode("utf-8")
-        redis_client.delete(f"node:owner:{prev}")
-    redis_client.delete(f"worker:node_pubkey:{worker_id}")
+    """Borra **todas** las identidades de nodo de un minero y su índice inverso.
+
+    Un minero puede tener varias: una por pod que se enroló (las réplicas de un
+    coordinador, o pods que reemplazaron a otros). Se guardan en el conjunto
+    ``worker:node_pubkeys:<id>``; ``worker:node_pubkey:<id>`` es sólo la última,
+    que es la que muestra la UI.
+    """
+    nodos = set(redis_client.smembers(f"worker:node_pubkeys:{worker_id}") or ())
+    ultimo = redis_client.get(f"worker:node_pubkey:{worker_id}")
+    if ultimo:
+        nodos.add(ultimo)
+    for nodo in nodos:
+        if isinstance(nodo, bytes):
+            nodo = nodo.decode("utf-8")
+        redis_client.delete(f"node:owner:{nodo}")
+    redis_client.delete(f"worker:node_pubkey:{worker_id}",
+                        f"worker:node_pubkeys:{worker_id}")
 
 
 @router.post("/enroll", response_model=dict)
@@ -1260,11 +1385,27 @@ async def enroll_node(
     if not _is_valid_pubkey(node_pubkey):
         raise HTTPException(status_code=400, detail="node_pubkey no es una clave EC P-256 válida")
 
+    # Un nodo que ya está vinculado a este minero no gasta token. Es el caso del
+    # contenedor que se reinicia dentro del mismo pod: la clave sobrevive en el
+    # volumen del pod y el proceso nuevo se vuelve a enrolar con ella. Si
+    # consumiera un token, se llevaría el de la réplica y la dejaría sin dueño.
+    # Presentar una pubkey ya vinculada no le da nada a nadie: el vínculo ya
+    # existía.
+    if redis_client.sismember(f"worker:node_pubkeys:{worker_id}", node_pubkey):
+        return {"ok": True, "worker_id": worker_id, "owner_pubkey": owner}
+
     if not _consume_enrollment_token(redis_client, worker_id, request.enrollment_token):
         raise HTTPException(status_code=401, detail="Enrollment token inválido o ya usado")
 
+    # El vínculo se **agrega**, no reemplaza al anterior. Con réplicas del
+    # coordinador hay dos pods vivos del mismo minero, cada uno con su clave:
+    # reemplazar dejaría al que enroló primero —normalmente el líder, el que
+    # firma los nonces— sin dueño, y sus bloques dejarían de imputarse. Las
+    # claves de pods que ya no existen quedan en el conjunto, pero no sirven
+    # para nada: nacieron y murieron en memoria de un pod. Se limpian todas al
+    # re-registrar o dar de baja el minero (`_clear_node_binding`).
     try:
-        _clear_node_binding(redis_client, worker_id)
+        redis_client.sadd(f"worker:node_pubkeys:{worker_id}", node_pubkey)
         redis_client.set(f"worker:node_pubkey:{worker_id}", node_pubkey)
         redis_client.set(f"node:owner:{node_pubkey}", owner)
     except Exception as e:
@@ -1322,7 +1463,8 @@ async def unregister_worker(
         redis_client.delete(f"worker:owner:{worker_id}")
         redis_client.delete(f"worker:pubkey:{worker_id}")
         redis_client.delete(f"worker:status:{worker_id}")
-        redis_client.delete(f"worker:enroll:{worker_id}")
+        redis_client.delete(f"worker:enroll:{worker_id}",
+                            ENROLL_REPLICA_KEY.format(worker_id=worker_id))
         _clear_node_binding(redis_client, worker_id)
         # Sin esto, volver a registrar un minero con el mismo id lo haría
         # arrancar en el equipo del que fue dado de baja.

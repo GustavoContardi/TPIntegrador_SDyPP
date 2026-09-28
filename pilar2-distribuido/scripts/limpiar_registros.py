@@ -43,6 +43,7 @@ def _claves_de_minero(r, worker_id: str) -> list[str]:
         f"worker:owner:{worker_id}",
         f"worker:pubkey:{worker_id}",
         f"worker:node_pubkey:{worker_id}",
+        f"worker:node_pubkeys:{worker_id}",
         f"worker:enroll:{worker_id}",
         f"worker:status:{worker_id}",
         f"worker:desired_mode:{worker_id}",
@@ -53,9 +54,12 @@ def _claves_de_minero(r, worker_id: str) -> list[str]:
     # Sin borrar el índice inverso, la pubkey del nodo viejo seguiría apuntando
     # a su ex dueño y el NCT le imputaría a esa persona bloques de un minero que
     # ya no existe.
-    nodo = r.get(f"worker:node_pubkey:{worker_id}")
-    if nodo:
-        claves.append(f"node:owner:{nodo}")
+    # Un minero puede tener varios nodos enrolados (réplicas del coordinador).
+    nodos = set(r.smembers(f"worker:node_pubkeys:{worker_id}") or ())
+    ultimo = r.get(f"worker:node_pubkey:{worker_id}")
+    if ultimo:
+        nodos.add(ultimo)
+    claves.extend(f"node:owner:{nodo}" for nodo in sorted(nodos))
     return claves
 
 

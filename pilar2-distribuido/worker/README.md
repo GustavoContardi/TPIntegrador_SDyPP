@@ -158,7 +158,8 @@ Health (liveness): `GET :8080/health` → `{"status":"ok"}`. El estado real
 (modo, dirección, hashrate) está en `GET :9090/status` y en `worker:status:<id>`.
 
 Readiness: `GET :8080/ready` → `{"ready": true, "mode": "..."}`; 503 sólo si es
-`pool-coordinator` sin el lease de su pool (`"pool_leader": false`).
+un `pool-coordinator` en espera: otra réplica del mismo minero tiene el lease de
+su pool (`"standby": true`).
 
 ## Configuración
 
@@ -173,6 +174,8 @@ Readiness: `GET :8080/ready` → `{"ready": true, "mode": "..."}`; 503 sólo si 
 | `POOL_HTTP_PORT` | `9001` | Puerto HTTP del pool coordinator embebido (modo pool-coordinator). |
 | `WORKER_ADDRESS` | `http://<MY_POD_IP o hostname>:<POOL_HTTP_PORT>` | Dirección con la que otros mineros lo alcanzan si coordina un equipo. Se publica en el estado y el backend se la entrega a quien se una. Conviene fijarla explícitamente: el hostname del contenedor no tiene por qué coincidir con el `WORKER_ID`. En los mineros que despliega el API es el nombre de su Service (`http://worker-svc-<slug>.<ns>.svc:9001`). |
 | `MY_POD_IP` | (vacío) | IP del pod, inyectada por `fieldRef` en Kubernetes. Respaldo de `WORKER_ADDRESS` si no se pudo crear el Service. |
+| `WORKER_ENROLL_TOKEN` | (vacío) | Token de un solo uso para vincular la identidad del nodo con su dueño. |
+| `WORKER_ENROLL_TOKEN_REPLICA` | (vacío) | Segundo token, para la réplica en espera de un coordinador de equipo. Se prueba si el primero da 401. |
 | `NONCE_SPACE` | `50000000` | Tamaño total del espacio de nonces a fragmentar (pool-coordinator/standalone). |
 | `FRAGMENT_SIZE` | `1000000` | Tamaño de cada fragmento (modo pool-coordinator). |
 | `STANDALONE_NONCE_SPACE` | `50000000` | Tamaño del espacio de nonces (modo standalone). |
@@ -203,11 +206,19 @@ Readiness: `GET :8080/ready` → `{"ready": true, "mode": "..."}`; 503 sólo si 
   DNS estable.
 - **Dirección estable por Service, tráfico sólo al que manda**: en Kubernetes el
   API crea un Service por minero y el worker anuncia su nombre, que sobrevive al
-  reemplazo del pod. `GET :8080/ready` responde 503 sólo si el worker es
-  `pool-coordinator` y no tiene el lease de su pool; es la readinessProbe, y por
-  eso el Service no le manda mineros a un coordinador que no manda. Va separado
-  de `/health` (la liveness) para que un coordinador esperando el lease no sea
-  reiniciado. Ver [`docs/workers.md`](../../docs/workers.md) §5.bis.
+  reemplazo del pod. `GET :8080/ready` responde 503 sólo si el worker es un
+  `pool-coordinator` en espera (otra réplica tiene el lease); es la
+  readinessProbe, y por eso el Service no le manda mineros a un coordinador que
+  no manda. Va separado de `/health` (la liveness) para que un coordinador
+  esperando el lease no sea reiniciado. Ver
+  [`docs/workers.md`](../../docs/workers.md) §5.bis.
+- **Réplica en espera del coordinador de un equipo**: el coordinador corre en
+  dos pods del mismo minero. El lease `pool:leader:<pool_id>` guarda un id por
+  pod (`<worker_id>@<hostname>`) para distinguirlos; el que no lo tiene
+  fragmenta los desafíos pero no mina ni reparte ni publica estado, y si el
+  líder cae toma el lease y sigue la ventana en curso. Cada réplica se enrola con
+  su propio token (`WORKER_ENROLL_TOKEN` y `WORKER_ENROLL_TOKEN_REPLICA`: el
+  worker prueba los dos).
 - **La intención se persiste, el mensaje es una optimización**: el modo deseado
   vive en Redis y el worker lo reconcilia; el comando por RabbitMQ sólo evita
   esperar hasta 5 s. Al revés —confiando sólo en el mensaje— asignar un minero

@@ -38,10 +38,17 @@ Diagrama completo: [`docs/diagrams/arquitecturaVoxChain.jpeg`](../docs/diagrams/
   **Deployment** y un **Service** (`worker-svc-<id>`, puerto 9001). El Service
   es la dirección estable del minero si coordina un equipo: sus miembros le
   piden trabajo por ese nombre y no por la IP del pod, que cambia cada vez que
-  el pod se reemplaza. La readinessProbe va en `/ready`, que da 503 si el
-  coordinador no tiene el lease de su pool, así el Service sólo enruta al que
-  manda. Si la cuenta del kubeconfig no puede crear Services, el alta sigue y el
-  minero anuncia la IP de su pod, como antes.
+  el pod se reemplaza. Si la cuenta del kubeconfig no puede crear Services, el
+  alta sigue y el minero anuncia la IP de su pod, como antes.
+- Al **fundar un equipo**, el API escala el Deployment de su coordinador a
+  `TEAM_COORDINATOR_REPLICAS` (env del API, default 2) y le deja en el Secret un
+  segundo token de enrolamiento para la réplica; al **disolverlo** lo vuelve a
+  1. Las dos réplicas se reparten por el lease del pool: una manda y la otra
+  espera. La readinessProbe va en `/ready`, que da 503 en la que espera, así
+  que el Deployment muestra **1/2 disponible** de forma permanente: es a
+  propósito, y el Service sólo enruta a la que manda. Necesita permiso para
+  `deployments/scale` y para parchear Secrets en el namespace; sin él, el
+  equipo corre con un solo pod como antes.
 - **GPU opt-in**: los manifests piden `nvidia.com/gpu` sólo si se descomenta el
   recurso junto con las variables `NVIDIA_*` (ver el comentario en
   `gpu-cluster/worker-deployment.yaml`). Sin eso, el minero detecta que no hay

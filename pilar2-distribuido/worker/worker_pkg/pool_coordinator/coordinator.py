@@ -10,6 +10,14 @@ coordinador no fragmenta nada, y entonces ni él ni ninguno de sus mineros suma
 un solo hash a esa ley. Ése es todo el mecanismo — no hace falta avisarle a cada
 minero, porque los mineros sólo pueden trabajar en los fragmentos que el
 coordinador reparte.
+
+**Réplicas en espera.** Un coordinador puede correr en dos pods a la vez (el API
+escala su Deployment al fundar el equipo). El lease ``pool:leader:<pool_id>``
+decide cuál manda; el otro queda en ``standby``: recibe los desafíos y los
+fragmenta igual que el líder, pero no mina ni reparte. Si el líder cae, al
+tomar el lease ya tiene armados los fragmentos de la ventana en curso y el
+equipo sigue minándola, en vez de perderla. Para distinguir las réplicas el
+lease guarda un ``instance_id`` por pod, no el ``pool_id``, que comparten.
 """
 
 from __future__ import annotations
@@ -75,9 +83,15 @@ class PoolCoordinator:
                  lease_rank: str = LEASE_RANK_DESIGNATED,
                  election_n_zeros: int | None = None,
                  elect_leader: bool = True, on_lost_leadership=None,
-                 signer=None):
+                 signer=None, instance_id: str | None = None):
         self.m = messaging
         self.pool_id = pool_id
+        # Quién queda escrito en el lease. El `pool_id` es la identidad del pool
+        # (firma sus nonces, nombra `pool:health:*`, lo busca la deliberación) y
+        # es la misma en las dos réplicas de un coordinador; el lease necesita
+        # algo que las distinga, o las dos leen "su" nombre y se creen líderes.
+        # Por defecto coincide con el `pool_id`: un solo proceso por pool.
+        self.instance_id = instance_id or pool_id
         self.signer = signer
         self.redis = redis
         self.capacity = capacity
@@ -96,7 +110,7 @@ class PoolCoordinator:
         # `designated` porque el constructor sin este argumento es el del modo
         # `pool-coordinator`: ahí al coordinador lo eligió una persona.
         self.lease_rank = lease_rank
-        self._lease_value = encode_lease(pool_id, lease_rank)
+        self._lease_value = encode_lease(self.instance_id, lease_rank)
         self._miners: dict[str, dict] = {}
         self._pending_fragments: deque[dict] = deque()
         self._lock = Lock()
@@ -118,6 +132,13 @@ class PoolCoordinator:
         self.elect_leader = elect_leader
         self._on_lost_leadership = on_lost_leadership
         self.is_leader = (redis is None) or not elect_leader
+        # En espera: **otra instancia** tiene el lease de este pool. No es lo
+        # mismo que `not is_leader`: un coordinador que todavía no ganó la
+        # elección, o que no puede leer Redis, no sabe de nadie más y sigue
+        # trabajando. Frenarlo ahí dejaría al equipo sin minar por una falla de
+        # observación; dos coordinadores activos a la vez sólo duplican trabajo,
+        # el NCT sella igual el primer nonce válido.
+        self.standby = False
         self._miner_counter = 0
         self._running = False
         self._auto_miner_thread: threading.Thread | None = None
@@ -159,7 +180,7 @@ class PoolCoordinator:
         el caso de HA que el lease tiene que arbitrar, y ahí el segundo espera.
         """
         rank, holder = decode_lease(self.redis.get(self.lease_key))
-        if holder == self.pool_id or not outranks(self.lease_rank, rank):
+        if holder == self.instance_id or not outranks(self.lease_rank, rank):
             return False
         log.warning("pool coordinator %s (%s) desplaza a %s (%s) del lease %s",
                     self.pool_id, self.lease_rank, holder, rank, self.lease_key)
@@ -177,7 +198,7 @@ class PoolCoordinator:
             self.redis.setex(self.lease_key, self.lease_ttl, self._lease_value)
             return True
         rank, holder = decode_lease(current)
-        if holder == self.pool_id:
+        if holder == self.instance_id:
             self.redis.setex(self.lease_key, self.lease_ttl, self._lease_value)
             return True
         if outranks(self.lease_rank, rank):
@@ -190,6 +211,7 @@ class PoolCoordinator:
             self.redis.setex(self.lease_key, self.lease_ttl, self._lease_value)
             return True
         self.is_leader = False
+        self.standby = True
         pool_is_leader.set(0)
         pool_miners_registered.set(0)
         log.warning("pool coordinator %s perdió el lease %s: lo tiene %s",
@@ -245,6 +267,11 @@ class PoolCoordinator:
             log.debug("miners stale eliminados: %s", stale)
 
     def get_next_task(self, miner_id: str) -> dict | None:
+        # En espera no se reparte: el Service no le manda mineros a esta réplica
+        # (su readiness da 503), pero uno que todavía tenga la IP del pod podría
+        # llegar igual, y barrería fragmentos que el líder ya repartió.
+        if self.standby:
+            return None
         with self._lock:
             if miner_id not in self._miners:
                 return None
@@ -264,6 +291,8 @@ class PoolCoordinator:
             }
 
     def _get_auto_miner_fragment(self) -> dict | None:
+        if self.standby:
+            return None
         with self._lock:
             if not self._pending_fragments:
                 return None
@@ -310,6 +339,39 @@ class PoolCoordinator:
         self.m.publish_nonce_response(payload)
         log.info("pool %s publicó nonce %d para ventana %s", self.pool_id, nonce, wid)
         return True
+
+    def _drop_inactive_windows(self) -> None:
+        """Al tomar el mando, descarta los fragmentos de ventanas que ya cerraron.
+
+        En espera se fragmenta cada desafío que llega pero no se ve el sellado:
+        el nonce ganador lo entregó el líder, y este proceso nunca pasó por
+        `submit_result`. Sin esta limpieza, la réplica que asume repartiría el
+        espacio de una ventana ya sellada hasta que llegue el desafío siguiente
+        —con deliberación, dos minutos o más de trabajo inútil—.
+
+        La ventana vigente la dice `active_window` en Redis, que el NCT escribe
+        al abrirla y borra al cerrarla. Si no hay ninguna se descarta todo; si
+        no se puede leer, no se toca nada: repartir de más es preferible a
+        tirar la ventana en curso.
+        """
+        if self.redis is None:
+            return
+        try:
+            activa = self.redis.get("active_window")
+        except Exception:  # noqa: BLE001
+            log.debug("pool %s: no se pudo leer la ventana activa", self.pool_id,
+                      exc_info=True)
+            return
+        if isinstance(activa, bytes):
+            activa = activa.decode("utf-8")
+        with self._lock:
+            ventanas = {f.get("voting_window_id") for f in self._pending_fragments}
+        for wid in ventanas - {activa}:
+            self._discard_fragments(wid)
+        if activa in ventanas:
+            log.info("pool %s (%s): retomo la ventana %s con %d fragmentos "
+                     "pendientes", self.pool_id, self.instance_id, activa,
+                     len(self._pending_fragments))
 
     def set_voting_policy(self, policy: dict) -> None:
         decision = policy.get("decision", "accept")
@@ -463,7 +525,7 @@ class PoolCoordinator:
         if self.redis is None or not self.is_leader:
             return
         try:
-            if lease_holder(self.redis.get(self.lease_key)) == self.pool_id:
+            if lease_holder(self.redis.get(self.lease_key)) == self.instance_id:
                 self.redis.delete(self.lease_key)
                 log.info("pool %s soltó el lease %s", self.pool_id, self.lease_key)
         except Exception:  # noqa: BLE001
@@ -490,6 +552,7 @@ class PoolCoordinator:
                 lease_ttl=self.lease_ttl,
                 lease_rank=self.lease_rank,
                 clock=self.now,
+                instance_id=self.instance_id,
             )
             self._election_result = won
         except Exception:
@@ -503,12 +566,24 @@ class PoolCoordinator:
             return
         if self._election_in_progress:
             return
-        rank, holder = decode_lease(self.redis.get(self.lease_key))
+        try:
+            rank, holder = decode_lease(self.redis.get(self.lease_key))
+        except Exception:  # noqa: BLE001
+            # Sin poder leer el lease no sabemos de nadie más: se sigue
+            # trabajando (ver `standby` en el constructor).
+            self.standby = False
+            log.debug("pool %s: no se pudo leer el lease", self.pool_id, exc_info=True)
+            return
         # Que el lease esté ocupado sólo nos frena si su dueño no es de rango
         # menor: contra uno menor sí competimos, porque ganar la elección es el
         # camino por el que un coordinador designado recupera su pool.
-        if holder and holder != self.pool_id and not outranks(self.lease_rank, rank):
+        if holder and holder != self.instance_id and not outranks(self.lease_rank, rank):
+            if not self.standby:
+                log.info("pool %s (%s): el lease lo tiene %s, quedo en espera",
+                         self.pool_id, self.instance_id, holder)
+            self.standby = True
             return
+        self.standby = False
         self._election_in_progress = True
         self._election_result = False
         t = threading.Thread(target=self._run_election, daemon=True,
@@ -570,9 +645,11 @@ class PoolCoordinator:
                     and not self._election_thread.is_alive()):
                 if self._election_result:
                     self.is_leader = True
+                    self.standby = False
                     pool_is_leader.set(1)
-                    log.info("pool coordinator %s ganó la elección, asumiendo liderazgo",
-                             self.pool_id)
+                    log.info("pool coordinator %s (%s) ganó la elección, asumiendo "
+                             "liderazgo", self.pool_id, self.instance_id)
+                    self._drop_inactive_windows()
                 self._election_thread = None
 
             if now - self._last_lease_renew >= 3.0:

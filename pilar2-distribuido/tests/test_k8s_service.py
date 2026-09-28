@@ -51,11 +51,24 @@ class CoreFalso:
     def delete_namespaced_service(self, name, namespace):
         self.borrados.append(("service", name))
 
+    def patch_namespaced_secret(self, name, namespace, body):
+        self.parches = getattr(self, "parches", []) + [(name, body)]
+
 
 class AppsFalso:
-    def __init__(self):
+    def __init__(self, existe=True):
         self.deployments = []
         self.borrados = []
+        self.existe = existe
+        self.escalas = []
+
+    def read_namespaced_deployment(self, name, namespace):
+        if not self.existe:
+            raise ErrorDeApi(404)
+        return object()
+
+    def patch_namespaced_deployment_scale(self, name, namespace, body):
+        self.escalas.append((name, body["spec"]["replicas"]))
 
     def create_namespaced_deployment(self, namespace, body):
         self.deployments.append(body)
@@ -67,8 +80,8 @@ class AppsFalso:
 @pytest.fixture
 def cluster(monkeypatch):
     """Devuelve una función que arma el clúster falso con el error pedido."""
-    def armar(error_service=None):
-        core, apps = CoreFalso(error_service), AppsFalso()
+    def armar(error_service=None, existe=True):
+        core, apps = CoreFalso(error_service), AppsFalso(existe)
         monkeypatch.setattr(workers, "K8S_ENABLED", True)
         monkeypatch.setattr(workers, "NAMESPACE", "g-git-push-cv")
         monkeypatch.setattr(workers.client, "CoreV1Api", lambda: core)
@@ -138,3 +151,68 @@ def test_la_baja_borra_tambien_el_service(cluster):
     workers._delete_k8s_worker("worker-1")
     assert ("service", "worker-svc-worker-1") in core.borrados
     assert ("deployment", "worker-dep-worker-1") in apps.borrados
+
+
+# -- réplica en espera del coordinador de un equipo ---------------------------
+
+
+def test_el_pod_lee_un_segundo_token_opcional_para_la_replica(cluster):
+    _core, apps = cluster()
+    workers._spawn_k8s_worker("worker-1", "token")
+    contenedor = apps.deployments[0].spec.template.spec.containers[0]
+    replica = next(e for e in contenedor.env if e.name == "WORKER_ENROLL_TOKEN_REPLICA")
+    ref = replica.value_from.secret_key_ref
+    assert ref.key == "enrollment-token-replica"
+    # Opcional: sólo existe mientras el minero coordina un equipo. Sin esto el
+    # pod de cualquier minero no arrancaría (CreateContainerConfigError).
+    assert ref.optional is True
+
+
+def test_las_replicas_prefieren_nodos_distintos(cluster):
+    _core, apps = cluster()
+    workers._spawn_k8s_worker("worker-1", "token")
+    afinidad = apps.deployments[0].spec.template.spec.affinity.pod_anti_affinity
+    # Preferred, no required: en un clúster de un nodo la réplica tiene que
+    # poder programarse igual.
+    assert afinidad.required_during_scheduling_ignored_during_execution is None
+    [termino] = afinidad.preferred_during_scheduling_ignored_during_execution
+    assert termino.pod_affinity_term.topology_key == "kubernetes.io/hostname"
+
+
+def test_escalar_deja_el_token_de_la_replica_y_sube_a_dos(cluster):
+    import fakeredis
+
+    r = fakeredis.FakeRedis(decode_responses=True)
+    core, apps = cluster()
+    assert workers.scale_k8s_coordinator("worker-1", 2, r) is True
+
+    [(secreto, cuerpo)] = core.parches
+    assert secreto == "secret-worker-1"
+    token = cuerpo["stringData"]["enrollment-token-replica"]
+    # En Redis queda el hash en el slot de la réplica, listo para consumirse.
+    assert workers._consume_enrollment_token(r, "worker-1", token)
+    assert apps.escalas == [("worker-dep-worker-1", 2)]
+
+
+def test_volver_a_un_pod_no_emite_token(cluster):
+    import fakeredis
+
+    r = fakeredis.FakeRedis(decode_responses=True)
+    core, apps = cluster()
+    workers.scale_k8s_coordinator("worker-1", 1, r)
+    assert getattr(core, "parches", []) == []
+    assert apps.escalas == [("worker-dep-worker-1", 1)]
+
+
+def test_un_minero_sin_deployment_nuestro_no_se_toca(cluster):
+    # Lo levantó el usuario a mano: emitir un token pisaría el que todavía no
+    # usó para enrolar su proceso.
+    import fakeredis
+
+    r = fakeredis.FakeRedis(decode_responses=True)
+    r.set("worker:enroll:worker-1", "digest-del-alta")
+    core, apps = cluster(existe=False)
+    assert workers.scale_k8s_coordinator("worker-1", 2, r) is False
+    assert apps.escalas == []
+    assert not r.exists("worker:enroll:worker-1:replica")
+    assert r.get("worker:enroll:worker-1") == "digest-del-alta"

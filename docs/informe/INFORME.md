@@ -552,10 +552,10 @@ directamente no se abre.
 ### 5.1.bis Si cae el coordinador de un equipo
 
 El coordinador de un equipo lo designa su fundador, así que ningún miembro
-toma su lugar: mientras no vuelve, el equipo no mina. Los miembros no se caen:
-siguen vivos y reintentan. Cuando Kubernetes repone el pod, el coordinador
-arranca con el registro vacío, y cada miembro recibe "no te conozco" en su
-próximo heartbeat y se re-registra solo.
+puede tomar su lugar. Sin más, mientras Kubernetes repone su pod el equipo no
+mina. Los miembros no se caen: siguen vivos, reintentan, y al volver el
+coordinador reciben "no te conozco" en su próximo heartbeat y se re-registran
+solos.
 
 Lo que decidía si el equipo se recuperaba era la **dirección**. Los miembros le
 pedían trabajo a la IP del pod, y un pod reemplazado (nodo caído, evicción,
@@ -564,17 +564,30 @@ cuando alguien consultaba los equipos en el API: sin nadie mirando la UI, el
 equipo quedaba pidiéndole trabajo a una dirección muerta, sin ningún error
 visible. Ahora el alta crea un **Service por minero** y el pod anuncia su
 nombre, que sobrevive a cualquier reemplazo. El Service enruta sólo a pods
-listos, y la readiness del worker (`/ready`) es el lease del pool: con dos pods
-del mismo coordinador a la vez, los mineros van al que manda. El NCT probó este
-mismo criterio y lo dejó, porque su standby vive en un Deployment propio que así
-nunca terminaba de desplegarse; el de un minero es un solo pod que normalmente
-tiene el lease, y sólo queda fuera los segundos que tarda en tomarlo.
+listos, y la readiness del worker (`/ready`) da 503 en un coordinador cuyo
+lease tiene otro pod: con dos pods del mismo coordinador, los mineros van al
+que manda.
 
-Queda abierto: la ventana en curso se pierde para ese equipo (el pod nuevo no la
-recupera), y la identidad de nodo del pod nuevo no queda vinculada al dueño,
-porque el token de enrolamiento es de un solo uso. Una réplica en espera del
-coordinador acortaría la caída al TTL del lease; el Service es el prerequisito
-para agregarla.
+Sobre eso se agregó una **réplica en espera**. Al fundar el equipo el API
+escala el Deployment del coordinador a dos pods. Cuál manda lo decide el lease
+del pool, que ahora guarda un id por pod (antes guardaba el id del minero, que
+las dos réplicas comparten, y las dos se creían líderes). La que espera recibe
+cada desafío y lo fragmenta, pero no mina ni reparte. Si el líder cae, el lease
+vence a los 10 s, la réplica lo toma y **sigue la ventana en curso**, que ya
+tenía fragmentada. La caída del equipo pasa de lo que tarde Kubernetes en
+reponer un pod a entre 10 y ~40 s. El NCT probó un criterio de readiness
+parecido y lo dejó, porque `kubectl rollout status` en el pipeline no terminaba
+con un pod que nunca está listo; acá el Deployment del coordinador muestra 1/2
+disponible a propósito, y ningún pipeline espera ese rollout.
+
+Hubo que resolver el enrolamiento: las dos réplicas montan el mismo Secret y el
+token es de un solo uso. Al escalar se emite un segundo token, cada réplica
+prueba los dos, y el vínculo nodo → dueño admite varias claves a la vez, para
+que los bloques se sigan imputando al fundador gane la réplica que gane.
+
+Queda abierto: un pod que **reemplaza** a otro (después de que se cae un nodo)
+no tiene token válido y mina sin dueño; y la réplica repite algo del trabajo que
+el líder ya había hecho, porque no sabe qué fragmentos se barrieron.
 
 ### 5.2 Si cae el NCT
 

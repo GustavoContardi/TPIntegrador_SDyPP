@@ -318,8 +318,10 @@ minero CPU de Pilar 1, que vive fuera de este directorio.
   dirección** (`WORKER_ADDRESS`) en el estado que publica en Redis, y el backend
   se la entrega a quien se une al equipo. En Kubernetes esa dirección es el
   **nombre de un Service por minero** que crea el alta, no la IP del pod: así
-  sobrevive a que el pod del coordinador se reemplace, y el Service manda
-  tráfico sólo al pod que tiene el lease del pool (readiness en `/ready`). En
+  sobrevive a que el pod del coordinador se reemplace. Al fundar el equipo el
+  coordinador pasa a correr en **dos pods** (uno manda, el otro espera con la
+  ventana en curso ya fragmentada); el lease del pool decide cuál manda y el
+  Service sólo le manda tráfico a ése (readiness en `/ready`). En
   consecuencia `POST /api/workers/{id}/switch-mode` **sólo acepta `standalone`**:
   si se pudiera cambiar el modo por un lado y la membresía por otro, la lista de
   miembros del equipo mentiría. Ver [`docs/workers.md`](../docs/workers.md).
