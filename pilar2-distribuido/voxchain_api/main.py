@@ -12,7 +12,7 @@ import time
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from prometheus_client import exposition
+from prometheus_client import REGISTRY, exposition
 
 from common.logging_setup import setup_logging
 from common.metrics import api_http_request_duration_seconds, api_http_requests_total
@@ -29,6 +29,7 @@ from voxchain_api.routers import (
     windows,
     workers,
 )
+from voxchain_api.services.miner_metrics import LiveMinersCollector
 from voxchain_api.services.redis_reader import RedisReader
 
 # Lifespan manager for SSE background task
@@ -40,6 +41,10 @@ async def lifespan(app: FastAPI):
     redis = RedisReader()
     app.state.redis = redis
     app.state.sse_clients = set()
+    # Los mineros viven en el k3s, fuera del alcance de Prometheus: sus
+    # métricas salen de acá, del latido que dejan en Redis.
+    miners_collector = LiveMinersCollector(redis.store)
+    REGISTRY.register(miners_collector)
 
     # Start SSE polling task
     sse_task = asyncio.create_task(sse_polling_task(app))
@@ -49,6 +54,7 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
+    REGISTRY.unregister(miners_collector)
     for task in (sse_task, docker_task):
         task.cancel()
         try:
@@ -106,7 +112,9 @@ async def metrics_middleware(request: Request, call_next):
 @app.get("/metrics")
 async def metrics():
     from fastapi.responses import PlainTextResponse
-    return PlainTextResponse(exposition.generate_latest().decode(),
+    # generate_latest lee Redis (LiveMinersCollector): fuera del event loop.
+    salida = await asyncio.to_thread(exposition.generate_latest)
+    return PlainTextResponse(salida.decode(),
                              media_type="text/plain; version=0.0.4")
 
 # Include routers

@@ -1,4 +1,5 @@
-import { Routes } from '@angular/router';
+import { inject } from '@angular/core';
+import { Router, Routes } from '@angular/router';
 import { identityGuard } from './core/guards/identity.guard';
 
 /**
@@ -25,10 +26,6 @@ export const routes: Routes = [
   {
     path: 'dashboard',
     loadComponent: () => import('./features/dashboard/dashboard.component').then(m => m.DashboardComponent)
-  },
-  {
-    path: 'chain',
-    loadComponent: () => import('./features/chain/chain.component').then(m => m.ChainComponent)
   },
   {
     path: 'laws',
@@ -67,5 +64,7 @@ export const routes: Routes = [
   // Los equipos viven dentro de la página de mineros. La ruta se conserva para
   // que no se rompan los enlaces que ya existían.
   { path: 'teams', redirectTo: 'workers', pathMatch: 'full' },
+  // El historial pasó a ser una vista de Leyes; misma razón.
+  { path: 'chain', redirectTo: () => inject(Router).parseUrl('/laws?vista=historial'), pathMatch: 'full' },
   { path: '**', redirectTo: '' }
 ];

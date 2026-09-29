@@ -48,7 +48,9 @@ spec:
     - name: voxchain.mineria
       rules:
         - alert: VoxchainSinGPU
-          expr: max(voxchain_worker_has_gpu) == 0
+          # voxchain_miner_* lo exporta el API desde worker:status en Redis:
+          # Prometheus no alcanza el /metrics de los mineros del k3s.
+          expr: max(voxchain_miner_has_gpu) == 0
           for: 10m
           labels:
             severity: warning

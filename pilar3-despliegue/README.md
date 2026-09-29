@@ -403,6 +403,15 @@ contra el cual autenticar; por eso `02`–`04` sólo corren por push si la varia
   latencia). ServiceMonitors para el auto-descubrimiento, 5 reglas de alerta
   propias y el dashboard precargado en un ConfigMap. Alertmanager no tiene
   receptor configurado.
+- **Métricas de los mineros**: un ServiceMonitor no descubre pods de otro
+  clúster, así que Prometheus no alcanza el `/metrics` de los mineros del k3s.
+  El API exporta `voxchain_miner_*` (vivo, hashrate, GPU, modo, capacidad) a
+  partir del latido `worker:status:*` que cada minero deja en Redis
+  (`voxchain_api/services/miner_metrics.py`), y Prometheus lo recoge con el
+  ServiceMonitor del API. Son los valores del último latido: los contadores y
+  los histogramas propios del minero (nonces, latencia del desafío) no llegan.
+  Como el API tiene 2 réplicas, las consultas agregan con
+  `max by (worker_id)`.
 - **Seguridad de contenedores**: todos los workloads corren con `securityContext`
   restrictivo — `runAsNonRoot` (uid 1000 apps, 999 Redis/RabbitMQ, 101 nginx),
   `allowPrivilegeEscalation: false`, `capabilities.drop: ALL` y seccomp

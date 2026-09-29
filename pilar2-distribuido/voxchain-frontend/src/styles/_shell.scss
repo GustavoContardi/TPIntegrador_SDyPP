@@ -1,0 +1,140 @@
+// Barra superior (`app.component`).
+//
+// Vive acá y no en el componente por la misma razón que la portada: con las
+// pastillas de acción y la ficha de identidad, la hoja pasaba el presupuesto de
+// 4 kB por componente. Todo va con prefijo `hdr` para que, siendo global, no
+// pise ninguna clase de las pantallas.
+
+.hdr {
+  position: sticky; top: 0; z-index: 20;
+  backdrop-filter: blur(14px);
+  background: color-mix(in srgb, var(--color-bg) 82%, transparent);
+}
+.hdr__inner {
+  max-width: 1240px; margin: 0 auto;
+  display: flex; align-items: center; gap: 20px; padding: 12px 32px;
+}
+
+.hdr__brand {
+  display: inline-flex; align-items: baseline; gap: .34em;
+  font-family: var(--font-heading); font-size: 17px; letter-spacing: .04em;
+  color: var(--color-text); margin-right: auto; white-space: nowrap;
+}
+.hdr__brand:hover { color: var(--color-text); }
+.hdr__vox { font-weight: 600; }
+.hdr__reborn { font-weight: 300; color: var(--color-accent); }
+
+.hdr__nav { display: flex; align-items: center; gap: 8px; }
+
+// ── destinos ───────────────────────────────────────────────────────────────
+// Todos pastillas con ícono. Siguen la regla de Nocturne —el acento es línea y
+// brillo, nunca relleno de área— así que el fondo es apenas un tinte, y dónde
+// estás se marca encendiendo el filo, no rellenando.
+.hdr__pill {
+  display: inline-flex; align-items: center; gap: 7px; min-height: 34px; padding: 0 14px;
+  border-radius: 999px; border: 1px solid var(--color-accent-800);
+  font-family: var(--font-heading); font-size: 13px; font-weight: 500; white-space: nowrap;
+  color: var(--color-accent-300);
+  transition: background .2s ease, border-color .2s ease, box-shadow .2s ease;
+}
+.hdr__pill svg {
+  width: 15px; height: 15px; flex: none; fill: none; stroke: currentColor;
+  stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round;
+}
+.hdr__pill:hover { color: var(--color-accent-200); border-color: var(--color-accent-600); }
+// El estilo de todas menos la principal: filo y un tinte apenas.
+.hdr__pill--soft { background: color-mix(in srgb, var(--color-accent) 6%, transparent); }
+.hdr__pill--soft:hover { background: color-mix(in srgb, var(--color-accent) 12%, transparent); }
+.hdr__pill--soft.on { border-color: var(--color-accent); color: var(--color-accent-200); }
+// La principal se enciende como el botón de la portada, un punto más: tinte
+// más cargado, un brillo propio alrededor y el halo por debajo. Al lado de
+// cinco pastillas iguales tiene que ser, sin dudas, la que se aprieta.
+.hdr__pill--propose {
+  border-color: var(--color-accent-400); color: var(--color-accent-100);
+  background: color-mix(in srgb, var(--color-accent) 24%, transparent);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--color-accent) 25%, transparent),
+    0 0 18px -4px color-mix(in srgb, var(--color-accent) 70%, transparent),
+    0 8px 26px -8px var(--color-accent);
+}
+.hdr__pill--propose svg { stroke-width: 2.2; }
+.hdr__pill--propose:hover {
+  color: #fff; border-color: var(--color-accent-300);
+  background: color-mix(in srgb, var(--color-accent) 34%, transparent);
+}
+.hdr__pill--propose.on { background: color-mix(in srgb, var(--color-accent) 38%, transparent); }
+
+// ── vos ────────────────────────────────────────────────────────────────────
+.hdr__session {
+  display: flex; align-items: center; gap: 6px;
+  padding-left: 16px; border-left: 1px solid var(--color-divider);
+}
+// Ficha de perfil: todo el bloque es el link, con la inicial de avatar y una
+// flecha que avisa que lleva a algún lado.
+.hdr__me {
+  display: inline-flex; align-items: center; gap: 10px; min-width: 0;
+  padding: 4px 8px 4px 4px; border-radius: 999px; border: 1px solid transparent;
+  color: var(--color-text); transition: background .2s ease, border-color .2s ease;
+}
+.hdr__me:hover { color: var(--color-text); background: color-mix(in srgb, var(--color-text) 6%, transparent); border-color: var(--color-divider); }
+.hdr__me.on { border-color: var(--color-accent-700); }
+.hdr__avatar {
+  position: relative; flex: none; display: inline-grid; place-items: center;
+  width: 30px; height: 30px; border-radius: 50%;
+  background: var(--color-accent-900); box-shadow: inset 0 0 0 1px var(--color-accent-700);
+  font-size: 13px; font-weight: 500; color: var(--color-accent-300);
+}
+.hdr__dot {
+  position: absolute; right: -1px; bottom: -1px; width: 9px; height: 9px; border-radius: 50%;
+  background: var(--color-accent); box-shadow: 0 0 0 2px var(--color-bg), 0 0 10px var(--color-accent);
+  animation: vc-pulse 1.8s ease-in-out infinite;
+}
+.hdr__dot--off { animation: none; background: var(--color-neutral-500); box-shadow: 0 0 0 2px var(--color-bg); }
+.hdr__who { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+.hdr__name {
+  max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 12.5px; color: var(--color-neutral-100);
+}
+.hdr__sub { font-size: 10.5px; letter-spacing: .04em; color: var(--color-neutral-500); }
+.hdr__me:hover .hdr__sub, .hdr__me.on .hdr__sub { color: var(--color-accent-300); }
+.hdr__chev {
+  width: 14px; height: 14px; flex: none; fill: none; stroke: var(--color-neutral-500);
+  stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; transition: transform .2s ease;
+}
+.hdr__me:hover .hdr__chev { stroke: var(--color-accent-300); transform: translateX(2px); }
+
+.hdr__lock { font-size: 12px; color: var(--color-neutral-500); }
+.hdr__lock:hover { color: var(--color-text); background: transparent; }
+.hdr__signin { font-size: 12.5px; }
+
+.hdr__menu { display: none; color: var(--color-neutral-300); }
+
+// ── angosto ────────────────────────────────────────────────────────────────
+@media (max-width: 1180px) {
+  .hdr__inner { gap: 16px; padding: 12px 24px; }
+  .hdr__pill { padding: 0 12px; }
+  .hdr__who { display: none; }
+  .hdr__me { padding-right: 6px; gap: 6px; }
+}
+
+// El corte es 1080 y no menos porque con "Bloquear" (identidad con contraseña)
+// la fila entera ya no entra por debajo de ~1060px.
+@media (max-width: 1080px) {
+  .hdr__inner { flex-wrap: wrap; gap: 0; padding: 12px 20px; }
+  .hdr__menu { display: inline-flex; }
+  .hdr__nav, .hdr__session { display: none; flex-basis: 100%; }
+  .hdr--open .hdr__inner { max-height: 100vh; overflow-y: auto; }
+  // De a dos por renglón; la principal, sola y a todo el ancho al final.
+  .hdr--open .hdr__nav { display: flex; flex-wrap: wrap; gap: 10px; padding: 14px 0; margin-top: 8px; border-top: 1px solid var(--color-divider); }
+  .hdr__pill { flex: 1 1 calc(50% - 5px); justify-content: flex-start; min-height: 44px; padding: 0 16px; font-size: 14px; }
+  .hdr__pill--propose { flex-basis: 100%; justify-content: center; }
+  .hdr--open .hdr__session {
+    display: flex; flex-wrap: wrap; padding: 12px 0 6px;
+    border-left: 0; border-top: 1px solid var(--color-divider);
+  }
+  .hdr__who { display: flex; }
+  .hdr__me { flex: 1; padding: 6px 10px 6px 6px; gap: 10px; }
+  .hdr__name { max-width: none; font-size: 14px; }
+  .hdr__chev { margin-left: auto; }
+  .hdr__signin { flex: 1; min-height: 42px; }
+}

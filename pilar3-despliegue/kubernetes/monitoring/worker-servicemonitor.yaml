@@ -1,3 +1,7 @@
+# Sólo encuentra mineros que corran DENTRO de GKE, en el namespace voxchain, y
+# hoy no hay ninguno: los mineros viven en el k3s, y un ServiceMonitor no puede
+# descubrir pods de otro clúster. Sus métricas llegan como voxchain_miner_*, que
+# el API exporta a partir del latido worker:status en Redis (api-servicemonitor).
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:

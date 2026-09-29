@@ -11,7 +11,7 @@ data:
     {
       "title": "VoxChain — Sistema Distribuido",
       "uid": "voxchain-v2",
-      "version": 3,
+      "version": 4,
       "timezone": "browser",
       "editable": true,
       "refresh": "10s",
@@ -25,7 +25,7 @@ data:
         "blockchain",
         "mining"
       ],
-      "description": "VoxChain — NCT y API. Los paneles de workers y pool se quitaron: viven en el cluster k3s y Prometheus no los alcanza.",
+      "description": "VoxChain — NCT, API y mineros. Los mineros corren en el cluster k3s, fuera del alcance de Prometheus: sus paneles salen de voxchain_miner_*, que el API exporta a partir del latido worker:status en Redis.",
       "templating": {
         "list": [
           {
@@ -640,6 +640,243 @@ data:
               "color": {
                 "mode": "palette-classic"
               }
+            }
+          }
+        },
+        {
+          "id": 40,
+          "title": "MINEROS — k3s (latido en Redis, exportado por el API)",
+          "type": "row",
+          "collapsed": false,
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 41
+          }
+        },
+        {
+          "id": 41,
+          "title": "Mineros vivos",
+          "type": "stat",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 0,
+            "y": 42
+          },
+          "targets": [
+            {
+              "expr": "count(max by (worker_id) (voxchain_miner_up)) or vector(0)",
+              "legendFormat": "Mineros vivos"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "blue",
+                    "value": null
+                  }
+                ]
+              }
+            }
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "colorMode": "value",
+            "graphMode": "area"
+          }
+        },
+        {
+          "id": 42,
+          "title": "Mineros con GPU",
+          "type": "stat",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 6,
+            "y": 42
+          },
+          "targets": [
+            {
+              "expr": "sum(max by (worker_id) (voxchain_miner_has_gpu)) or vector(0)",
+              "legendFormat": "Mineros con GPU"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "blue",
+                    "value": null
+                  }
+                ]
+              }
+            }
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "colorMode": "value",
+            "graphMode": "area"
+          }
+        },
+        {
+          "id": 43,
+          "title": "Hashrate total de la red",
+          "type": "stat",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 12,
+            "x": 12,
+            "y": 42
+          },
+          "targets": [
+            {
+              "expr": "sum(max by (worker_id) (voxchain_miner_hashrate_hps)) or vector(0)",
+              "legendFormat": "Hashrate total de la red"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "suffix: H/s",
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "blue",
+                    "value": null
+                  }
+                ]
+              }
+            }
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "colorMode": "value",
+            "graphMode": "area"
+          }
+        },
+        {
+          "id": 44,
+          "title": "Hashrate por minero",
+          "type": "timeseries",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 46
+          },
+          "targets": [
+            {
+              "expr": "max by (worker_id, resource) (voxchain_miner_hashrate_hps)",
+              "legendFormat": "{{worker_id}} ({{resource}})"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "suffix: H/s",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 6
+              },
+              "color": {
+                "mode": "palette-classic"
+              }
+            }
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "multi"
+            }
+          }
+        },
+        {
+          "id": 45,
+          "title": "Mineros vivos por modo",
+          "type": "timeseries",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 46
+          },
+          "targets": [
+            {
+              "expr": "count by (mode) (max by (worker_id, mode) (voxchain_miner_up))",
+              "legendFormat": "{{mode}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 6
+              },
+              "color": {
+                "mode": "palette-classic"
+              }
+            }
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "multi"
             }
           }
         }

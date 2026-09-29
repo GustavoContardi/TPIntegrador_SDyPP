@@ -107,7 +107,7 @@ import { friendlyDate } from '../../core/utils/format';
           <p class="vc-empty">Todavía no se selló ninguna decisión.</p>
         </ng-template>
         <div class="vc-actions recent__more" *ngIf="recent().length">
-          <a class="btn btn-secondary recent__btn" routerLink="/chain">Ver el historial completo</a>
+          <a class="btn btn-secondary recent__btn" routerLink="/laws" [queryParams]="{ vista: 'historial' }">Ver el historial completo</a>
         </div>
       </section>
     </main>

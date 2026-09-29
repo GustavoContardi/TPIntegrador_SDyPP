@@ -1,4 +1,4 @@
-import { Component, inject, signal } from '@angular/core';
+import { Component, computed, inject, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { RouterModule } from '@angular/router';
 import { IdentityService } from './core/services/identity.service';
@@ -12,14 +12,21 @@ import { UnlockPromptComponent } from './core/components/unlock-prompt.component
  * que se desvanece en los extremos — la firma de Nocturne — y no un borde
  * lleno, que cortaría en seco contra el degradado de la página.
  *
- * El bloque de sesión de la derecha va separado por una línea vertical: lo que
- * está a su izquierda es la app, lo que está a su derecha sos vos.
+ * Cada destino es una pastilla con ícono, todas con el mismo filo suave del
+ * acento: con algunas en pastilla y otras en texto llano la barra parecía
+ * tener dos estilos. La única distinta es Proponer ley, encendida y con halo,
+ * porque es la acción principal de la app; por eso además cierra la fila.
  *
- * En pantallas angostas los links y la sesión no entran en una fila, y
- * envueltos en tres ocupaban un cuarto del celular pegado arriba. Ahí la barra
- * queda en marca + botón de menú, y el menú se despliega debajo, dentro de la
- * misma barra: links en columna y la sesión al pie, separada por una regla en
- * vez de la línea vertical.
+ * El bloque de sesión va separado por una línea vertical: lo que está a su
+ * izquierda es la app, lo que está a su derecha sos vos. Por eso tiene forma
+ * de ficha de perfil —inicial, nombre y flecha— y no de link suelto.
+ *
+ * En pantallas angostas nada de eso entra en una fila, y envuelto en tres
+ * ocupaba un cuarto del celular pegado arriba. Ahí la barra queda en marca +
+ * botón de menú, y el menú se despliega debajo, dentro de la misma barra.
+ *
+ * Los estilos viven en `styles/_shell.scss` y no acá: con las pastillas y la
+ * ficha, esta hoja pasaba el presupuesto de 4 kB por componente.
  */
 @Component({
   selector: 'app-root',
@@ -29,8 +36,8 @@ import { UnlockPromptComponent } from './core/components/unlock-prompt.component
     <div class="vc-shell">
       <header class="hdr" [class.hdr--open]="menuOpen()">
         <div class="hdr__inner" (click)="closeMenuOnLink($event)">
-          <a routerLink="/" class="brand" title="Inicio">
-            <span class="brand__vox">VOXCHAIN</span><span class="brand__reborn">REBORN</span>
+          <a routerLink="/" class="hdr__brand" title="Inicio">
+            <span class="hdr__vox">VOXCHAIN</span><span class="hdr__reborn">REBORN</span>
           </a>
 
           <button type="button" class="btn btn-secondary btn-icon hdr__menu"
@@ -44,41 +51,88 @@ import { UnlockPromptComponent } from './core/components/unlock-prompt.component
             </svg>
           </button>
 
-          <nav class="nav-links" id="vc-menu">
-            <a routerLink="/dashboard" routerLinkActive="on" [ariaCurrentWhenActive]="'page'">Panel</a>
-            <a routerLink="/chain" routerLinkActive="on" [ariaCurrentWhenActive]="'page'">Historial</a>
-            <a routerLink="/laws" routerLinkActive="on" [ariaCurrentWhenActive]="'page'">Leyes</a>
-            <a routerLink="/queue" routerLinkActive="on" [ariaCurrentWhenActive]="'page'"
-               *ngIf="identityService.identity()">Votar</a>
-            <a routerLink="/workers" routerLinkActive="on" [ariaCurrentWhenActive]="'page'">Minería</a>
-            <a routerLink="/health" routerLinkActive="on" [ariaCurrentWhenActive]="'page'">Estado</a>
-            <a routerLink="/propose" routerLinkActive="on" [ariaCurrentWhenActive]="'page'"
-               *ngIf="identityService.identity()">Proponer ley</a>
+          <nav class="hdr__nav" id="vc-menu">
+            <a class="hdr__pill hdr__pill--soft" routerLink="/dashboard" routerLinkActive="on"
+               [ariaCurrentWhenActive]="'page'">
+              <!-- Cuatro cuadros: el tablero de un vistazo. -->
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="4" y="4" width="7" height="7" rx="1.5"></rect><rect x="13" y="4" width="7" height="7" rx="1.5"></rect>
+                <rect x="4" y="13" width="7" height="7" rx="1.5"></rect><rect x="13" y="13" width="7" height="7" rx="1.5"></rect>
+              </svg>
+              Panel
+            </a>
+            <a class="hdr__pill hdr__pill--soft" routerLink="/laws" routerLinkActive="on"
+               [ariaCurrentWhenActive]="'page'">
+              <!-- Una hoja con renglones: el texto de la ley. -->
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M7 3h7l4 4v14H7z"></path><path d="M14 3v4h4M10 12h5M10 16h5"></path>
+              </svg>
+              Leyes
+            </a>
+            <a class="hdr__pill hdr__pill--soft" routerLink="/health" routerLinkActive="on"
+               [ariaCurrentWhenActive]="'page'">
+              <!-- El mismo latido que dibuja la pantalla de Estado. -->
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l2-5 4 10 2-5h6"></path></svg>
+              Estado
+            </a>
+            <a class="hdr__pill hdr__pill--soft" routerLink="/workers" routerLinkActive="on"
+               [ariaCurrentWhenActive]="'page'" title="Poné tu computadora a minar">
+              <!-- Un chip: lo que ponés es cómputo. -->
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="7" y="7" width="10" height="10" rx="1.5"></rect>
+                <path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"></path>
+              </svg>
+              Minería
+            </a>
+            <a class="hdr__pill hdr__pill--soft" routerLink="/queue" routerLinkActive="on"
+               [ariaCurrentWhenActive]="'page'" *ngIf="identityService.identity()"
+               title="Decidí si tu cómputo respalda la ley en juego">
+              <!-- Una tilde en un recuadro: la boleta marcada. -->
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="4" y="4" width="16" height="16" rx="3"></rect>
+                <path d="M8.5 12.5l2.5 2.5 4.5-5"></path>
+              </svg>
+              Votar
+            </a>
+            <a class="hdr__pill hdr__pill--propose" routerLink="/propose" routerLinkActive="on"
+               [ariaCurrentWhenActive]="'page'" *ngIf="identityService.identity()">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>
+              Proponer ley
+            </a>
           </nav>
 
-          <div class="session">
+          <div class="hdr__session">
             <ng-container *ngIf="identityService.identity() as id; else anon">
-              <!-- El punto late mientras haya sesión: es el mismo semáforo que
-                   usan los mineros, acá aplicado a tu propia identidad. -->
-              <span class="session__dot" [class.session__dot--off]="identityService.locked()"></span>
-              <span class="session__label">{{ sessionLabel() }}</span>
               <!-- No hay botón de "cerrar sesión": no hay sesión que cerrar. La
                    identidad es la clave guardada en este navegador, y el único
                    "salir" posible es borrarla — irreversible sin el respaldo —,
                    así que vive en /identity, detrás de una confirmación. Antes
                    había acá una × que la borraba de un clic. -->
-              <a class="btn btn-ghost session__btn" routerLink="/identity">Mi identidad</a>
+              <a class="hdr__me" routerLink="/identity" routerLinkActive="on"
+                 [ariaCurrentWhenActive]="'page'" title="Ver y administrar tu identidad">
+                <span class="hdr__avatar" aria-hidden="true">
+                  {{ initial() }}
+                  <!-- El punto late mientras la clave esté a mano: es el mismo
+                       semáforo que usan los mineros, acá aplicado a vos. -->
+                  <span class="hdr__dot" [class.hdr__dot--off]="identityService.locked()"></span>
+                </span>
+                <span class="hdr__who">
+                  <span class="hdr__name">{{ sessionLabel() }}</span>
+                  <span class="hdr__sub">{{ identityService.locked() ? 'Bloqueada' : 'Mi identidad' }}</span>
+                </span>
+                <svg class="hdr__chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"></path></svg>
+              </a>
               <!-- Bloquear sí es lo que uno espera de "salir": olvida la clave de
                    memoria sin borrar nada, y para volver alcanza la contraseña. -->
               <ng-container *ngIf="identityService.protection() === 'vault'">
-                <button class="btn btn-ghost session__btn" *ngIf="!identityService.locked()"
+                <button class="btn btn-ghost hdr__lock" *ngIf="!identityService.locked()"
                         (click)="identityService.lock()" title="Olvidar la clave hasta que vuelvas a escribir tu contraseña">Bloquear</button>
-                <button class="btn btn-ghost session__btn" *ngIf="identityService.locked()"
+                <button class="btn btn-ghost hdr__lock" *ngIf="identityService.locked()"
                         (click)="unlock()">Desbloquear</button>
               </ng-container>
             </ng-container>
             <ng-template #anon>
-              <a class="btn btn-primary session__in" routerLink="/identity">Crear mi identidad</a>
+              <a class="btn btn-primary hdr__signin" routerLink="/identity">Crear mi identidad</a>
             </ng-template>
           </div>
         </div>
@@ -89,78 +143,7 @@ import { UnlockPromptComponent } from './core/components/unlock-prompt.component
       <app-unlock-prompt></app-unlock-prompt>
     </div>
   `,
-  styles: [`
-    :host { display: block; }
-
-    .hdr {
-      position: sticky; top: 0; z-index: 20;
-      backdrop-filter: blur(14px);
-      background: color-mix(in srgb, var(--color-bg) 82%, transparent);
-    }
-    .hdr__inner {
-      max-width: 1240px; margin: 0 auto;
-      display: flex; align-items: center; gap: 20px; padding: 14px 32px;
-    }
-
-    .brand {
-      display: inline-flex; align-items: baseline; gap: .34em;
-      font-family: var(--font-heading); font-size: 17px; letter-spacing: .04em;
-      color: var(--color-text); margin-right: auto; white-space: nowrap;
-    }
-    .brand:hover { color: var(--color-text); }
-    .brand__vox { font-weight: 600; }
-    .brand__reborn { font-weight: 300; color: var(--color-accent); }
-
-    .nav-links { display: flex; align-items: center; gap: 15px; flex-wrap: wrap; }
-    .nav-links a {
-      font-size: 13.5px; white-space: nowrap; color: var(--color-neutral-400);
-    }
-    .nav-links a:hover { color: var(--color-text); }
-    /* El acento marca dónde estás: es la única forma en que este sistema
-       señala el presente, sin subrayado ni pastilla de fondo. */
-    .nav-links a.on { color: var(--color-accent); }
-
-    .session {
-      display: flex; align-items: center; gap: 10px;
-      padding-left: 16px; border-left: 1px solid var(--color-divider);
-    }
-    .session__dot {
-      flex: none; width: 7px; height: 7px; border-radius: 50%;
-      background: var(--color-accent); box-shadow: 0 0 10px var(--color-accent);
-      animation: vc-pulse 1.8s ease-in-out infinite;
-    }
-    .session__dot--off { animation: none; background: var(--color-neutral-500); box-shadow: none; }
-    .session__label { font-size: 12.5px; white-space: nowrap; color: var(--color-neutral-300); }
-    .session__btn { font-size: 12px; color: var(--color-neutral-500); }
-    .session__btn:hover { color: var(--color-text); background: transparent; }
-    .session__in { font-size: 12.5px; }
-
-    .hdr__menu { display: none; color: var(--color-neutral-300); }
-
-    @media (max-width: 1080px) {
-      .hdr__inner { flex-wrap: wrap; padding: 12px 20px; row-gap: 12px; }
-      .brand { margin-right: 0; }
-      .session { margin-left: auto; }
-    }
-
-    @media (max-width: 960px) {
-      .hdr__inner { gap: 0; }
-      .brand { margin-right: auto; }
-      .hdr__menu { display: inline-flex; }
-      .nav-links, .session { display: none; flex-basis: 100%; }
-      .hdr--open .hdr__inner { max-height: 100vh; overflow-y: auto; }
-      .hdr--open .nav-links {
-        display: flex; flex-direction: column; align-items: stretch; gap: 0; margin-top: 8px;
-      }
-      .nav-links a { padding: 12px 2px; font-size: 15px; border-top: 1px solid var(--color-divider); }
-      .hdr--open .session {
-        display: flex; flex-wrap: wrap; margin: 0; padding: 14px 2px 6px;
-        border-left: 0; border-top: 1px solid var(--color-divider);
-      }
-      .session__label { margin-right: auto; }
-      .session__in { flex: 1; min-height: 40px; }
-    }
-  `]
+  styles: [`:host { display: block; }`]
 })
 export class AppComponent {
   identityService = inject(IdentityService);
@@ -186,6 +169,12 @@ export class AppComponent {
     if (!id) return '';
     return id.username || 'Tu identidad';
   }
+
+  /** La inicial del nombre hace de avatar; sin nombre, una marca neutra. */
+  initial = computed(() => {
+    const name = this.identityService.identity()?.username?.trim();
+    return name ? [...name][0].toLocaleUpperCase('es') : '·';
+  });
 
   unlock() {
     // Cancelar es una respuesta válida: la identidad sigue bloqueada y listo.

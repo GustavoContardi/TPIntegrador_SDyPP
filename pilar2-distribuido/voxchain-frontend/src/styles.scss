@@ -1,22 +1,25 @@
 // Hoja global de VoxChain Reborn.
 //
-// Dos capas, en este orden:
+// Tres capas, en este orden:
 //
 //   1. `styles/nocturne` — el sistema de diseño tal cual vino de Claude Design:
 //      tokens y clases de componente (`.btn`, `.card`, `.tag`, `.input`,
 //      `.table`). No se toca desde acá; si hay que cambiar el look, se cambia
 //      allá.
-//   2. La capa de aplicación, abajo — los patrones que el diseño repite en
+//   2. Las hojas de pantallas que no entran en su componente: la barra
+//      (`styles/shell`) y la portada (`styles/home`).
+//   3. La capa de aplicación, abajo — los patrones que el diseño repite en
 //      varias pantallas (la portada de sección, la grilla de métricas, el
 //      bloque de hash, la regla que se desvanece).
 //
-// La capa 2 es global por una razón concreta y no por gusto: `angular.json`
+// La capa 3 es global por una razón concreta y no por gusto: `angular.json`
 // pone un presupuesto de **4 kB de error** por hoja de componente
 // (`anyComponentStyle`), y estas pantallas comparten tanto que, repetidas en
 // cada componente, varias lo pasaban. Acá se pagan una sola vez.
 
 @use '@angular/material' as mat;
 @use 'styles/nocturne';
+@use 'styles/shell';
 @use 'styles/home';
 
 // Material queda sólo por el snackbar: es lo único que aporta comportamiento
@@ -221,6 +224,11 @@ body {
   cursor: pointer; padding: 6px 13px; font-size: 12.5px;
   font-family: var(--font-body); border: 1px solid transparent;
 }
+// Sin elegir, el contorno va sobre nada: sin esto el `<button>` se queda con
+// el fondo gris claro del navegador, que en este tema parece un botón roto. El
+// filo es el tono apagado del acento porque el borde transparente de arriba le
+// gana al de `.tag-outline`, y a pleno competiría con la opción elegida.
+.tag-btn.tag-outline { background: transparent; border-color: var(--color-accent-700); }
 .tag-btn:hover { border-color: var(--color-accent); }
 .tag-btn.tag-outline:hover { border-color: var(--color-accent-300); }
 

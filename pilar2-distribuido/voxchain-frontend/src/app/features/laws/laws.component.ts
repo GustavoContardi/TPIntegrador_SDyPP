@@ -1,5 +1,9 @@
 import { Component, computed, effect, inject, signal, untracked } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { toSignal } from '@angular/core/rxjs-interop';
+import { ActivatedRoute, Router } from '@angular/router';
+import { map } from 'rxjs';
+import { ChainComponent } from '../chain/chain.component';
 import { ApiService } from '../../core/services/api.service';
 import { EventsService } from '../../core/services/events.service';
 import {
@@ -18,9 +22,16 @@ const FILTROS: { key: string; label: string }[] = [
 ];
 
 /**
- * Todas las leyes de la red, filtrables por estado.
+ * El registro de leyes, en dos vistas sobre lo mismo.
  *
- * El diseño no maquetó esta pantalla pero sí dejó decidido cómo se filtra: una
+ * Antes eran dos entradas de la barra — Leyes e Historial — que listaban las
+ * mismas leyes con tablas distintas, y no quedaba claro cuál mirar. Ahora es
+ * una sola pantalla: **Todas las leyes** cuenta en qué punto de su vida está
+ * cada una, y **Historial sellado** muestra el comprobante de lo que ya se
+ * decidió. La vista va en la URL (`?vista=historial`) para que se pueda
+ * enlazar y para que `/chain`, la ruta vieja, siga llevando al mismo lugar.
+ *
+ * El diseño no maquetó la lista pero sí dejó decidido cómo se filtra: una
  * fila de etiquetas por estado, no pestañas. La diferencia no es cosmética —
  * las pestañas anteriores sólo cubrían tres de los seis estados, y una ley
  * derogada o descartada no aparecía en ninguna. El filtro es local y no una
@@ -30,65 +41,86 @@ const FILTROS: { key: string; label: string }[] = [
 @Component({
   selector: 'app-laws',
   standalone: true,
-  imports: [CommonModule],
+  imports: [CommonModule, ChainComponent],
   template: `
     <main class="vc-page">
       <div class="vc-head">
         <div class="vc-head__text">
-          <h6 class="vc-kicker">Registro</h6>
+          <h6 class="vc-kicker">Registro público</h6>
           <h1 class="vc-title">Leyes</h1>
           <p class="vc-lead">
             Todo lo que se propuso en la red: lo que espera su turno, lo que se está
             votando ahora, lo que ya rige y lo que se descartó porque nadie lo
-            respaldó.
+            respaldó. Y de lo que se decidió, el sello que lo vuelve imposible de borrar.
           </p>
         </div>
-        <button class="btn btn-secondary head__btn" (click)="loadLaws()">Actualizar</button>
+        <button class="btn btn-secondary head__btn" *ngIf="view() === 'leyes'"
+                (click)="loadLaws()">Actualizar</button>
       </div>
 
-      <div class="vc-actions filters">
-        <button type="button" class="tag tag-btn" *ngFor="let f of filters"
-                [class.tag-accent]="filter() === f.key"
-                [class.tag-outline]="filter() !== f.key"
-                (click)="filter.set(f.key)">{{ f.label }}</button>
-        <span class="mono vc-muted filters__count">{{ visible().length }} de {{ laws().length }}</span>
+      <!-- El selector segmentado de Nocturne: dos vistas hermanas, no destinos
+           distintos, así que no son links de la barra sino una sola pieza. -->
+      <div class="seg views" role="radiogroup" aria-label="Vista del registro">
+        <label class="seg-opt">
+          <input type="radio" name="vc-vista" [checked]="view() === 'leyes'" (change)="setView('leyes')">
+          Todas las leyes
+        </label>
+        <label class="seg-opt">
+          <input type="radio" name="vc-vista" [checked]="view() === 'historial'" (change)="setView('historial')">
+          Historial sellado
+        </label>
       </div>
 
-      <div class="vc-table-wrap laws" *ngIf="visible().length; else vacio">
-        <table class="table laws__table vc-table--stack">
-          <thead>
-            <tr>
-              <th>Ley</th>
-              <th>Área</th>
-              <th>Tipo</th>
-              <th>Estado</th>
-              <th>Propuesta el</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr *ngFor="let l of visible()">
-              <td class="mono laws__id" data-label="Ley">{{ l.law_id }}</td>
-              <td data-label="Área"><span class="tag tag-outline">{{ label(l.category) }}</span></td>
-              <td class="laws__action" data-label="Tipo">{{ actionLabel(l.action) }}</td>
-              <td data-label="Estado">
-                <span class="tag" [ngClass]="statusCls(l.status)">{{ statusLabel(l.status) }}</span>
-              </td>
-              <td class="laws__date" data-label="Propuesta el">{{ date(l.created_at) }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+      <app-chain class="views__panel" *ngIf="view() === 'historial'; else registro"></app-chain>
 
-      <ng-template #vacio>
-        <p class="vc-empty laws__empty">
-          {{ laws().length ? 'Ninguna ley en este estado.' : 'Todavía no se propuso ninguna ley.' }}
-        </p>
+      <ng-template #registro>
+        <div class="vc-actions filters">
+          <button type="button" class="tag tag-btn" *ngFor="let f of filters"
+                  [class.tag-accent]="filter() === f.key"
+                  [class.tag-outline]="filter() !== f.key"
+                  (click)="filter.set(f.key)">{{ f.label }}</button>
+          <span class="mono vc-muted filters__count">{{ visible().length }} de {{ laws().length }}</span>
+        </div>
+
+        <div class="vc-table-wrap laws" *ngIf="visible().length; else vacio">
+          <table class="table laws__table vc-table--stack">
+            <thead>
+              <tr>
+                <th>Ley</th>
+                <th>Área</th>
+                <th>Tipo</th>
+                <th>Estado</th>
+                <th>Propuesta el</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr *ngFor="let l of visible()">
+                <td class="mono laws__id" data-label="Ley">{{ l.law_id }}</td>
+                <td data-label="Área"><span class="tag tag-outline">{{ label(l.category) }}</span></td>
+                <td class="laws__action" data-label="Tipo">{{ actionLabel(l.action) }}</td>
+                <td data-label="Estado">
+                  <span class="tag" [ngClass]="statusCls(l.status)">{{ statusLabel(l.status) }}</span>
+                </td>
+                <td class="laws__date" data-label="Propuesta el">{{ date(l.created_at) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <ng-template #vacio>
+          <p class="vc-empty laws__empty">
+            {{ laws().length ? 'Ninguna ley en este estado.' : 'Todavía no se propuso ninguna ley.' }}
+          </p>
+        </ng-template>
       </ng-template>
     </main>
   `,
   styles: [`
     .head__btn { min-height: 38px; font-size: 13px; }
-    .filters { margin-top: 36px; }
+    .views { margin-top: 36px; }
+    .views .seg-opt { padding: 8px 16px; }
+    .views__panel { display: block; margin-top: 28px; }
+    .filters { margin-top: 28px; }
     .filters__count { margin-left: 6px; font-size: 11.5px; }
 
     .laws { margin-top: 24px; }
@@ -102,6 +134,16 @@ const FILTROS: { key: string; label: string }[] = [
 export class LawsComponent {
   private api = inject(ApiService);
   private events = inject(EventsService);
+  private router = inject(Router);
+  private route = inject(ActivatedRoute);
+
+  /** Qué vista se muestra; cualquier valor desconocido cae en la lista. */
+  view = toSignal(
+    this.route.queryParamMap.pipe(
+      map((q) => (q.get('vista') === 'historial' ? 'historial' : 'leyes') as 'leyes' | 'historial'),
+    ),
+    { initialValue: 'leyes' as const },
+  );
 
   filters = FILTROS;
   filter = signal('all');
@@ -140,6 +182,15 @@ export class LawsComponent {
   /** Vigente o en juego lleva el acento; lo que ya no está en pie, gris. */
   statusCls(status: string): string {
     return status === 'promulgated' || status === 'in_window' ? 'tag-accent' : 'tag-neutral';
+  }
+
+  /** Cambiar de vista reemplaza la entrada del historial: es la misma pantalla. */
+  setView(view: 'leyes' | 'historial') {
+    this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: { vista: view === 'historial' ? 'historial' : null },
+      replaceUrl: true,
+    });
   }
 
   loadLaws() {

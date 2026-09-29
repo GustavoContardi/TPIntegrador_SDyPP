@@ -22,6 +22,11 @@ interface Fila {
 /**
  * El historial: cada decisión que la red selló, de la más nueva a la más vieja.
  *
+ * No es una pantalla propia sino una vista de Leyes (`/laws?vista=historial`):
+ * antes tenía su entrada en la barra y mostraba, con otra tabla, las mismas
+ * leyes que Leyes ya listaba. Ahora Leyes cuenta la vida de cada ley y esta
+ * vista, el comprobante de lo que se decidió.
+ *
  * Es la cadena de bloques, pero contada para quien no sabe qué es un nonce ni
  * un hash previo. De cada bloque se muestra lo que alguien puede querer saber
  * —qué ley, qué se decidió, quién la selló y cuándo— más un sello corto que
@@ -35,18 +40,14 @@ interface Fila {
   standalone: true,
   imports: [CommonModule],
   template: `
-    <main class="vc-page">
-      <div class="vc-head">
-        <div class="vc-head__text">
-          <h6 class="vc-kicker">Registro público</h6>
-          <h1 class="vc-title">Historial</h1>
-          <p class="vc-lead">
-            Cada decisión de la red queda sellada y encadenada a la anterior. Nadie
-            puede borrarla ni modificarla: cambiar una sola obligaría a rehacer todo el
-            trabajo que vino después.
-          </p>
-        </div>
-        <span class="vc-muted head__len" *ngIf="rows().length">
+    <section>
+      <div class="vc-row intro">
+        <p class="vc-note-sm intro__text">
+          Cada decisión de la red queda sellada y encadenada a la anterior. Nadie
+          puede borrarla ni modificarla: cambiar una sola obligaría a rehacer todo el
+          trabajo que vino después.
+        </p>
+        <span class="mono vc-muted intro__len" *ngIf="rows().length">
           {{ rows().length }} {{ rows().length === 1 ? 'decisión sellada' : 'decisiones selladas' }}
         </span>
       </div>
@@ -91,11 +92,13 @@ interface Fila {
           aparecer acá.
         </p>
       </ng-template>
-    </main>
+    </section>
   `,
   styles: [`
-    .head__len { font-size: 12.5px; white-space: nowrap; }
-    .chain { margin-top: 40px; }
+    .intro { justify-content: space-between; align-items: baseline; }
+    .intro__text { max-width: 70ch; }
+    .intro__len { font-size: 11.5px; white-space: nowrap; }
+    .chain { margin-top: 24px; }
     .chain__table { min-width: 820px; white-space: nowrap; }
     .chain__height { font-size: 13px; color: var(--color-neutral-500); }
     .chain__law { font-size: 13px; color: var(--color-neutral-100); }
@@ -103,9 +106,8 @@ interface Fila {
     .chain__winner { display: block; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--color-neutral-300); }
     .chain__ts { font-size: 12.5px; color: var(--color-neutral-400); }
     .table code.chain__seal { font-size: 12px; color: var(--color-neutral-500); }
-    .chain__empty { margin-top: 40px; }
+    .chain__empty { margin-top: 24px; }
     @media (max-width: 720px) {
-      .chain { margin-top: 28px; }
       .chain__winner { min-width: 0; max-width: none; }
     }
   `]
