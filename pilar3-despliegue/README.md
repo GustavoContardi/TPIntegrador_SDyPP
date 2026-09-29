@@ -10,7 +10,7 @@ GCP — GKE zonal, southamerica-east1-a      Clúster GPU — k3s (externo)
 │ RabbitMQ (STS ×3) ─ LB:5671 ─┼──────────►┼ mineros de los ciudadanos    │
 │                              │(CA propia)│ (los levanta el alta desde   │
 │ Redis + Sentinel (STS ×3+3)  │           │ la UI)                       │
-│        └──────── LB:6379 ────┼──────────►┼ (estado worker:status:*)     │
+│ HAProxy ×2 ── LB:6379 ───────┼──────────►┼ (estado worker:status:*)     │
 │                              │  (sin TLS)│ - CPU por defecto            │
 │ NCT primary + standby        │           │ - GPU opt-in por pod         │
 │ voxchain-api ×2              │           │ - CA de RabbitMQ montada     │
@@ -403,6 +403,30 @@ contra el cual autenticar; por eso `02`–`04` sólo corren por push si la varia
   latencia). ServiceMonitors para el auto-descubrimiento, 5 reglas de alerta
   propias y el dashboard precargado en un ConfigMap. Alertmanager no tiene
   receptor configurado.
+- **Alta disponibilidad de Redis**: Sentinel (×3, quórum 2) promueve una
+  réplica cuando el master cae, y **HAProxy** (×2, `infrastructure/redis-haproxy.yaml`)
+  es la dirección estable del master: chequea cada segundo qué pod responde
+  `role:master` y manda todo ahí. El Service `redis` (API y NCT) y
+  `redis-external` (mineros del k3s) apuntan a HAProxy, así que ningún cliente
+  necesita hablar con Sentinel. Antes todos apuntaban a `redis-0` fijo y un
+  failover no servía de nada. Además:
+  - Redis y Sentinel arrancan preguntando quién es el master, en vez de asumir
+    `redis-0`. Un master que vuelve después de un failover lo hace como réplica,
+    y no queda un segundo master.
+  - El `myid` de cada Sentinel sale del nombre del pod. Con uno al azar, cada
+    reinicio dejaba en los otros un par fantasma que cuenta para la mayoría, y a
+    los pocos reinicios el failover se volvía imposible. `02-services` limpia los
+    que hayan quedado.
+  - Los clientes de Python reintentan ante conexión cortada y ante `READONLY`,
+    así que un failover se ve como una pausa de unos 10 s.
+
+  Se probó con los scripts y la configuración de los manifests, sin cambios,
+  en Docker: dos failovers seguidos, el master viejo que vuelve con otra IP,
+  los Sentinel reiniciados de a uno y todos a la vez. El cliente no vio ningún
+  error ni perdió escrituras confirmadas. Límite conocido: ante una partición de
+  red en la que el master viejo sigue vivo pero aislado, puede aceptar
+  escrituras que después se pierden. Evitarlo requiere `min-replicas-to-write`,
+  que a cambio corta las escrituras si no hay réplicas.
 - **Métricas de los mineros**: un ServiceMonitor no descubre pods de otro
   clúster, así que Prometheus no alcanza el `/metrics` de los mineros del k3s.
   El API exporta `voxchain_miner_*` (vivo, hashrate, GPU, modo, capacidad) a

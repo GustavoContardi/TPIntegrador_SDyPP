@@ -1,15 +1,12 @@
 # A-02: restringe el ingress a Redis. Al seleccionar los pods de Redis, esta
 # policy los pone en modo default-deny y solo admite a los clientes legítimos:
-# NCT (primary/standby) y API, Sentinel, y las otras réplicas de Redis (sin
-# ellas, las réplicas no pueden sincronizar desde el master). El namespace
-# g-git-push-cv es el de los mineros cuando corren en este mismo clúster.
+# HAProxy (la entrada de todos los clientes, ver redis-haproxy.yaml), Sentinel y
+# las otras réplicas (sin ellas no pueden sincronizar desde el master). NCT y
+# API siguen admitidos directo para no cortarlos mientras se redespliegan con la
+# URL nueva; en régimen entran por HAProxy.
 #
-# El ipBlock 0.0.0.0/0 es el acceso desde el LoadBalancer externo (workers del
-# k3s). Con Dataplane V2 un CIDR sólo cubre tráfico de fuera del clúster, y
-# para que llegue con la IP real del cliente el Service usa
-# externalTrafficPolicy: Local. Quién puede llegar al LoadBalancer lo acota
-# loadBalancerSourceRanges (lo fija 02-services desde K3S_EGRESS_CIDRS); la
-# autenticación queda en la contraseña de Redis.
+# El acceso desde afuera (LoadBalancer de los workers del k3s) ya no llega acá:
+# redis-external apunta a HAProxy, y su policy es redis-haproxy-allow-clients.
 #
 # Se aplica desde septiembre (antes el clúster no tenía enforcement). Si algo
 # deja de conectar después de un redespliegue, `kubectl delete networkpolicy
@@ -31,7 +28,35 @@ spec:
             matchExpressions:
               - key: app
                 operator: In
-                values: ["nct-primary", "nct-standby", "voxchain-api", "redis-sentinel", "redis"]
+                values: ["redis-haproxy", "redis-sentinel", "redis", "nct-primary", "nct-standby", "voxchain-api"]
+      ports:
+        - protocol: TCP
+          port: 6379
+---
+# HAProxy es ahora la entrada de todos los clientes de Redis. El ipBlock
+# 0.0.0.0/0 es el LoadBalancer externo (workers del k3s): con Dataplane V2 un
+# CIDR sólo cubre tráfico de fuera del clúster, y para que llegue con la IP real
+# el Service usa externalTrafficPolicy: Local. Quién llega al LoadBalancer lo
+# acota loadBalancerSourceRanges (02-services, K3S_EGRESS_CIDRS); la
+# autenticación sigue siendo la contraseña de Redis, que HAProxy no toca.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-haproxy-allow-clients
+  namespace: voxchain
+spec:
+  podSelector:
+    matchLabels:
+      app: redis-haproxy
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values: ["nct-primary", "nct-standby", "voxchain-api"]
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: g-git-push-cv

@@ -118,7 +118,27 @@ jobs:
       - name: Verify deployments
         run: |
           kubectl rollout status -n voxchain statefulset/rabbitmq --timeout=180s
-          kubectl rollout status -n voxchain statefulset/redis --timeout=180s
+          kubectl rollout status -n voxchain statefulset/redis-sentinel --timeout=180s
+          kubectl rollout status -n voxchain statefulset/redis --timeout=300s
+          kubectl rollout status -n voxchain deployment/redis-haproxy --timeout=180s
+
+      # Los Sentinel anteriores al myid fijo (redis-sentinel-statefulset.yaml)
+      # dejan en los demás un par fantasma por cada reinicio: nunca vota pero
+      # cuenta para la mayoría, y con varios el failover se vuelve imposible.
+      # Si alguno conoce más de 2 pares, se resetean de a uno (reset olvida los
+      # pares y los redescubre en segundos; de a uno para no perder el quórum).
+      # Después de la migración no encuentra nada que limpiar.
+      - name: Clean up stale Sentinel peers
+        run: |
+          for i in 0 1 2; do
+            pares=$(kubectl exec -n voxchain "redis-sentinel-$i" -- \
+              redis-cli -p 26379 SENTINEL sentinels mymaster | grep -c '^name$' || true)
+            if [ "$pares" -gt 2 ]; then
+              echo "redis-sentinel-$i conoce $pares pares (esperados 2): reset"
+              kubectl exec -n voxchain "redis-sentinel-$i" -- redis-cli -p 26379 SENTINEL RESET mymaster
+              sleep 15
+            fi
+          done
 
       # La API crea y borra Deployments de mineros en el clúster k3s externo
       # cuando un usuario registra o da de baja un worker desde la web

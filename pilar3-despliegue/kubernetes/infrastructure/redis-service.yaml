@@ -1,3 +1,6 @@
+# La dirección de Redis para los clientes del clúster (API y NCT): va a
+# HAProxy, que manda al master de turno. Antes seleccionaba los 3 pods de Redis
+# y repartía las conexiones entre ellos, réplicas de sólo lectura incluidas.
 apiVersion: v1
 kind: Service
 metadata:
@@ -5,7 +8,7 @@ metadata:
   namespace: voxchain
 spec:
   selector:
-    app: redis
+    app: redis-haproxy
   ports:
     - port: 6379
       targetPort: 6379

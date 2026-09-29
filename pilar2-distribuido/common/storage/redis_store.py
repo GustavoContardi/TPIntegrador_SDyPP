@@ -66,9 +66,28 @@ class CooldownReason:
 
 
 def connect_redis(url: str, **kwargs):
-    """Crea un cliente redis-py a partir de una URL (``redis://host:port/db``)."""
-    import redis  # import diferido: el paquete common no debe exigir redis en tests puros
+    """Crea un cliente redis-py a partir de una URL (``redis://host:port/db``).
 
+    En el despliegue la URL apunta a HAProxy, que manda al master de turno.
+    Cuando Sentinel promueve otro, HAProxy corta las conexiones al viejo: sin
+    reintentos, el primer comando de cada conexión cortada fallaría. Con estos,
+    un failover (unos 10 s) se ve como una pausa. ``ReadOnlyError`` también se
+    reintenta: significa que la conexión quedó en una réplica (un master
+    degradado), y redis-py corta la conexión antes de reintentar, así que la
+    reconexión pasa de nuevo por HAProxy y cae en el master. Es seguro porque
+    la escritura rechazada no se ejecutó. ``health_check_interval`` manda un
+    PING antes de usar una conexión ociosa, para no descubrir recién con el
+    comando que el servidor la cerró.
+    """
+    import redis  # import diferido: el paquete common no debe exigir redis en tests puros
+    from redis.backoff import ExponentialBackoff
+    from redis.exceptions import ConnectionError, ReadOnlyError, TimeoutError
+    from redis.retry import Retry
+
+    kwargs.setdefault("retry", Retry(ExponentialBackoff(cap=2, base=0.2), 8))
+    kwargs.setdefault("retry_on_error", [ConnectionError, TimeoutError, ReadOnlyError])
+    kwargs.setdefault("health_check_interval", 15)
+    kwargs.setdefault("socket_connect_timeout", 5)
     return redis.Redis.from_url(url, decode_responses=True, **kwargs)
 
 

@@ -1,0 +1,174 @@
+# HAProxy delante de Redis: la dirección estable del master.
+#
+# Sentinel promueve una réplica cuando el master se cae, pero los clientes no
+# se enteraban: el API y el NCT apuntaban a redis-0 fijo y el LoadBalancer de
+# los mineros también. HAProxy chequea cada segundo qué pod responde
+# `role:master` y manda todo ahí, así que después de un failover los clientes
+# siguen usando la misma dirección (el Service `redis` y `redis-external`, que
+# ahora seleccionan estos pods) sin saber nada de Sentinel. Es el patrón del
+# chart redis-ha.
+#
+# `balance first` y no roundrobin: si durante una transición dos pods dijeran
+# ser master, todo el tráfico va al primero en vez de repartirse entre los dos.
+# `on-marked-down shutdown-sessions` corta las conexiones al master viejo para
+# que los clientes reconecten al nuevo en vez de quedar colgados, y
+# `option redispatch` hace que cada reintento de conexión vaya a un servidor sano.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-haproxy
+  namespace: voxchain
+data:
+  haproxy.cfg: |
+    global
+      log stdout format raw local0 notice
+
+    defaults
+      mode tcp
+      log global
+      # Si el master muere, en los ~2 s que tarda en quedar DOWN una conexión
+      # nueva todavía puede ir hacia él. Sin redispatch, los reintentos insisten
+      # con el mismo servidor, y si vuelve como réplica la sesión queda pegada
+      # ahí y todas las escrituras dan READONLY (pasó en la prueba de failover).
+      option redispatch 1
+      retries 3
+      timeout connect 2s
+      # Los clientes mantienen conexiones largas y pueden estar ociosos:
+      # un timeout corto las cortaría y el próximo comando fallaría.
+      timeout client 1h
+      timeout server 1h
+      timeout check 2s
+      option clitcpka
+      option srvtcpka
+
+    # Los pods de Redis cambian de IP al reiniciarse: se resuelven en caliente.
+    resolvers k8s
+      parse-resolv-conf
+      hold valid 5s
+      hold obsolete 5s
+
+    frontend redis
+      bind :6379
+      default_backend redis-master
+
+    # Readiness: 503 mientras no haya un master sano detrás.
+    frontend ready
+      mode http
+      bind :8404
+      monitor-uri /ready
+      monitor fail if { nbsrv(redis-master) lt 1 }
+
+    frontend live
+      mode http
+      bind :8405
+      monitor-uri /live
+
+    backend redis-master
+      balance first
+      option tcp-check
+      tcp-check connect
+      tcp-check send "AUTH ${REDIS_PASSWORD}\r\n"
+      tcp-check expect string +OK
+      tcp-check send "INFO replication\r\n"
+      tcp-check expect string role:master
+      tcp-check send "QUIT\r\n"
+      tcp-check expect string +OK
+      default-server check inter 1s fall 2 rise 2 resolvers k8s resolve-prefer ipv4 init-addr none on-marked-down shutdown-sessions
+      server redis-0 redis-0.redis-headless.voxchain.svc.cluster.local:6379
+      server redis-1 redis-1.redis-headless.voxchain.svc.cluster.local:6379
+      server redis-2 redis-2.redis-headless.voxchain.svc.cluster.local:6379
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-haproxy
+  namespace: voxchain
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: redis-haproxy
+  template:
+    metadata:
+      labels:
+        app: redis-haproxy
+    spec:
+      nodeSelector:
+        pool: infra
+      tolerations:
+        - key: pool
+          operator: Equal
+          value: infra
+          effect: NoSchedule
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: redis-haproxy
+                topologyKey: kubernetes.io/hostname
+      securityContext:
+        runAsNonRoot: true
+        # Usuario `haproxy` de la imagen oficial. Numérico: runAsNonRoot no
+        # puede verificar un usuario por nombre.
+        runAsUser: 99
+        runAsGroup: 99
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: haproxy
+          image: haproxy:2.8-alpine
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-credentials
+                  key: password
+          ports:
+            - containerPort: 6379
+              name: redis
+          # Probes por exec y no httpGet: las NetworkPolicies de Dataplane V2
+          # no tienen por qué dejar pasar al kubelet.
+          readinessProbe:
+            exec:
+              command: ["wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8404/ready"]
+            periodSeconds: 2
+            failureThreshold: 2
+          livenessProbe:
+            exec:
+              command: ["wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8405/live"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: config
+              mountPath: /usr/local/etc/haproxy
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: redis-haproxy
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: redis-haproxy
+  namespace: voxchain
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: redis-haproxy

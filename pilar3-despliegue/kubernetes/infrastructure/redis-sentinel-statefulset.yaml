@@ -57,14 +57,53 @@ spec:
                 secretKeyRef:
                   name: redis-credentials
                   key: password
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          # Dos cosas que el arranque anterior hacía mal:
+          #  - Monitoreaba siempre a redis-0. Después de un failover, un Sentinel
+          #    que se reiniciaba vigilaba a una réplica como si fuera el master.
+          #    Ahora pregunta primero a los otros Sentinel, después busca entre
+          #    los Redis al que diga ser master, y sólo en un clúster nuevo cae
+          #    en redis-0.
+          #  - El myid salía al azar en cada arranque. Los otros Sentinel
+          #    conservaban el id viejo como un par más que nunca vota, y la
+          #    mayoría para elegir quién hace el failover se volvía inalcanzable
+          #    tras unos pocos reinicios. Derivado del nombre del pod, un
+          #    Sentinel reiniciado vuelve con el mismo id y los otros sólo le
+          #    actualizan la IP.
           command:
             - /bin/sh
             - -c
             - |
-              MASTER_IP=$(getent hosts redis-0.redis-headless.voxchain.svc.cluster.local | awk '{print $1}'); \
+              HEADLESS=redis-headless.voxchain.svc.cluster.local
+              cli() { timeout 3 redis-cli -a "$REDIS_PASSWORD" --no-auth-warning "$@" 2>/dev/null; }
+              MYID=$(printf '%s' "$POD_NAME" | sha1sum | cut -c1-40)
+
+              while :; do
+                MASTER=$(timeout 3 redis-cli -h redis-sentinel -p 26379 SENTINEL get-master-addr-by-name mymaster 2>/dev/null | head -n 1)
+                if [ -z "$MASTER" ]; then
+                  MEJOR=-1
+                  for n in 0 1 2; do
+                    INFO=$(cli -h "redis-$n.$HEADLESS" INFO replication)
+                    echo "$INFO" | grep -q '^role:master' || continue
+                    R=$(echo "$INFO" | grep '^connected_slaves:' | cut -d: -f2 | tr -d '\r')
+                    if [ "${R:-0}" -gt "$MEJOR" ]; then
+                      MEJOR=${R:-0}
+                      MASTER=$(getent hosts "redis-$n.$HEADLESS" | awk '{print $1}')
+                    fi
+                  done
+                fi
+                [ -n "$MASTER" ] && break
+                echo "esperando a que haya un master de Redis"; sleep 2
+              done
+              echo "monitoreo a $MASTER"
+
               cat > /tmp/sentinel.conf << EOF
               port 26379
-              sentinel monitor mymaster $MASTER_IP 6379 2
+              sentinel myid $MYID
+              sentinel monitor mymaster $MASTER 6379 2
               sentinel auth-pass mymaster $REDIS_PASSWORD
               sentinel down-after-milliseconds mymaster 5000
               sentinel failover-timeout mymaster 10000

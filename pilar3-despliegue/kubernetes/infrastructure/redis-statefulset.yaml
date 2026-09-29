@@ -66,24 +66,57 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            - name: MY_POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+          # Arranca como réplica de quien sea el master HOY, no de redis-0 fijo.
+          # Antes redis-0 volvía siempre como master: si Sentinel ya había
+          # promovido a otro durante su caída, quedaban dos masters.
+          #  1. Pregunta a Sentinel. Si Sentinel todavía nombra a un master que
+          #     no responde (este mismo pod antes de reiniciarse, con otra IP),
+          #     espera a que promueva a otro en vez de volver como segundo master.
+          #  2. Sin Sentinel, busca entre los otros pods uno que ya sea master.
+          #  3. Clúster nuevo: redis-0 es el master y el resto lo sigue.
           command:
             - /bin/sh
             - -c
             - |
-              if [ "$MY_POD_NAME" = "redis-0" ]; then
-                exec redis-server \
-                  --appendonly yes \
-                  --requirepass "$REDIS_PASSWORD" \
-                  --masterauth "$REDIS_PASSWORD" \
-                  --protected-mode yes
-              else
-                exec redis-server \
-                  --appendonly yes \
-                  --requirepass "$REDIS_PASSWORD" \
-                  --masterauth "$REDIS_PASSWORD" \
-                  --protected-mode yes \
-                  --replicaof redis-0.redis-headless.voxchain.svc.cluster.local 6379
+              HEADLESS=redis-headless.voxchain.svc.cluster.local
+              cli() { timeout 3 redis-cli -a "$REDIS_PASSWORD" --no-auth-warning "$@" 2>/dev/null; }
+              es_master() { cli -h "$1" INFO replication | grep -q '^role:master'; }
+
+              MASTER=""
+              intentos=0
+              while [ $intentos -lt 60 ]; do
+                M=$(timeout 3 redis-cli -h redis-sentinel -p 26379 SENTINEL get-master-addr-by-name mymaster 2>/dev/null | head -n 1)
+                [ -z "$M" ] && break
+                if [ "$M" = "$MY_POD_IP" ]; then MASTER=yo; break; fi
+                if es_master "$M"; then MASTER=$M; break; fi
+                echo "Sentinel nombra a $M como master pero no responde: espero la promoción"
+                intentos=$((intentos + 1)); sleep 2
+              done
+
+              if [ -z "$MASTER" ]; then
+                for n in 0 1 2; do
+                  [ "redis-$n" = "$MY_POD_NAME" ] && continue
+                  if es_master "redis-$n.$HEADLESS"; then MASTER="redis-$n.$HEADLESS"; break; fi
+                done
               fi
+
+              if [ -z "$MASTER" ]; then
+                if [ "$MY_POD_NAME" = "redis-0" ]; then MASTER=yo; else MASTER="redis-0.$HEADLESS"; fi
+              fi
+
+              set -- redis-server --appendonly yes \
+                --requirepass "$REDIS_PASSWORD" --masterauth "$REDIS_PASSWORD" \
+                --protected-mode yes
+              if [ "$MASTER" = yo ]; then
+                echo "arranco como master"
+                exec "$@"
+              fi
+              echo "arranco como réplica de $MASTER"
+              exec "$@" --replicaof "$MASTER" 6379
           ports:
             - containerPort: 6379
               name: redis
