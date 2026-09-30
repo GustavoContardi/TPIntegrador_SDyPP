@@ -1,0 +1,109 @@
+# Loki monolítico (un solo proceso con todos los componentes), con los chunks y
+# el índice en un PVC. Para el volumen de logs de este sistema no hace falta
+# más: el modo distribuido y un bucket de objetos se justifican a partir de
+# cientos de GB por día, y acá son MB.
+#
+# Lo leen Terraform (helm_release.loki en main.tf) y `helm template` al
+# validarlo, así que tiene que ser YAML plano: sin interpolación de Terraform.
+deploymentMode: Monolithic
+
+loki:
+  # Un solo tenant. La escritura desde afuera del clúster (los mineros del k3s)
+  # pasa por el Ingress de logs, que exige basic auth; ver
+  # kubernetes/monitoring/loki-push-ingress.yaml.
+  auth_enabled: false
+  commonConfig:
+    replication_factor: 1
+  storage:
+    type: filesystem
+  schemaConfig:
+    configs:
+      - from: "2026-09-01"
+        store: tsdb
+        object_store: filesystem
+        schema: v13
+        index:
+          prefix: loki_index_
+          period: 24h
+  ingester:
+    chunk_encoding: snappy
+  # 7 días, lo mismo que la retención de Prometheus. La aplica el compactor.
+  limits_config:
+    retention_period: 168h
+    reject_old_samples: true
+    reject_old_samples_max_age: 168h
+    max_cache_freshness_per_query: 10m
+    split_queries_by_interval: 15m
+    query_timeout: 300s
+    volume_enabled: true
+  compactor:
+    retention_enabled: true
+    delete_request_store: filesystem
+
+singleBinary:
+  replicas: 1
+  persistence:
+    enabled: true
+    size: 10Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+  extraEnv:
+    # Un poco por debajo del límite, para que el GC actúe antes que el OOM killer.
+    - name: GOMEMLIMIT
+      value: 900MiB
+
+# El sidecar levanta reglas de alerta de Loki desde ConfigMaps, y para eso pide
+# un ClusterRole. Las alertas son de Prometheus (voxchain-alerts.yaml).
+sidecar:
+  rules:
+    enabled: false
+
+# Grafana y Alloy le hablan directo al Service `loki:3100`. El gateway (un nginx
+# delante) sólo agrega algo con varios tenants o en modo distribuido.
+gateway:
+  enabled: false
+
+# Los caches memcached reservan varios GB por defecto: más que todo el node pool.
+chunksCache:
+  enabled: false
+resultsCache:
+  enabled: false
+
+# Sin pods de prueba ni canario: generan tráfico y logs propios.
+lokiCanary:
+  enabled: false
+test:
+  enabled: false
+
+minio:
+  enabled: false
+
+# En cero las réplicas de los otros modos de despliegue.
+backend:
+  replicas: 0
+read:
+  replicas: 0
+write:
+  replicas: 0
+ingester:
+  replicas: 0
+querier:
+  replicas: 0
+queryFrontend:
+  replicas: 0
+queryScheduler:
+  replicas: 0
+distributor:
+  replicas: 0
+compactor:
+  replicas: 0
+indexGateway:
+  replicas: 0
+bloomCompactor:
+  replicas: 0
+bloomGateway:
+  replicas: 0

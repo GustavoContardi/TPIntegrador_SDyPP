@@ -1062,6 +1062,133 @@ data:
               "mode": "multi"
             }
           }
+        },
+        {
+          "id": 50,
+          "title": "LOGS — Loki (GKE por Alloy, k3s por push)",
+          "type": "row",
+          "collapsed": false,
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 70
+          },
+          "panels": []
+        },
+        {
+          "id": 51,
+          "title": "Líneas de log por servicio y clúster",
+          "type": "timeseries",
+          "description": "Registros por minuto de los servicios de VoxChain: los de GKE los junta Alloy y los mineros del k3s los mandan directo a Loki.",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 71
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by (service, cluster) (count_over_time({service=~\".+\"}[1m]))",
+              "legendFormat": "{{service}} ({{cluster}})"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 6
+              },
+              "color": {
+                "mode": "palette-classic"
+              }
+            }
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "multi"
+            }
+          }
+        },
+        {
+          "id": 52,
+          "title": "Errores y advertencias por servicio",
+          "type": "timeseries",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 71
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by (service, level) (count_over_time({service=~\".+\", level=~\"ERROR|WARNING|CRITICAL\"}[5m]))",
+              "legendFormat": "{{service}} {{level}}"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 6
+              },
+              "color": {
+                "mode": "palette-classic"
+              }
+            }
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "multi"
+            }
+          }
+        },
+        {
+          "id": 53,
+          "title": "Últimos errores y advertencias",
+          "type": "logs",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "gridPos": {
+            "h": 10,
+            "w": 24,
+            "x": 0,
+            "y": 79
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "{service=~\".+\", level=~\"ERROR|WARNING|CRITICAL\"} | json | line_format \"{{.pod}} [{{.service}}] {{.message}}\""
+            }
+          ],
+          "options": {
+            "showTime": true,
+            "wrapLogMessage": true,
+            "sortOrder": "Descending",
+            "enableLogDetails": true
+          }
         }
       ]
     }

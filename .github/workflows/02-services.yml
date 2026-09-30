@@ -46,18 +46,20 @@ jobs:
           cluster_name: voxchain
           location: southamerica-east1-a
 
-      # Los ExternalSecret de infrastructure/ leen estos secretos de GCP Secret
-      # Manager. Si faltan, los StatefulSets arrancan sin credenciales y el
-      # fallo aparece mucho después y sin relación aparente. Mejor cortar acá.
+      # Los ExternalSecret de infrastructure/ (y los del push de logs, en
+      # monitoring/) leen estos secretos de GCP Secret Manager. Si faltan, los
+      # StatefulSets arrancan sin credenciales y el fallo aparece mucho después
+      # y sin relación aparente. Mejor cortar acá.
       # Se crean una sola vez por entorno con scripts/bootstrap-secrets.sh.
       - name: Check bootstrap secrets exist
         run: |
           # Se distingue "no existe" de "no puedo consultarlo": si se tragan los
           # errores de permiso, una SA sin roles/secretmanager.viewer reporta
-          # los 7 como faltantes y manda a recrear secretos que ya están.
+          # todos como faltantes y manda a recrear secretos que ya están.
           FALTAN=""
           for s in rabbitmq-ca-crt rabbitmq-tls-crt rabbitmq-tls-key \
-                   rabbitmq-user rabbitmq-pass rabbitmq-erlang-cookie redis-pass; do
+                   rabbitmq-user rabbitmq-pass rabbitmq-erlang-cookie redis-pass \
+                   loki-push-password loki-push-htpasswd; do
             SALIDA="$(gcloud secrets describe "$s" \
               --project="${{ env.PROJECT_ID }}" 2>&1 >/dev/null)" && continue
             case "$SALIDA" in
@@ -75,7 +77,7 @@ jobs:
             echo "Creálos con: pilar3-despliegue/kubernetes/scripts/bootstrap-secrets.sh"
             exit 1
           fi
-          echo "Los 7 secretos están presentes."
+          echo "Los 9 secretos están presentes."
 
       - name: Create namespace
         run: |

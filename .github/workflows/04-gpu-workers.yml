@@ -87,6 +87,22 @@ jobs:
           fi
           echo "REDIS_HOST=$IP" >> $GITHUB_OUTPUT
 
+      # Los mineros mandan sus logs a Loki por el Ingress de logs (el k3s no nos
+      # deja crear los Roles que necesitaría un colector). El host sale del
+      # propio Ingress para no repetir la IP acá. No es bloqueante: sin él los
+      # mineros andan igual, con los logs sólo en stdout y en su archivo.
+      - name: Get Loki push URL
+        id: loki
+        run: |
+          HOST=$(kubectl get ingress -n monitoring loki-push \
+            -o jsonpath='{.spec.rules[0].host}' 2>/dev/null || echo "")
+          if [[ -z "$HOST" ]]; then
+            echo "::warning::No está el Ingress loki-push (03-apps): los mineros no mandan logs a Loki."
+            echo "LOKI_PUSH_URL=" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          echo "LOKI_PUSH_URL=https://$HOST/loki/api/v1/push" >> $GITHUB_OUTPUT
+
       # --- De acá en adelante, todo va al k3s ---------------------------------
 
       # En el k3s del profesor el namespace ya viene creado y nuestra
@@ -112,6 +128,7 @@ jobs:
             --namespace ${{ env.NAMESPACE }} \
             --from-literal=rabbitmq-host="${{ steps.rabbitmq.outputs.RABBITMQ_HOST }}" \
             --from-literal=redis-host="${{ steps.redis.outputs.REDIS_HOST }}" \
+            --from-literal=loki-push-url="${{ steps.loki.outputs.LOKI_PUSH_URL }}" \
             --dry-run=client -o yaml | kubectl apply -f -
 
       - name: Deploy secrets
@@ -156,6 +173,25 @@ jobs:
           fi
           kubectl --kubeconfig "${{ env.K3S_KUBECONFIG_PATH }}" \
             create secret generic redis-credentials \
+            --namespace ${{ env.NAMESPACE }} \
+            --from-literal=password="$PASS" \
+            --dry-run=client -o yaml \
+            | kubectl --kubeconfig "${{ env.K3S_KUBECONFIG_PATH }}" apply -f -
+
+      # Contraseña del basic auth del Ingress de logs. Mismo mecanismo que la de
+      # Redis: la fuente de verdad es el Secret que External Secrets sincroniza
+      # en GKE (monitoring/loki-push-external-secret.yaml). En los manifests es
+      # opcional, así que si falta se avisa y se sigue.
+      - name: Deploy Loki push credentials to k3s
+        run: |
+          PASS="$(kubectl get secret loki-push-credentials -n voxchain \
+            -o jsonpath='{.data.password}' 2>/dev/null | base64 -d)"
+          if [ -z "$PASS" ]; then
+            echo "::warning::No se pudo leer loki-push-credentials de GKE: los mineros no mandan logs a Loki."
+            exit 0
+          fi
+          kubectl --kubeconfig "${{ env.K3S_KUBECONFIG_PATH }}" \
+            create secret generic loki-push-credentials \
             --namespace ${{ env.NAMESPACE }} \
             --from-literal=password="$PASS" \
             --dry-run=client -o yaml \

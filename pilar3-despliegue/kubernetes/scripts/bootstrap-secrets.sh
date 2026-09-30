@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Crea en GCP Secret Manager los 7 secretos que consumen los ExternalSecret de
-# kubernetes/infrastructure/ (más la contraseña de Grafana), el bucket del
+# kubernetes/infrastructure/, los 2 del push de logs de kubernetes/monitoring/
+# (más la contraseña de Grafana), el bucket del
 # estado de OpenTofu y la IP estática del Ingress. Se corre UNA
 # VEZ por entorno, antes del primer `tofu init` y del pipeline 02-services (que
 # verifica que los secretos existan y falla con un mensaje claro si no).
@@ -85,6 +86,14 @@ subir redis-pass              "$(password_de redis-pass)"
 # No lo lee ningún ExternalSecret: lo consume OpenTofu como
 # TF_VAR_grafana_admin_password (local) o el secret GRAFANA_ADMIN_PASSWORD (CI).
 subir grafana-admin-password  "$(password_de grafana-admin-password)"
+# Push de logs de los mineros del k3s a Loki, por el Ingress de logs con basic
+# auth (monitoring/loki-push-ingress.yaml). La contraseña en claro la copia
+# 04-gpu-workers al k3s; el Ingress sólo necesita su hash, en formato htpasswd.
+# El hash se regenera en cada corrida (sal nueva), pero sigue siendo de la misma
+# contraseña si no se pidió --rotate.
+LOKI_PUSH_PASS="$(password_de loki-push-password)"
+subir loki-push-password      "$LOKI_PUSH_PASS"
+subir loki-push-htpasswd      "voxchain-logs:$(openssl passwd -apr1 "$LOKI_PUSH_PASS")"
 
 # -- bucket del estado de OpenTofu -------------------------------------------
 # Lo usa el backend "gcs" de terraform/gke/versions.tf. Va acá y no en el propio

@@ -113,6 +113,26 @@ spec:
               value: "1"
             - name: LOG_DIR
               value: /var/log/voxchain
+            # Logs directo a Loki (common/logging_setup.py): el k3s no nos deja
+            # crear los Roles de un colector. La URL y la contraseña las carga
+            # 04-gpu-workers; las dos son opcionales, y sin ellas el minero
+            # loguea sólo a stdout y al archivo, como antes.
+            - name: LOKI_PUSH_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: worker-config
+                  key: loki-push-url
+                  optional: true
+            - name: LOKI_PUSH_USER
+              value: voxchain-logs
+            - name: LOKI_PUSH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: loki-push-credentials
+                  key: password
+                  optional: true
+            - name: LOKI_CLUSTER
+              value: k3s
             - name: MINER_CPU_SCRIPT
               value: /app/pilar1-minero/cpu/src/brute_force.py
           livenessProbe:

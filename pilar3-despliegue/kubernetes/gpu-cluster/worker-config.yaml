@@ -8,3 +8,6 @@ data:
   # URL de Redis en GKE para que los workers reporten su estado al backend
   # Se completa durante el despliegue con la IP del servicio redis en GKE
   redis-host: "34.151.201.155"  # IP del LoadBalancer de Redis en GCP
+  # Endpoint de push de Loki (Ingress de logs de GKE). Lo completa 04-gpu-workers
+  # a partir del Ingress `loki-push`; vacío, los mineros no mandan logs a Loki.
+  loki-push-url: ""

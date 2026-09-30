@@ -92,11 +92,14 @@ contra la IP del LoadBalancer, limitaciones): **[`certs/README.md`](certs/README
 Deja listo todo lo que tiene que existir **antes** del primer `tofu init` y
 sobrevivir a un `tofu destroy`:
 
-- **8 secretos en Secret Manager.** `rabbitmq-user`, `rabbitmq-pass`,
+- **10 secretos en Secret Manager.** `rabbitmq-user`, `rabbitmq-pass`,
   `rabbitmq-erlang-cookie`, `rabbitmq-tls-crt`, `rabbitmq-tls-key`,
   `rabbitmq-ca-crt` y `redis-pass` son los que leen los `ExternalSecret` de
-  `kubernetes/infrastructure/`. `grafana-admin-password` lo consume OpenTofu
-  (paso 3) y el secret `GRAFANA_ADMIN_PASSWORD` de `01-infra`.
+  `kubernetes/infrastructure/`. `loki-push-password` y `loki-push-htpasswd`
+  son el basic auth del push de logs de los mineros del k3s (ver *Plataforma de
+  logging*), y los leen los `ExternalSecret` de `kubernetes/monitoring/`.
+  `grafana-admin-password` lo consume OpenTofu (paso 3) y el secret
+  `GRAFANA_ADMIN_PASSWORD` de `01-infra`.
 - **Bucket del estado de OpenTofu** (`gs://voxchain-unlu-tfstate`, con
   versionado).
 - **IP estática del Ingress** (`voxchain-ingress-ip`, hoy `35.199.68.144`). De
@@ -162,6 +165,7 @@ Grafana:
 - Se publica por el Ingress de la app en `grafana.voxchain.<IP>.sslip.io`, a
   través del `ExternalName` de `monitoring/grafana-bridge-service.yaml`.
 - Tiene un PVC de 10 Gi para que los dashboards persistan.
+- Tiene a Loki como segundo datasource (uid `loki`); ver *Plataforma de logging*.
 
 `tofu output` devuelve lo que se necesita para el paso 4
 (`workload_identity_provider` e `infra_service_account`), además de
@@ -470,25 +474,70 @@ contra el cual autenticar; por eso `02`–`04` sólo corren por push si la varia
 
 ## Plataforma de logging (colector de N servicios × M réplicas)
 
-El colector centralizado es **Cloud Logging de GKE**, activo por defecto en el
-cluster: un agente Fluent Bit corre como DaemonSet gestionado en cada nodo y
-recolecta el stdout/stderr de **todos los pods de todas las réplicas** (API ×2,
-NCT ×2, RabbitMQ ×3, Redis ×3+3, frontend ×2, workers), lo etiqueta con
-namespace/pod/container y lo indexa en Logs Explorer de GCP. Para que Cloud
-Logging acepte lo que manda el agente, la SA propia de los nodos necesita
-`roles/container.defaultNodeServiceAccount` (está en el Terraform).
+La plataforma de logs propia es **Loki + Grafana Alloy**, instalada por
+OpenTofu (`helm_release.loki` y `helm_release.alloy` en `terraform/gke/main.tf`,
+con los values en `terraform/gke/helm-values/`). Loki es además un datasource
+de Grafana, así que logs y métricas se ven en el mismo lugar: el dashboard de
+VoxChain tiene una fila **LOGS** con líneas por servicio y clúster, errores y
+advertencias por servicio, y los últimos errores.
 
-La capa de aplicación complementa esto desde `common/logging_setup.py`:
+```
+GKE:  pods de todos los namespaces ──(API de Kubernetes)──▶ Alloy ──▶ Loki ◀── Grafana
+k3s:  mineros ──(HTTPS + basic auth, logs.voxchain.<IP>.sslip.io)──▶ Ingress ──▶ Loki
+```
+
+- **Loki** corre en modo monolítico (un StatefulSet, un PVC de 10 GiB) con 7
+  días de retención, lo mismo que Prometheus. El modo distribuido y un bucket
+  de objetos se justifican con cientos de GB por día; acá son MB. Desde marzo de
+  2026 el chart OSS lo mantiene `grafana-community`.
+- **Alloy** es el colector de GKE: un Deployment que lee por el API de
+  Kubernetes (`loki.source.kubernetes`) el stdout/stderr de **todos los pods de
+  todas las réplicas** (API ×2, NCT ×2, RabbitMQ ×3, Redis ×3+3, frontend ×2,
+  ingress-nginx, etc.), con labels `namespace`, `pod`, `container`, `app` y
+  `cluster="gke"`. De las líneas JSON de nuestros servicios saca `service` y
+  `level`. Al leer por el API no necesita `hostPath`, root ni tolerations para
+  el node pool de infra. Corre sin root, con el root filesystem de sólo lectura,
+  y su ClusterRole sólo puede leer pods, sus logs y namespaces.
+- **Mineros del k3s:** ahí no se puede desplegar un colector, porque nuestra
+  cuenta no puede crear Roles ni ServiceAccounts. Cada minero manda sus
+  registros directo a Loki desde el proceso (`LokiHandler` en
+  `common/logging_setup.py`), en lotes y desde un hilo aparte. Si Loki no
+  responde, los descarta y los cuenta: nunca frena la minería. Llegan con
+  `cluster="k3s"`, `service`, `level` y `pod`, los mismos nombres que pone
+  Alloy. Entran por el Ingress `loki-push` (`kubernetes/monitoring/`), que
+  publica **sólo** el endpoint de push, con TLS de Let's Encrypt y basic auth.
+  Las consultas no salen por ahí: se hacen desde Grafana, por adentro.
+- **Credenciales del push:** `bootstrap-secrets.sh` genera la contraseña
+  (`loki-push-password`) y su hash htpasswd (`loki-push-htpasswd`) en Secret
+  Manager. External Secrets los sincroniza: el hash en `monitoring`, para el
+  Ingress, y la contraseña en `voxchain`, de donde `04-gpu-workers` la copia al
+  k3s, como hace con la de Redis. En los manifests de los mineros la URL y la
+  contraseña son opcionales: sin ellas el minero arranca igual y loguea como
+  antes.
+
+**Cloud Logging de GKE sigue activo** en paralelo: un Fluent Bit gestionado por
+nodo manda el mismo stdout a Logs Explorer. Para eso la SA propia de los nodos
+necesita `roles/container.defaultNodeServiceAccount` (está en el Terraform).
+
+La capa de aplicación, desde `common/logging_setup.py`:
 
 - **Memoria/stdout**: handler de consola con formato **JSON estructurado**
-  (`timestamp`, `level`, `logger`, `service`, `message`, `exception`) — lo que
-  Cloud Logging parsea como payload estructurado, permitiendo filtrar por
-  servicio y severidad.
+  (`timestamp`, `level`, `logger`, `service`, `message`, `exception`). Es lo
+  que parsean Alloy y Cloud Logging para filtrar por servicio y severidad.
 - **Disco**: `RotatingFileHandler` en `/var/log/voxchain/<servicio>.log`
   (5 MB × 3 backups, montado como `emptyDir`), cumpliendo "registros de
   actividades gestionados en memoria y disco".
+- **Loki** (sólo con `LOKI_PUSH_URL`): el envío directo de los mineros del k3s.
 
-Consulta típica en Logs Explorer:
+Consultas típicas en Grafana → Explore → Loki:
+
+```
+{service="nct", level=~"WARNING|ERROR"}
+{cluster="k3s", service="worker"} | json | message=~".*nonce.*"
+sum by (service, cluster) (count_over_time({service=~".+"}[5m]))
+```
+
+La misma consulta en Logs Explorer de GCP:
 
 ```
 resource.type="k8s_container"
@@ -496,9 +545,6 @@ resource.labels.namespace_name="voxchain"
 jsonPayload.service="nct"
 severity>=WARNING
 ```
-
-En el cluster k3s externo (fuera de GCP) los logs quedan accesibles vía
-`kubectl logs` y los archivos rotativos del `emptyDir`.
 
 ## Sincronización de relojes (NTP)
 

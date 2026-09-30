@@ -1,0 +1,135 @@
+# Grafana Alloy como colector de logs del clúster de GKE: todos los contenedores
+# de todos los namespaces (N servicios × M réplicas, más Redis, RabbitMQ,
+# ingress-nginx, etc.) van a Loki.
+#
+# Lee los logs por el API de Kubernetes (`loki.source.kubernetes`), no del disco
+# del nodo. Por eso alcanza con un Deployment de una réplica en vez de un
+# DaemonSet, y no necesita hostPath, root ni tolerations para los nodos de
+# infra. A esta escala la carga extra sobre el API server es despreciable.
+#
+# Los mineros del k3s no pasan por acá: ese clúster no nos deja crear Roles, así
+# que mandan sus logs directo a Loki (common/logging_setup.py, LOKI_PUSH_URL).
+#
+# Lo leen Terraform (helm_release.alloy en main.tf) y `helm template` al
+# validarlo, así que tiene que ser YAML plano: sin interpolación de Terraform.
+controller:
+  type: deployment
+  replicas: 1
+  volumes:
+    extra:
+      - name: storage
+        emptyDir: {}
+
+alloy:
+  # Sin el reporte anónimo de uso a Grafana Labs.
+  enableReporting: false
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  # La imagen trae el usuario `alloy` (uid 473).
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 473
+    runAsGroup: 473
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+    seccompProfile:
+      type: RuntimeDefault
+  # Con el root filesystem de sólo lectura, el único lugar escribible es este
+  # emptyDir: ahí guarda hasta dónde leyó cada contenedor.
+  mounts:
+    extra:
+      - name: storage
+        mountPath: /tmp/alloy
+  configMap:
+    content: |
+      discovery.kubernetes "pods" {
+        role = "pod"
+      }
+
+      discovery.relabel "pods" {
+        targets = discovery.kubernetes.pods.targets
+
+        rule {
+          source_labels = ["__meta_kubernetes_namespace"]
+          target_label  = "namespace"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_name"]
+          target_label  = "pod"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_container_name"]
+          target_label  = "container"
+        }
+        // `app` sale del label estándar de los charts o, si el pod tiene el
+        // `app:` de nuestros manifests, de ése.
+        rule {
+          source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name"]
+          target_label  = "app"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_label_app"]
+          regex         = "(.+)"
+          target_label  = "app"
+        }
+        rule {
+          target_label = "cluster"
+          replacement  = "gke"
+        }
+      }
+
+      loki.source.kubernetes "pods" {
+        targets    = discovery.relabel.pods.output
+        forward_to = [loki.process.voxchain.receiver]
+      }
+
+      // Los servicios de VoxChain loguean una línea JSON por evento
+      // (common/logging_setup.py). De ahí salen `service` y `level` como
+      // labels; el resto queda en la línea y se filtra con `| json`. Las
+      // líneas que no son JSON (Redis, RabbitMQ, nginx) pasan sin esos labels.
+      loki.process "voxchain" {
+        stage.json {
+          expressions = {
+            service = "service",
+            level   = "level",
+          }
+        }
+        stage.labels {
+          values = {
+            service = "",
+            level   = "",
+          }
+        }
+        forward_to = [loki.write.local.receiver]
+      }
+
+      loki.write "local" {
+        endpoint {
+          url = "http://loki.monitoring.svc.cluster.local:3100/loki/api/v1/push"
+        }
+      }
+
+# Sólo lo que usa la config de arriba: descubrir pods y leer sus logs. Los
+# defaults del chart incluyen, entre otras cosas, leer todos los Secrets del
+# clúster. Van repartidas en las dos listas porque el template del chart genera
+# YAML inválido si alguna queda vacía; terminan en el mismo ClusterRole.
+rbac:
+  create: true
+  rules:
+    - apiGroups: [""]
+      resources: ["pods", "pods/log"]
+      verbs: ["get", "list", "watch"]
+  clusterRules:
+    - apiGroups: [""]
+      resources: ["namespaces"]
+      verbs: ["get", "list", "watch"]
+
+# Sin CRDs de PodLogs: no se usan.
+crds:
+  create: false

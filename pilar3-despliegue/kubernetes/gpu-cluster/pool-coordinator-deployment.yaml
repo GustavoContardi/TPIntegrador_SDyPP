@@ -116,6 +116,26 @@ spec:
               value: "2"
             - name: POOL_HTTP_PORT
               value: "9001"
+            # Logs directo a Loki (common/logging_setup.py): el k3s no nos deja
+            # crear los Roles de un colector. La URL y la contraseña las carga
+            # 04-gpu-workers; las dos son opcionales, y sin ellas el minero
+            # loguea sólo a stdout y al archivo, como antes.
+            - name: LOKI_PUSH_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: worker-config
+                  key: loki-push-url
+                  optional: true
+            - name: LOKI_PUSH_USER
+              value: voxchain-logs
+            - name: LOKI_PUSH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: loki-push-credentials
+                  key: password
+                  optional: true
+            - name: LOKI_CLUSTER
+              value: k3s
           livenessProbe:
             httpGet:
               path: /health

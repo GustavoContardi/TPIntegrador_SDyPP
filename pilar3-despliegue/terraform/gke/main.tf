@@ -461,6 +461,16 @@ resource "helm_release" "kube_prometheus_stack" {
         enabled = true
         size = "10Gi"
       }
+      # Loki (helm_release.loki) como segunda fuente, para ver los logs en el
+      # mismo Grafana que las métricas. El uid fijo es el que referencia el
+      # panel de logs del dashboard (voxchain-dashboard.yaml).
+      additionalDataSources = [{
+        name   = "Loki"
+        uid    = "loki"
+        type   = "loki"
+        access = "proxy"
+        url    = "http://loki.monitoring.svc.cluster.local:3100"
+      }]
     }
     prometheus = {
       prometheusSpec = {
@@ -481,6 +491,43 @@ resource "helm_release" "kube_prometheus_stack" {
   })]
 
   depends_on = [google_container_cluster.cluster]
+}
+
+# ---- Logging: Loki + Alloy ----
+# Plataforma de logs propia, además de Cloud Logging (que GKE trae por defecto y
+# sigue activo). Alloy recolecta los logs de todos los pods del clúster y los
+# manda a Loki; Grafana los consulta. Los mineros del k3s escriben directo en
+# Loki por el Ingress de logs (kubernetes/monitoring/loki-push-ingress.yaml).
+#
+# Los values viven en helm-values/ y no en un yamlencode para poder validarlos
+# con `helm template` sin pasar por OpenTofu.
+#
+# El chart OSS de Loki se mudó a grafana-community en marzo de 2026: el de
+# grafana/helm-charts quedó para Grafana Enterprise Logs.
+resource "helm_release" "loki" {
+  name             = "loki"
+  repository       = "https://grafana-community.github.io/helm-charts"
+  chart            = "loki"
+  version          = "18.13.7"
+  namespace        = "monitoring"
+  create_namespace = true
+
+  values = [file("${path.module}/helm-values/loki.yaml")]
+
+  depends_on = [helm_release.kube_prometheus_stack]
+}
+
+resource "helm_release" "alloy" {
+  name             = "alloy"
+  repository       = "https://grafana.github.io/helm-charts"
+  chart            = "alloy"
+  version          = "1.13.0"
+  namespace        = "monitoring"
+  create_namespace = true
+
+  values = [file("${path.module}/helm-values/alloy.yaml")]
+
+  depends_on = [helm_release.loki]
 }
 
 # ---- nginx-ingress controller (reemplaza GCE Ingress) ----

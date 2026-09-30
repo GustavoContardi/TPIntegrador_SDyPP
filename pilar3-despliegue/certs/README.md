@@ -90,7 +90,7 @@ gcloud secrets create rabbitmq-ca-crt  --data-file=./certs/ca.crt
 ```
 
 En la práctica esto lo hace `kubernetes/scripts/bootstrap-secrets.sh`, que
-llama a `generate-certs.sh` si hace falta y sube los 7 secretos. Es
+llama a `generate-certs.sh` si hace falta y sube los secretos. Es
 deliberadamente manual: automatizarlo exigiría guardar el material sensible en
 el CI, en contra del diseño de zero static keys.
 

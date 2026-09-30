@@ -279,3 +279,18 @@ def test_si_no_se_puede_escribir_el_secret_no_queda_un_token_huerfano(cluster):
     assert workers.reissue_enrollment_token(r, "worker-1") is False
     # Si quedara en Redis bloquearía la próxima reposición durante todo su TTL.
     assert not r.exists("worker:enroll:worker-1")
+
+
+def test_el_alta_manda_los_logs_a_loki_si_el_pipeline_lo_configuro(cluster):
+    """Mismas variables que los manifests de gpu-cluster/, y opcionales: si 04
+    no cargó la URL o la contraseña, el pod tiene que arrancar igual."""
+    _core, apps = cluster()
+    workers._spawn_k8s_worker("worker-1", "token")
+
+    env = {e.name: e for e in apps.deployments[0].spec.template.spec.containers[0].env}
+    url = env["LOKI_PUSH_URL"].value_from.config_map_key_ref
+    assert (url.name, url.key, url.optional) == ("worker-config", "loki-push-url", True)
+    clave = env["LOKI_PUSH_PASSWORD"].value_from.secret_key_ref
+    assert (clave.name, clave.key, clave.optional) == ("loki-push-credentials", "password", True)
+    assert env["LOKI_PUSH_USER"].value == "voxchain-logs"
+    assert env["LOKI_CLUSTER"].value == "k3s"

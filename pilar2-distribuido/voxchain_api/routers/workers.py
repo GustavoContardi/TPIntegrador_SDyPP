@@ -382,6 +382,23 @@ def _spawn_k8s_worker(worker_id: str, enrollment_token: str):
             client.V1EnvVar(name="REDIS_URL", value="redis://:$(REDIS_PASSWORD)@$(REDIS_HOST):6379/0"),
             client.V1EnvVar(name="WORKER_CAPACITY", value="1"),
             client.V1EnvVar(name="LOG_DIR", value="/var/log/voxchain"),
+            # Logs directo a Loki, igual que los mineros de gpu-cluster/: la URL
+            # y la contraseña las carga 04-gpu-workers, y sin ellas el minero
+            # loguea sólo a stdout y al archivo.
+            client.V1EnvVar(
+                name="LOKI_PUSH_URL",
+                value_from=client.V1EnvVarSource(
+                    config_map_key_ref=client.V1ConfigMapKeySelector(name="worker-config", key="loki-push-url", optional=True)
+                )
+            ),
+            client.V1EnvVar(name="LOKI_PUSH_USER", value="voxchain-logs"),
+            client.V1EnvVar(
+                name="LOKI_PUSH_PASSWORD",
+                value_from=client.V1EnvVarSource(
+                    secret_key_ref=client.V1SecretKeySelector(name="loki-push-credentials", key="password", optional=True)
+                )
+            ),
+            client.V1EnvVar(name="LOKI_CLUSTER", value="k3s"),
         ],
         ports=[
             client.V1ContainerPort(container_port=8080, name="health"),

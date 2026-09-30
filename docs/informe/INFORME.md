@@ -645,7 +645,7 @@ El desempate es **por orden de llegada**, no por el valor del nonce.
 | Secretos | External Secrets Operator contra GCP Secret Manager (`secretstore.yaml`) |
 | Configuraciones | ConfigMaps (`voxchain-config`, `worker-config`, `rabbitmq-config`) |
 | Certificados HTTPS | cert-manager con Let's Encrypt; TLS real en el Ingress |
-| Logging | Cloud Logging de GKE (Fluent Bit por nodo) + `RotatingFileHandler` local |
+| Logging | Loki + Grafana Alloy (OpenTofu). Alloy lee por el API de Kubernetes los logs de todos los pods de GKE; los mineros del k3s, donde no se puede desplegar un colector, los mandan directo a Loki por un Ingress con TLS y basic auth (`LokiHandler` en `common/logging_setup.py`). Loki es datasource de Grafana, con una fila de logs en el dashboard. Además siguen Cloud Logging (Fluent Bit gestionado por nodo) y el `RotatingFileHandler` local |
 | Monitoreo | kube-prometheus-stack: Prometheus, Grafana, Alertmanager, ServiceMonitors y 5 reglas de alerta propias. Alertmanager no tiene receptor configurado: las alertas se ven en su UI y en Grafana, pero no notifican |
 | Sincronización NTP | NTP de los nodos (README de Pilar 3), verificable desde afuera: `/api/health` compara el reloj de la API con el `TIME` de Redis y reporta `clock` y `clock_skew_ms` |
 | Endpoint público de estado | `GET /api/health` → `{"api","nct","redis","rabbitmq","frontend","workers","clock"}` sobre Ingress TLS. Las probes usan `/api/health/live`, que no consulta dependencias |

@@ -1,0 +1,40 @@
+# Entrada de logs desde afuera del clúster: los mineros del k3s mandan sus
+# registros directo a Loki (common/logging_setup.py, LOKI_PUSH_URL), porque ese
+# clúster no nos deja crear los Roles que necesitaría un colector.
+#
+# Sólo se publica el endpoint de push, con TLS y basic auth. Las consultas no
+# salen por acá: se hacen desde Grafana, que le habla a Loki por adentro.
+#
+# Host propio (logs.voxchain.<IP>.sslip.io) y no un path del de la app: las
+# anotaciones de basic auth valen para todo el Ingress, y en el de voxchain
+# cerrarían también la app y Grafana.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: loki-push
+  namespace: monitoring
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/auth-type: basic
+    # Lo sincroniza External Secrets (loki-push-external-secret.yaml).
+    nginx.ingress.kubernetes.io/auth-secret: loki-push-auth
+    nginx.ingress.kubernetes.io/auth-realm: "VoxChain logs"
+    # Un lote del handler (200 registros) entra holgado; el default es 1m.
+    nginx.ingress.kubernetes.io/proxy-body-size: 10m
+spec:
+  tls:
+    - hosts:
+        - logs.voxchain.35.199.68.144.sslip.io
+      secretName: loki-push-tls
+  rules:
+    - host: logs.voxchain.35.199.68.144.sslip.io
+      http:
+        paths:
+          - path: /loki/api/v1/push
+            pathType: Exact
+            backend:
+              service:
+                name: loki
+                port:
+                  number: 3100
