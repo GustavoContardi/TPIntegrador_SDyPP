@@ -879,6 +879,189 @@ data:
               "mode": "multi"
             }
           }
+        },
+        {
+          "id": 46,
+          "title": "Tasa de éxito por recurso (CPU vs GPU)",
+          "description": "Intentos que encontraron nonce sobre intentos totales, por el recurso con que se minó cada intento (un minero con GPU que cae a CPU suma en cpu). Sale de mining_stats en el latido de worker:status.",
+          "type": "timeseries",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 54
+          },
+          "targets": [
+            {
+              "expr": "sum by (resource) (max by (worker_id, resource) (rate(voxchain_miner_mining_success_total[10m]))) / sum by (resource) (max by (worker_id, resource) (rate(voxchain_miner_mining_tasks_total[10m])))",
+              "legendFormat": "{{resource}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 6
+              },
+              "color": {
+                "mode": "palette-classic"
+              },
+              "min": 0,
+              "max": 1
+            }
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "multi"
+            }
+          }
+        },
+        {
+          "id": 47,
+          "title": "Intentos de minería por segundo, por recurso",
+          "description": "Ritmo de intentos de minería de todos los mineros vivos, separado por CPU y GPU.",
+          "type": "timeseries",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 54
+          },
+          "targets": [
+            {
+              "expr": "sum by (resource) (max by (worker_id, resource) (rate(voxchain_miner_mining_tasks_total[10m])))",
+              "legendFormat": "{{resource}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 6
+              },
+              "color": {
+                "mode": "palette-classic"
+              }
+            }
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "multi"
+            }
+          }
+        },
+        {
+          "id": 48,
+          "title": "Tiempo de minería por prefijo (p50)",
+          "description": "Mediana de la duración de un intento de minería, por longitud del prefijo (n) y recurso.",
+          "type": "timeseries",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 62
+          },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.50, sum by (le, resource, prefix_len) (max by (worker_id, resource, le, prefix_len) (rate(voxchain_miner_mining_duration_seconds_bucket[10m]))))",
+              "legendFormat": "n={{prefix_len}} ({{resource}})",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 6
+              },
+              "color": {
+                "mode": "palette-classic"
+              }
+            }
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "multi"
+            }
+          }
+        },
+        {
+          "id": 49,
+          "title": "Latencia RabbitMQ → minero (p50 / p95)",
+          "description": "Desde que el NCT publica el desafío (published_at) hasta que el minero lo recibe. Incluye el desfase de reloj entre GKE y el k3s.",
+          "type": "timeseries",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 62
+          },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.50, sum by (le) (max by (worker_id, resource, le) (rate(voxchain_miner_challenge_latency_seconds_bucket[10m]))))",
+              "legendFormat": "p50",
+              "refId": "A"
+            },
+            {
+              "expr": "histogram_quantile(0.95, sum by (le) (max by (worker_id, resource, le) (rate(voxchain_miner_challenge_latency_seconds_bucket[10m]))))",
+              "legendFormat": "p95",
+              "refId": "B"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": {
+                "lineWidth": 2,
+                "fillOpacity": 6
+              },
+              "color": {
+                "mode": "palette-classic"
+              }
+            }
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "multi"
+            }
+          }
         }
       ]
     }

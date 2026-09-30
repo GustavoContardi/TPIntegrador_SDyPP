@@ -1079,6 +1079,14 @@ ServiceMonitors para el scraping.
 | `voxchain_pool_is_leader` | qué pool coordinator tiene el liderazgo |
 | `voxchain_api_http_request_duration_seconds` | latencia de la API por método y ruta |
 
+Los mineros corren en el k3s, así que Prometheus (en GKE) no scrapea su
+`/metrics`. Sus métricas llegan por el latido `worker:status:<id>` en Redis, y
+el API las vuelve a exportar con el prefijo `voxchain_miner_`: gauges
+(`up`, `hashrate_hps`, `has_gpu`, `capacity`, `running`), counters
+(`mining_tasks_total` y `mining_success_total`, por el recurso de cada
+intento) e histogramas (`mining_duration_seconds` por `prefix_len` y
+`challenge_latency_seconds`). Son las series que usa el dashboard de Grafana.
+
 ## Anexo C — Documentos relacionados
 
 | Documento | Contenido |

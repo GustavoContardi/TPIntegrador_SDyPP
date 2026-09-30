@@ -77,6 +77,60 @@ def observe_challenge_latency(challenge: dict, now: float) -> None:
         return
     if latency >= 0:
         worker_challenge_latency_seconds.observe(latency)
+
+
+def mining_stats_snapshot() -> dict:
+    """Contadores e histogramas de minería de este proceso, para el latido.
+
+    Los mineros corren en el k3s y Prometheus en GKE, así que el ``/metrics``
+    del minero nunca se scrapea. Este resumen viaja en ``worker:status:<id>``
+    y el API lo vuelve a exponer (``voxchain_api/services/miner_metrics.py``).
+
+    Son los acumulados desde que arrancó el proceso, no deltas: así el API los
+    publica como counters e histogramas de verdad y ``rate()`` funciona. Un
+    reinicio del pod se ve como el reset de un counter, que Prometheus ya
+    contempla.
+
+    Formato::
+
+        {"tasks":   {"cpu": 12.0, "gpu": 3.0},
+         "success": {"cpu": 2.0},
+         "duration": [{"labels": {"resource": "cpu", "prefix_len": "6"},
+                       "buckets": [["0.1", 0.0], ..., ["+Inf", 5.0]],
+                       "sum": 41.2}],
+         "challenge_latency": [{"labels": {}, "buckets": [...], "sum": 0.3}]}
+
+    Los buckets son acumulativos y llevan su ``le``, así el API no depende de
+    que minero y API tengan la misma versión de este módulo.
+    """
+    return {
+        "tasks": _counter_por_recurso(worker_mining_tasks_total),
+        "success": _counter_por_recurso(worker_mining_success_total),
+        "duration": _histograma(worker_mining_duration_seconds),
+        "challenge_latency": _histograma(worker_challenge_latency_seconds),
+    }
+
+
+def _counter_por_recurso(counter: Counter) -> dict:
+    return {s.labels["resource"]: s.value
+            for familia in counter.collect() for s in familia.samples
+            if s.name.endswith("_total")}
+
+
+def _histograma(histogram: Histogram) -> list[dict]:
+    series: dict[tuple, dict] = {}
+    for familia in histogram.collect():
+        for s in familia.samples:
+            labels = {k: v for k, v in s.labels.items() if k != "le"}
+            serie = series.setdefault(tuple(sorted(labels.items())),
+                                      {"labels": labels, "buckets": [], "sum": 0.0})
+            if s.name.endswith("_bucket"):
+                serie["buckets"].append([s.labels["le"], s.value])
+            elif s.name.endswith("_sum"):
+                serie["sum"] = s.value
+    return list(series.values())
+
+
 nct_nonce_validation_seconds = Histogram(
     "voxchain_nct_nonce_validation_seconds",
     "Tiempo de verificación y sellado de un nonce válido (verify + seal)",

@@ -432,10 +432,16 @@ contra el cual autenticar; por eso `02`–`04` sólo corren por push si la varia
   El API exporta `voxchain_miner_*` (vivo, hashrate, GPU, modo, capacidad) a
   partir del latido `worker:status:*` que cada minero deja en Redis
   (`voxchain_api/services/miner_metrics.py`), y Prometheus lo recoge con el
-  ServiceMonitor del API. Son los valores del último latido: los contadores y
-  los histogramas propios del minero (nonces, latencia del desafío) no llegan.
-  Como el API tiene 2 réplicas, las consultas agregan con
-  `max by (worker_id)`.
+  ServiceMonitor del API. Los gauges son el valor del último latido. Los
+  contadores e histogramas de minería también viajan en el latido (campo
+  `mining_stats`, acumulados desde que arrancó el minero) y el API los expone
+  como counters e histogramas: `voxchain_miner_mining_tasks_total` y
+  `voxchain_miner_mining_success_total` (tasa de éxito CPU vs GPU),
+  `voxchain_miner_mining_duration_seconds` (tiempo por longitud de prefijo) y
+  `voxchain_miner_challenge_latency_seconds` (latencia RabbitMQ → minero).
+  Así funcionan `rate()` y `histogram_quantile()`, y un reinicio del minero se
+  ve como el reset de un counter. Como el API tiene 2 réplicas, las consultas
+  agregan primero con `max by (worker_id, ...)` y recién después suman.
 - **Seguridad de contenedores**: todos los workloads corren con `securityContext`
   restrictivo — `runAsNonRoot` (uid 1000 apps, 999 Redis/RabbitMQ, 101 nginx),
   `allowPrivilegeEscalation: false`, `capabilities.drop: ALL` y seccomp

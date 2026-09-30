@@ -23,6 +23,7 @@ from common.blockchain.categories import parse_categories
 from common.blockchain.deliberation import normalize_decision
 from common.health import start_health_server
 from common.logging_setup import setup_logging
+from common.metrics import mining_stats_snapshot
 from common.messaging import build_rabbitmq
 from common.redis import create_redis
 from worker_pkg.admin_server import start_admin_server
@@ -131,6 +132,11 @@ class WorkerManager:
             # dinámica. 0 mientras el minero no haya minado todavía; ahí el NCT
             # le estima el cómputo por su recurso (CPU/GPU).
             "hashrate_hps": ultimo_hashrate(),
+            # Contadores e histogramas de minería (intentos y éxitos por recurso,
+            # duración por prefijo, latencia RabbitMQ → minero). Prometheus no
+            # alcanza este /metrics desde GKE, así que viajan acá y el API los
+            # re-exporta como voxchain_miner_* (checklist §1, métricas por recurso).
+            "mining_stats": mining_stats_snapshot(),
             # Agenda temática de este minero cuando corre standalone. El NCT la
             # necesita para el quórum: un standalone que sólo mina 'economia' no
             # cuenta como red disponible para una ley de 'salud', y sin este

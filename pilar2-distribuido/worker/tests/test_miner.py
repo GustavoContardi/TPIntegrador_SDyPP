@@ -1,10 +1,15 @@
 """Tests del puente al minero y de la lógica del worker."""
 
 import hashlib
+import importlib.util
+import json
 import os
+import pathlib
+
+import pytest
 
 from common.messaging import InMemoryBus
-from common.metrics import REGISTRY, observe_challenge_latency
+from common.metrics import REGISTRY, mining_stats_snapshot, observe_challenge_latency
 from worker_pkg.miner import parse_miner_output, run_miner
 from worker_pkg.standalone_worker import StandaloneWorker
 
@@ -177,3 +182,43 @@ def test_observe_challenge_latency():
     observe_challenge_latency({"published_at": "no-numérico"}, now=10.5)
     observe_challenge_latency({"published_at": 99.0}, now=10.5)
     assert _sample("voxchain_worker_challenge_latency_seconds_count") == count_before + 1
+
+
+def test_snapshot_de_mineria_refleja_el_registro():
+    """Lo que viaja en el latido es lo mismo que tiene el /metrics del minero."""
+    nonce, _ = run_miner("L1hW1snapshot", "00", 0, 1_000_000, prefer_gpu=False,
+                         cpu_script=os.path.abspath(CPU_SCRIPT))
+    assert nonce is not None
+    observe_challenge_latency({"published_at": 10.0}, now=10.2)
+
+    # Tiene que sobrevivir a json.dumps: es lo que se escribe en Redis.
+    snap = json.loads(json.dumps(mining_stats_snapshot()))
+
+    cpu = {"resource": "cpu"}
+    assert snap["tasks"]["cpu"] == _sample("voxchain_worker_mining_tasks_total", cpu)
+    assert snap["success"]["cpu"] == _sample("voxchain_worker_mining_success_total", cpu)
+
+    duracion = {"resource": "cpu", "prefix_len": "2"}
+    serie = next(s for s in snap["duration"] if s["labels"] == duracion)
+    assert serie["buckets"][-1] == [
+        "+Inf", _sample("voxchain_worker_mining_duration_seconds_count", duracion)]
+    assert serie["sum"] == pytest.approx(
+        _sample("voxchain_worker_mining_duration_seconds_sum", duracion))
+    assert [le for le, _ in serie["buckets"]][:2] == ["0.1", "0.5"]
+
+    (latencia,) = snap["challenge_latency"]
+    assert latencia["labels"] == {}
+    assert latencia["buckets"][-1] == [
+        "+Inf", _sample("voxchain_worker_challenge_latency_seconds_count")]
+
+
+def test_el_latido_lleva_el_snapshot():
+    # `main` a secas resuelve al del nct-coordinator (ver test_switch_mode_remoto).
+    ruta = pathlib.Path(__file__).resolve().parents[1] / "main.py"
+    spec = importlib.util.spec_from_file_location("worker_main_latido", ruta)
+    worker_main = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(worker_main)
+
+    estado = worker_main.WorkerManager("w-latido", has_gpu=False).get_status()
+
+    assert estado["mining_stats"] == mining_stats_snapshot()
