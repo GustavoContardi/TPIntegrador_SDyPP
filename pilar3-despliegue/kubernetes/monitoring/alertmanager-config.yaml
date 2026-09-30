@@ -1,0 +1,55 @@
+# Receptor de Alertmanager: las alertas de VoxChain (voxchain-alerts.yaml) llegan
+# a un canal de Discord por webhook. Sin esto disparaban pero no notificaban a
+# nadie: sólo se veían en la UI de Alertmanager y en Grafana.
+#
+# El prometheus-operator suma este recurso a la config que el chart genera
+# (receptor `null`, Watchdog, inhibiciones) como una ruta más, con
+# `continue: true`, así que no cambia lo que ya había.
+#
+# Sólo van a Discord las alertas propias (alertname Voxchain*). Las que trae
+# kube-prometheus-stack siguen visibles en Alertmanager y Grafana pero no
+# notifican: en GKE varias disparan siempre (el control plane no se puede
+# scrapear) y llenarían el canal de ruido.
+#
+# Va sin el matcher de namespace que el operador agrega por defecto
+# (`alertmanagerConfigMatcherStrategy: None` en main.tf): nuestras reglas
+# agregan con max()/histogram_quantile() y sus alertas no llevan `namespace`.
+#
+# Si falta el Secret del webhook (no se cargó en Secret Manager), el operador
+# descarta este recurso y Alertmanager sigue andando con la config del chart.
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: AlertmanagerConfig
+metadata:
+  name: voxchain
+  namespace: monitoring
+spec:
+  route:
+    receiver: discord
+    matchers:
+      - name: alertname
+        matchType: "=~"
+        value: "Voxchain.+"
+    groupBy: ["alertname"]
+    groupWait: 30s
+    groupInterval: 5m
+    # Una alerta que sigue disparando se vuelve a avisar cada 4 h, no cada 12 h
+    # como el default del chart: en una demo de un día se tiene que ver.
+    repeatInterval: 4h
+  receivers:
+    - name: discord
+      discordConfigs:
+        - apiURL:
+            # Lo sincroniza External Secrets (alertmanager-discord-external-secret.yaml).
+            name: alertmanager-discord
+            key: webhook-url
+          sendResolved: true
+          title: >-
+            {{ if eq .Status "firing" }}Alerta{{ else }}Resuelta{{ end }}:
+            {{ .CommonLabels.alertname }}{{ if gt (len .Alerts.Firing) 1 }}
+            ({{ len .Alerts.Firing }}){{ end }}
+          message: |-
+            {{ range .Alerts }}**{{ .Annotations.summary }}**
+            {{ .Annotations.description }}
+            Severidad: {{ .Labels.severity }} · desde {{ .StartsAt.Format "02/01 15:04 MST" }}{{ if eq .Status "resolved" }} · resuelta {{ .EndsAt.Format "02/01 15:04 MST" }}{{ end }}
+
+            {{ end }}

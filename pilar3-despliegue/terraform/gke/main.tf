@@ -472,6 +472,17 @@ resource "helm_release" "kube_prometheus_stack" {
         url    = "http://loki.monitoring.svc.cluster.local:3100"
       }]
     }
+    alertmanager = {
+      alertmanagerSpec = {
+        # El receptor de Discord es un AlertmanagerConfig
+        # (kubernetes/monitoring/alertmanager-config.yaml). Sin esto el
+        # operador le agrega un matcher `namespace="monitoring"`, y nuestras
+        # alertas no llevan ese label: no matchearía ninguna.
+        alertmanagerConfigMatcherStrategy = {
+          type = "None"
+        }
+      }
+    }
     prometheus = {
       prometheusSpec = {
         serviceMonitorSelectorNilUsesHelmValues = false

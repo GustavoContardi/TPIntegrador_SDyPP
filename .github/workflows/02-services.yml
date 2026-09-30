@@ -79,6 +79,17 @@ jobs:
           fi
           echo "Los 9 secretos están presentes."
 
+      # El webhook de Discord de Alertmanager no es requisito para desplegar:
+      # sin él el operador descarta monitoring/alertmanager-config.yaml y
+      # Alertmanager sigue con la config del chart, sólo que sin notificar.
+      # Se avisa en vez de cortar.
+      - name: Check Alertmanager webhook
+        run: |
+          if ! gcloud secrets describe alertmanager-discord-webhook \
+               --project="${{ env.PROJECT_ID }}" >/dev/null 2>&1; then
+            echo "::warning::Falta alertmanager-discord-webhook en Secret Manager: las alertas no van a notificar. Cargarlo con DISCORD_WEBHOOK_URL=... bootstrap-secrets.sh"
+          fi
+
       - name: Create namespace
         run: |
           kubectl apply -f ${{ env.K8S_DIR }}/namespace.yaml

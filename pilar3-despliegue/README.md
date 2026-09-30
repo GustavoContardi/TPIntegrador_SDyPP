@@ -92,14 +92,16 @@ contra la IP del LoadBalancer, limitaciones): **[`certs/README.md`](certs/README
 Deja listo todo lo que tiene que existir **antes** del primer `tofu init` y
 sobrevivir a un `tofu destroy`:
 
-- **10 secretos en Secret Manager.** `rabbitmq-user`, `rabbitmq-pass`,
+- **11 secretos en Secret Manager.** `rabbitmq-user`, `rabbitmq-pass`,
   `rabbitmq-erlang-cookie`, `rabbitmq-tls-crt`, `rabbitmq-tls-key`,
   `rabbitmq-ca-crt` y `redis-pass` son los que leen los `ExternalSecret` de
   `kubernetes/infrastructure/`. `loki-push-password` y `loki-push-htpasswd`
   son el basic auth del push de logs de los mineros del k3s (ver *Plataforma de
   logging*), y los leen los `ExternalSecret` de `kubernetes/monitoring/`.
-  `grafana-admin-password` lo consume OpenTofu (paso 3) y el secret
-  `GRAFANA_ADMIN_PASSWORD` de `01-infra`.
+  `alertmanager-discord-webhook` es el receptor de las alertas: no se genera,
+  se pasa con `DISCORD_WEBHOOK_URL` (o el script lo pide) y, si falta, todo
+  anda pero las alertas no notifican. `grafana-admin-password` lo consume
+  OpenTofu (paso 3) y el secret `GRAFANA_ADMIN_PASSWORD` de `01-infra`.
 - **Bucket del estado de OpenTofu** (`gs://voxchain-unlu-tfstate`, con
   versionado).
 - **IP estática del Ingress** (`voxchain-ingress-ip`, hoy `35.199.68.144`). De
@@ -405,8 +407,18 @@ contra el cual autenticar; por eso `02`–`04` sólo corren por push si la varia
   Alertmanager) desplegado vía Helm en el namespace `monitoring`. Cada servicio
   expone `/metrics` con métricas de aplicación (propuestas, bloques, workers,
   latencia). ServiceMonitors para el auto-descubrimiento, 5 reglas de alerta
-  propias y el dashboard precargado en un ConfigMap. Alertmanager no tiene
-  receptor configurado.
+  propias y el dashboard precargado en un ConfigMap.
+- **Alertas a Discord**: Alertmanager manda las alertas de VoxChain
+  (`alertname` Voxchain\*) a un canal de Discord por webhook, con aviso al
+  disparar y al resolverse (`monitoring/alertmanager-config.yaml`, un
+  `AlertmanagerConfig`). Las del chart siguen visibles en Alertmanager y
+  Grafana pero no notifican: en GKE varias disparan siempre, porque el control
+  plane no se puede scrapear, y llenarían el canal. La URL del webhook es un
+  secreto: se carga con `DISCORD_WEBHOOK_URL=... bootstrap-secrets.sh` y llega
+  por External Secrets. Si falta, el operador descarta el `AlertmanagerConfig`
+  y Alertmanager sigue con la config del chart, sin notificar (02 lo avisa).
+  Para verificarlo en la demo: `kubernetes/scripts/probar-alerta.sh` dispara
+  `VoxchainPrueba`, que llega en unos 30 s y se resuelve a los 5 min.
 - **Alta disponibilidad de Redis**: Sentinel (×3, quórum 2) promueve una
   réplica cuando el master cae, y **HAProxy** (×2, `infrastructure/redis-haproxy.yaml`)
   es la dirección estable del master: chequea cada segundo qué pod responde

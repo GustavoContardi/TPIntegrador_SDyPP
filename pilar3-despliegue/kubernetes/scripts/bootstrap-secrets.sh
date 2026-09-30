@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Crea en GCP Secret Manager los 7 secretos que consumen los ExternalSecret de
-# kubernetes/infrastructure/, los 2 del push de logs de kubernetes/monitoring/
-# (más la contraseña de Grafana), el bucket del
+# kubernetes/infrastructure/, los 2 del push de logs y el webhook de Discord de
+# kubernetes/monitoring/ (más la contraseña de Grafana), el bucket del
 # estado de OpenTofu y la IP estática del Ingress. Se corre UNA
 # VEZ por entorno, antes del primer `tofu init` y del pipeline 02-services (que
 # verifica que los secretos existan y falla con un mensaje claro si no).
@@ -9,6 +9,11 @@
 #   ./bootstrap-secrets.sh              usa los certs de pilar3-despliegue/certs
 #                                       (los genera con generate-certs.sh si faltan)
 #   ./bootstrap-secrets.sh --rotate     regenera todas las contraseñas
+#
+# El webhook de Discord de Alertmanager no se genera: lo crea el dueño del canal
+# (Configuración del canal → Integraciones → Webhooks). Se toma de la variable
+# DISCORD_WEBHOOK_URL o, si no está y se corre en una terminal, se pide sin
+# mostrarlo. Si ya existe en Secret Manager se conserva.
 #
 # Por qué esto NO es un paso de pipeline: para que el CI los suba, el material
 # sensible (la clave privada de la CA, las contraseñas) tendría que vivir en el
@@ -94,6 +99,27 @@ subir grafana-admin-password  "$(password_de grafana-admin-password)"
 LOKI_PUSH_PASS="$(password_de loki-push-password)"
 subir loki-push-password      "$LOKI_PUSH_PASS"
 subir loki-push-htpasswd      "voxchain-logs:$(openssl passwd -apr1 "$LOKI_PUSH_PASS")"
+
+# Receptor de Alertmanager (monitoring/alertmanager-config.yaml). Sin él todo
+# anda igual, pero las alertas no notifican: por eso avisa y no corta.
+WEBHOOK="${DISCORD_WEBHOOK_URL:-}"
+if [ -z "$WEBHOOK" ] && [ -t 0 ] && \
+   ! gcloud secrets describe alertmanager-discord-webhook --project="$PROJECT" >/dev/null 2>&1; then
+  read -rsp "  URL del webhook de Discord para las alertas (vacío = saltear): " WEBHOOK
+  echo
+fi
+if [ -n "$WEBHOOK" ]; then
+  case "$WEBHOOK" in
+    https://discord.com/api/webhooks/*|https://discordapp.com/api/webhooks/*) ;;
+    *) rojo "  ! DISCORD_WEBHOOK_URL no parece un webhook de Discord (https://discord.com/api/webhooks/...)"; exit 1 ;;
+  esac
+  subir alertmanager-discord-webhook "$WEBHOOK"
+elif gcloud secrets describe alertmanager-discord-webhook --project="$PROJECT" >/dev/null 2>&1; then
+  echo "  = alertmanager-discord-webhook (se conserva el que hay)"
+else
+  rojo "  ! Falta alertmanager-discord-webhook: las alertas no van a notificar."
+  rojo "    Correr de nuevo con DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/..."
+fi
 
 # -- bucket del estado de OpenTofu -------------------------------------------
 # Lo usa el backend "gcs" de terraform/gke/versions.tf. Va acá y no en el propio
