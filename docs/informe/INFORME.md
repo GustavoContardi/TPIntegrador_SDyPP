@@ -32,7 +32,10 @@ CPU disponible.
 En la etapa final se agregaron reglas de gobierno sobre la red de minado —
 categorías de ley con agenda por equipo, deliberación previa a cada ventana,
 quórum de mineros para abrirla, restricción de quién propone y dificultad
-dinámica sobre el cómputo vivo—, resumidas en la sección 1.3.
+dinámica sobre el cómputo vivo—, resumidas en la sección 1.3. La plataforma
+tiene observabilidad propia: métricas por tipo de recurso en Prometheus y
+Grafana, logs de los dos clústers en Loki y alertas que llegan a Discord
+(sección 6.1).
 
 ---
 
@@ -236,8 +239,11 @@ nadie pueda empezar a minar durante la pausa.
 | 6 | `worker.command` | exchange topic | backend → worker | `switch_mode`, `stop` (alta y baja de equipos) |
 
 **Distribución interna de trabajo:** el coordinator reparte fragmentos por
-**HTTP** (`GET /work/next/<miner_id>`), no por cola, porque necesita saber qué
-minero tiene cada rango para reasignarlo si desaparece.
+**HTTP** (`GET /work/next/<miner_id>`), no por cola. Es un modelo *pull*: cada
+minero pide el próximo fragmento cuando termina el anterior, así que el más
+rápido barre más, y el coordinator conoce a sus mineros por el keep-alive. Lo
+que hoy **no** hace es anotar qué minero tiene cada rango: si uno se cae, su
+fragmento no se reasigna (sección 5.1).
 
 ---
 
@@ -511,8 +517,8 @@ ventana que vence sin ganador.
 
 | Suite | Resultado |
 |---|---|
-| Completa (`./run.sh test`) | **535 passed** |
-| Como la corre CI (`-k "not integration"`) | 529 passed, 6 deselected |
+| Completa (`./run.sh test`) | **666 passed** |
+| Como la corre CI (`-k "not integration"`) | 660 passed, 6 deselected |
 | Sólo integración (`-m integration`) | 6 passed |
 
 Los tests de integración corren el flujo extremo a extremo (propuesta → ventana
@@ -530,16 +536,21 @@ los tests.
 
 Tres mecanismos, en capas:
 
-1. **Reasignación de la tarea.** El coordinator trackea qué minero tiene cada
-   fragmento y purga a los que dejan de mandar keep-alive
-   (`_purge_stale_miners`). El fragmento vuelve a la cola de pendientes.
+1. **Purga del minero.** El coordinator saca de su lista a los mineros que dejan
+   de mandar keep-alive durante 15 s (`_purge_stale_miners`) y deja de
+   contarlos como capacidad. **El fragmento que tenía en la mano no se
+   reasigna**: `get_next_task` lo saca de la cola sin anotar a quién se lo dio.
+   Arreglarlo es acotado (un registro `minero → fragmento` y devolverlo a la
+   cola al purgar) y está en las mejoras (7.2).
 2. **Reposición del pod.** El Deployment repone el pod caído. Para el
    Deployment `worker` hay además un HPA declarado (`worker-hpa`, 2→10 al 70% de
    CPU); el pipeline `04` despliega el escenario de demo, con réplicas fijas, y
    el HPA se aplica a mano.
-3. **Nada se pierde.** El trabajo perdido es, como mucho, un fragmento del
-   espacio de nonces. La ventana sigue abierta y el resto de los mineros sigue
-   barriendo.
+3. **Lo que se pierde está acotado.** Es, como mucho, un fragmento del espacio
+   de nonces por minero caído (1/50 con la configuración desplegada). La
+   ventana sigue abierta y el resto de los mineros sigue barriendo. Si el nonce
+   ganador estaba justo en ese tramo, la ventana vence sin solución aunque haya
+   capacidad de sobra: es poco probable, pero posible.
 
 El caso extremo — que caigan **todos** los mineros — se resuelve por deadline, y
 el quórum (sección 1.3) decide qué pasa con la ley. Si al vencer la red está por
@@ -622,6 +633,35 @@ descartarla antes que arriesgar un sellado doble. Si la caída ocurre durante
 una deliberación, la pausa se pierde igual, pero la ley no: el nuevo líder la
 devuelve a la cola.
 
+### 5.2.bis Si cae Redis
+
+Redis guarda todo el estado (cadena, cola, leases, latidos), así que su caída
+es la más grave. Corre como StatefulSet de 3 réplicas con **Sentinel** (×3,
+quórum 2), que promueve una réplica cuando el master cae. El problema era que
+promover no servía de nada: todos los clientes apuntaban fijo a `redis-0`.
+
+Ahora **HAProxy** (×2) es la dirección estable del master: chequea cada segundo
+qué pod responde `role:master` y manda todo ahí. El Service `redis` (API y NCT)
+y `redis-external` (mineros del k3s) apuntan a HAProxy, así que ningún cliente
+tiene que hablar con Sentinel. Tres detalles hicieron que funcionara de verdad:
+
+- Redis y Sentinel arrancan **preguntando quién es el master** en vez de asumir
+  `redis-0`. Un master que vuelve después de un failover lo hace como réplica,
+  y no quedan dos masters.
+- El `myid` de cada Sentinel sale del nombre del pod. Con uno al azar, cada
+  reinicio dejaba en los demás un par fantasma que contaba para la mayoría, y a
+  los pocos reinicios el failover se volvía imposible.
+- Los clientes de Python reintentan ante conexión cortada y ante `READONLY`,
+  así que un failover se ve como una **pausa de unos 10 s**.
+
+Se probó en Docker con los mismos scripts y configuración de los manifests: dos
+failovers seguidos, el master viejo que vuelve con otra IP, y los Sentinel
+reiniciados de a uno y todos a la vez, sin errores en el cliente ni escrituras
+confirmadas perdidas. Límite conocido: en una partición de red en la que el
+master viejo sigue vivo pero aislado, puede aceptar escrituras que después se
+pierden. Evitarlo requiere `min-replicas-to-write`, que a cambio corta las
+escrituras cuando no hay réplicas.
+
 ### 5.3 Sellado atómico
 
 El primer nonce válido **recibido** cierra la ventana, mediante un guard atómico
@@ -640,7 +680,7 @@ El desempate es **por orden de llegada**, no por el valor del nonce.
 
 | Requisito (§2) | Implementación |
 |---|---|
-| Base de datos | Redis como StatefulSet + Sentinel para failover, con PVC |
+| Base de datos | Redis como StatefulSet (×3) con PVC, Sentinel (×3, quórum 2) para el failover y HAProxy (×2) como dirección estable del master (sección 5.2.bis) |
 | Sistema de colas | RabbitMQ StatefulSet de 3 réplicas en clúster (peer discovery de Kubernetes), colas durables, PVC y PodDisruptionBudget |
 | Secretos | External Secrets Operator contra GCP Secret Manager (`secretstore.yaml`) |
 | Configuraciones | ConfigMaps (`voxchain-config`, `worker-config`, `rabbitmq-config`) |
@@ -688,9 +728,11 @@ criterio:
   RabbitMQ no abría los puertos de clustering entre sus nodos (4369 y 25672).
   Los Services externos pasaron a `externalTrafficPolicy: Local`, para que el
   tráfico de afuera llegue con la IP real del cliente y la policy lo reconozca
-  como externo. **Todavía no se verificó sobre un clúster real**: se aplica en el
-  próximo redespliegue, y si algo deja de conectar,
-  `kubectl delete networkpolicy -n voxchain --all` vuelve al estado anterior.
+  como externo. En el redespliegue de septiembre Dataplane V2 quedó activo y el
+  sistema de GKE anduvo con las policies aplicadas (`/api/health` en verde).
+  **Falta verificar el acceso de los mineros del k3s**, que no estaba conectado.
+  Si algo deja de conectar, `kubectl delete networkpolicy -n voxchain --all`
+  vuelve al estado anterior.
 
 El tráfico interno API↔NCT↔Redis sigue sin cifrar; la protección interna es de
 red, no criptográfica (sección 7.2).
@@ -758,7 +800,7 @@ diferencia entre "funciona" y "es reproducible" sólo se ve al recrear todo.
 
 ### 6.4 Estado actual de la infraestructura
 
-**La nube está dada de baja.** El despliegue pasó por dos ciclos completos:
+El despliegue pasó por **tres ciclos completos** desde cero:
 
 1. **Julio.** Primer despliegue en el proyecto `voxchain-unlu`. El sistema **se
    verificó funcionando de punta a punta**: 10 workers en el k3s conectados por
@@ -769,25 +811,31 @@ diferencia entre "funciona" y "es reproducible" sólo se ve al recrear todo.
 2. **Agosto.** Redespliegue **desde cero** con los pipelines (del 4 al 7 de
    agosto, con `03-apps` en verde). Es el que destapó los tres agujeros de la
    sección 6.3. Después se volvió a dar de baja.
+3. **Septiembre (27 y 28).** Reconstrucción para la presentación, esta vez con
+   `02` y `03` corriendo desde GitHub Actions y secretos rotados. Destapó cuatro
+   problemas que el despliegue manual escondía (el CI no podía crear RBAC, un
+   split-brain silencioso de RabbitMQ, entre otros) y terminó con
+   `/api/health` en verde para todos los servicios de GKE. El k3s de la cátedra
+   quedó pendiente porque su IP había cambiado.
 
-Con la infraestructura apagada, los pipelines `03-apps` y `04-gpu-workers`
-**fallaban al autenticar** en cada push (`invalid_target`: el pool de Workload
-Identity ya no existe). No era un defecto de los workflows, sino la consecuencia
-de que no hubiera contra qué desplegar, pero llenaba de fallos la pestaña
-Actions del repositorio público. Desde septiembre, `02`, `03` y `04` sólo corren
-por push si la variable del repositorio `CLOUD_ENABLED` vale `true`; si no, se
-saltean. Disparados a mano corren siempre. `ci-checks` no depende de GCP y corre
-en todos los casos.
+Desde septiembre el Ingress usa una **IP estática** (`voxchain-ingress-ip`,
+reservada por `bootstrap-secrets.sh` fuera del estado de OpenTofu), así que un
+`tofu destroy` + `apply` ya no cambia los hosts `voxchain.<IP>.sslip.io`: ni el
+certificado, ni la URL de Grafana, ni el `rpId` de las passkeys. La plataforma
+se levanta cuando se necesita y se apaga para no generar costo; la secuencia es
+`bootstrap-secrets.sh` → `01` → `02` → `03` → `04`.
+
+Para que un repositorio público sin nube no se llene de fallos, `02`, `03` y
+`04` sólo corren por push si la variable del repositorio `CLOUD_ENABLED` vale
+`true`; si no, se saltean. Disparados a mano corren siempre. `ci-checks` no
+depende de GCP y corre en todos los casos.
 
 La bitácora completa está en [`despliegue-gcp.md`](despliegue-gcp.md), con las
-URLs, el primer bloque sellado y los problemas encontrados durante el
-despliegue.
+URLs, el primer bloque sellado y los problemas encontrados en cada ciclo.
 
 Todo es reproducible desde el repositorio: imágenes desde los Dockerfiles,
 certificados con los scripts de `certs/`, infraestructura con `tofu apply` y
-secretos con `bootstrap-secrets.sh`. Al redesplegar cambia la IP del
-LoadBalancer del Ingress, y con ella los hosts `sslip.io` de
-`voxchain-ingress.yaml` y el `GF_SERVER_ROOT_URL` de Grafana en el Terraform.
+secretos con `bootstrap-secrets.sh`.
 
 > **Gotchas del redeploy** (aprendidos en el destroy): borrar los Services
 > LoadBalancer *antes* de destruir el clúster o quedan forwarding rules
@@ -954,24 +1002,28 @@ puede frenar leyes que el resto habría sellado (AGENT.md 9).
 
 En orden de relación valor/esfuerzo:
 
-1. **Medir el codo de la curva** con 8 y 16 workers sobre el clúster. Portar el
+1. **Reasignar el fragmento de un minero caído.** Registrar en `get_next_task`
+   qué fragmento se le dio a cada minero, borrarlo en `submit_result` y, en
+   `_purge_stale_miners`, devolverlo al frente de la cola. Son unas 15 líneas y
+   un test, y cierra la pregunta "¿se reasignan tareas?" de la checklist.
+2. **Medir el codo de la curva** con 8 y 16 workers sobre el clúster. Portar el
    runner a `kubectl scale` es trabajo menor y respondería la pregunta abierta
    más interesante que quedó.
-2. **Ventanas concurrentes.** Permitir N ventanas simultáneas sobre leyes
+3. **Ventanas concurrentes.** Permitir N ventanas simultáneas sobre leyes
    independientes multiplicaría el throughput. Requiere repensar el
    encadenamiento de bloques (hoy estrictamente lineal).
-3. **Fragmentación adaptativa.** Ajustar `FRAGMENT_SIZE` según la latencia
+4. **Fragmentación adaptativa.** Ajustar `FRAGMENT_SIZE` según la latencia
    observada hacia cada minero: fragmentos grandes para los remotos, chicos para
    los locales. Con workers federados por internet esto tendría efecto real.
-4. **Coordinator sin auto-minado** cuando el pool crece. Que reparta y nada más,
+5. **Coordinator sin auto-minado** cuando el pool crece. Que reparta y nada más,
    para que atender a los mineros no compita con minar.
-5. **TLS en Redis.** El canal externo ya está acotado a la IP del k3s y la
+6. **TLS en Redis.** El canal externo ya está acotado a la IP del k3s y la
    segmentación interna se aplica; falta cifrarlo (`--tls-port` con la misma CA
    de RabbitMQ, y `rediss://` en los clientes).
-6. **HPA por métrica específica.** Escalar los mineros por la profundidad de la
+7. **HPA por métrica específica.** Escalar los mineros por la profundidad de la
    cola o por el cómputo vivo (`voxchain_pool_miners_registered`), con
    prometheus-adapter o KEDA, en vez de sólo por CPU.
-7. **mTLS interno** con un service mesh, si el sistema fuera a manejar algo
+8. **mTLS interno** con un service mesh, si el sistema fuera a manejar algo
    sensible de verdad.
 
 ### 7.3 Dónde aplicaría esta solución
@@ -989,8 +1041,8 @@ es independiente.
 
 El patrón concreto que vale la pena llevarse: **workers efímeros y sin estado
 que piden trabajo en lugar de recibirlo**. Eso hace trivial agregar capacidad
-(un worker nuevo simplemente empieza a pedir) y tolerar que desaparezca (su
-fragmento vuelve a la cola). Fue lo que permitió, en este trabajo, federar un
+(un worker nuevo simplemente empieza a pedir) y tolerar que desaparezca (el
+resto sigue pidiendo; con el registro de 7.2, su fragmento volvería a la cola). Fue lo que permitió, en este trabajo, federar un
 clúster ajeno sin coordinación previa más allá de una URL y un certificado.
 
 Donde **no** lo aplicaría: cargas con dependencias entre unidades de trabajo, o
@@ -1015,7 +1067,7 @@ README raíz del repositorio.
      agregarla acá y en el README raíz. -->
 
 Todo el código asistido por IA fue revisado, entendido y validado. El mecanismo
-de verificación es doble: la suite automatizada (535 tests unitarios y de
+de verificación es doble: la suite automatizada (666 tests unitarios y de
 integración, corriendo en CI sobre cada push) y las corridas reales del sistema
 desplegado.
 
@@ -1062,7 +1114,9 @@ Kubernetes está documentado paso a paso en el README de Pilar 3.
 ## Anexo B — Métricas expuestas
 
 Todos los servicios exponen `/metrics` en formato Prometheus, con
-ServiceMonitors para el scraping.
+ServiceMonitors para el scraping. Las métricas `voxchain_worker_*` son las del
+propio minero: se ven en local y en su `/metrics`, pero en el despliegue llegan
+a Prometheus como `voxchain_miner_*` (ver el párrafo debajo de la tabla).
 
 | Métrica | Qué mide |
 |---|---|
@@ -1091,7 +1145,7 @@ intento) e histogramas (`mining_duration_seconds` por `prefix_len` y
 
 | Documento | Contenido |
 |---|---|
-| [`arquitecturaVoxChain.jpeg`](../diagrams/arquitecturaVoxChain.jpeg) | Diagrama de arquitectura |
+| [`ArquitecturaVoxchain.png`](../diagrams/ArquitecturaVoxchain.png) | Diagrama de arquitectura |
 | [`despliegue-gcp.md`](despliegue-gcp.md) | Bitácora completa del despliegue en GCP |
 | [`../workers.md`](../workers.md) | Modos del worker, equipos y alta de mineros |
 | [`certs/README.md`](../../pilar3-despliegue/certs/README.md) | Certificados TLS del canal AMQPS |

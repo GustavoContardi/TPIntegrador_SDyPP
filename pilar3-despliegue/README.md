@@ -22,7 +22,7 @@ GCP — GKE zonal, southamerica-east1-a      Clúster GPU — k3s (externo)
 └──────────────────────────────┘           └──────────────────────────────┘
 ```
 
-Diagrama completo: [`docs/diagrams/arquitecturaVoxChain.jpeg`](../docs/diagrams/arquitecturaVoxChain.jpeg).
+Diagrama completo: [`docs/diagrams/ArquitecturaVoxchain.png`](../docs/diagrams/ArquitecturaVoxchain.png).
 
 - **GKE** corre la infraestructura (Redis, RabbitMQ) en el node pool `infra`
   y las aplicaciones (NCT, API, frontend) en el node pool `apps`.

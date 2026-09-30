@@ -249,12 +249,13 @@ que costaba 47 segundos por ley (INFORME §4.7):
 
 ### Por qué HTTP y no una cola de RabbitMQ
 
-La razón declarada en el README de Pilar 2 es:
+La razón que el README de Pilar 2 declaraba hasta septiembre era:
 
 > El coordinator necesita saber **qué minero tiene cada rango** para reasignarlo
 > si deja de reportar.
 
-El razonamiento es correcto y es la diferencia real entre los dos transportes:
+(Hoy el README explica el modelo *pull* y dice que la reasignación falta.) El
+razonamiento es correcto y es la diferencia real entre los dos transportes:
 
 | | Cola RabbitMQ | HTTP pull |
 |---|---|---|
@@ -969,10 +970,14 @@ razonamiento sigue siendo el contexto de lo que hoy está en el código.
 
 ### A. No hay reasignación de fragmentos al caer un minero 🔴
 
-**Qué dice la doc.** INFORME §5.1: *"El coordinator trackea qué minero tiene cada
+> **Estado (30/9):** la documentación ya describe lo que hace el código (INFORME
+> §2.4, §5.1 y §7.2, y el README de Pilar 2). El arreglo del código sigue
+> pendiente y es la mejora 1 del INFORME §7.2.
+
+**Qué decía la doc.** INFORME §5.1: *"El coordinator trackea qué minero tiene cada
 fragmento y purga a los que dejan de mandar keep-alive. **El fragmento vuelve a la
-cola de pendientes.**"* El README de Pilar 2 usa el mismo argumento para justificar
-HTTP sobre colas. La checklist §1 lo pregunta explícitamente: *"Manejo de fallas en
+cola de pendientes.**"* El README de Pilar 2 usaba el mismo argumento para
+justificar HTTP sobre colas. La checklist §1 lo pregunta explícitamente: *"Manejo de fallas en
 workers: ¿Qué pasa si uno cae? **¿Se reasignan tareas?**"*.
 
 **Qué hace el código.** `get_next_task` (`coordinator.py:163`) hace

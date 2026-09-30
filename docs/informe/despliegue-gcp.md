@@ -504,6 +504,28 @@ URLs vigentes (fijas mientras exista `voxchain-ingress-ip`):
   upgrade con *surge* lo pasaría.
 - **Alerta de split-brain** de RabbitMQ (§8.7).
 
+### 8.11 Cambios posteriores, para el próximo redespliegue
+
+Lo que entró al repositorio después de esta bitácora (29 y 30 de septiembre) y
+todavía no se aplicó sobre la nube:
+
+| Cambio | Commit | Qué hay que correr |
+|---|---|---|
+| Failover de Redis con HAProxy delante de Sentinel | `b92117d` | `02` |
+| Métricas de los mineros del k3s vía el latido (`voxchain_miner_*`) y paneles nuevos | `0acd039`, `9da32e1` | `03` (imagen del API y dashboard) y `04` (mineros) |
+| Loki + Alloy, e Ingress de push para los mineros del k3s | `76f6e33` | `bootstrap-secrets.sh` (2 secretos nuevos), `01`, `02`, `03`, `04` |
+| Alertas a Discord | `d7e30d7` | `bootstrap-secrets.sh` con `DISCORD_WEBHOOK_URL`, `01`, `03` |
+
+Secretos nuevos en Secret Manager: `loki-push-password`, `loki-push-htpasswd` y
+`alertmanager-discord-webhook`. Los dos primeros los genera el script; el
+webhook lo crea el dueño del canal de Discord. `02` falla si faltan los de Loki
+y avisa, sin cortar, si falta el de Discord.
+
+Orden completo: `DISCORD_WEBHOOK_URL=... bootstrap-secrets.sh` → `01-infra` →
+`02-services` → `03-apps` → `04-gpu-workers` (este último con `K3S_KUBECONFIG`
+y `K3S_EGRESS_CIDRS` al día). Para comprobar las alertas:
+`kubernetes/scripts/probar-alerta.sh`.
+
 ## 9. Resumen en una frase (para abrir la explicación)
 
 *"Con una cuenta nueva y un comando de OpenTofu reconstruimos toda la
