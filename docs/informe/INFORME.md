@@ -517,8 +517,8 @@ ventana que vence sin ganador.
 
 | Suite | Resultado |
 |---|---|
-| Completa (`./run.sh test`) | **671 passed** |
-| Como la corre CI (`-k "not integration"`) | 665 passed, 6 deselected |
+| Completa (`./run.sh test`) | **672 passed** |
+| Como la corre CI (`-k "not integration"`) | 666 passed, 6 deselected |
 | Sólo integración (`-m integration`) | 6 passed |
 
 Los tests de integración corren el flujo extremo a extremo (propuesta → ventana
@@ -1065,7 +1065,7 @@ README raíz del repositorio.
      agregarla acá y en el README raíz. -->
 
 Todo el código asistido por IA fue revisado, entendido y validado. El mecanismo
-de verificación es doble: la suite automatizada (671 tests unitarios y de
+de verificación es doble: la suite automatizada (672 tests unitarios y de
 integración, corriendo en CI sobre cada push) y las corridas reales del sistema
 desplegado.
 

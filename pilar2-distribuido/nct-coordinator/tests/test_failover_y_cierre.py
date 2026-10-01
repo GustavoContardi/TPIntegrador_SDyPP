@@ -107,6 +107,19 @@ def test_step_down_cierra_las_colas_de_trabajo(bus, store):
     assert leader.consumed_work_queues() == set()
 
 
+def test_metrica_de_lider_refleja_el_rol_desde_el_arranque(bus, store):
+    """Regresión: un NCT que arrancaba con el lease nunca pasaba por
+    become_leader y reportaba voxchain_nct_is_leader=0 siendo líder, así que
+    Grafana y VoxchainSinLiderNCT decían "sin líder" con el sistema sano."""
+    from common.metrics import nct_is_leader
+
+    _nct(bus, store, nct_id="nct-primary", is_leader=True)
+    assert nct_is_leader._value.get() == 1
+
+    _nct(bus, store, nct_id="nct-standby", is_leader=False)
+    assert nct_is_leader._value.get() == 0
+
+
 def test_standby_no_roba_propuestas_cero_perdidas(bus, store):
     """Líder + follower suscritos: las N propuestas se persisten (sin pérdidas).
 

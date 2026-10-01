@@ -118,6 +118,11 @@ class NCTCoordinator:
         self.now = clock
         self.nct_id = nct_id
         self.is_leader = is_leader
+        # El gauge también se fija acá y no sólo en become_leader/step_down: un
+        # NCT que arranca con el lease (el primary al reiniciarse) nunca pasa
+        # por become_leader, y quedaba reportando 0 siendo líder, con lo que
+        # Grafana y VoxchainSinLiderNCT decían "sin líder" con el sistema sano.
+        nct_is_leader.set(1 if is_leader else 0)
         self.heartbeat_interval = heartbeat_interval
         # Firma de propuestas (A-01, AGENT.md 3.1). require_signatures=False permite
         # migración gradual: verifica si hay firma pero acepta no firmadas.
