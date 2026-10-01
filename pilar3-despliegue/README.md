@@ -406,7 +406,7 @@ contra el cual autenticar; por eso `02`–`04` sólo corren por push si la varia
 - **Observabilidad (U5.5)**: kube-prometheus-stack (Prometheus + Grafana +
   Alertmanager) desplegado vía Helm en el namespace `monitoring`. Cada servicio
   expone `/metrics` con métricas de aplicación (propuestas, bloques, workers,
-  latencia). ServiceMonitors para el auto-descubrimiento, 5 reglas de alerta
+  latencia). ServiceMonitors para el auto-descubrimiento, 9 reglas de alerta
   propias y el dashboard precargado en un ConfigMap.
 - **Alertas a Discord**: Alertmanager manda las alertas de VoxChain
   (`alertname` Voxchain\*) a un canal de Discord por webhook, con aviso al

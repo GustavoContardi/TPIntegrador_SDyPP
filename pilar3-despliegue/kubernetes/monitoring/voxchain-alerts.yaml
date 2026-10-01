@@ -79,3 +79,85 @@ spec:
               Los desafíos tardan más de 5 s (p99) en llegar del NCT a los
               workers. Revisar la salud del cluster RabbitMQ y la red entre
               clusters (LoadBalancer AMQPS).
+    # Redis y RabbitMQ no tenían alerta propia. Con Sentinel + HAProxy la caída
+    # de un pod se resuelve sola (pausa de ~10 s), así que el sistema sigue y
+    # nadie se entera de que se perdió redundancia; y si se caía todo, lo único
+    # que avisaba era "no hay líder NCT", lejos de la causa.
+    #
+    # Salen de kube-state-metrics (réplicas listas contra deseadas). El `max by`
+    # descarta los labels del pod de kube-state-metrics: sin él, la identidad de
+    # la alerta cambiaría cada vez que ese pod se reinicia. `componente` unifica
+    # el nombre de StatefulSets y Deployments para el mensaje.
+    #
+    # Las "degradadas" esperan 1 min. Con más (se probó con 10) no avisan
+    # durante un reinicio rodante normal (un `kubectl apply` de 02-services, un
+    # nodo que se drena), pero tampoco se pueden mostrar en una demo. El costo
+    # de 1 min es que un reinicio rodante manda un "degradado" y enseguida su
+    # "resuelta".
+    - name: voxchain.infraestructura
+      rules:
+        - alert: VoxchainRedisDegradado
+          expr: >-
+            label_replace(
+              max by (statefulset) (kube_statefulset_status_replicas_ready{namespace="voxchain", statefulset=~"redis|redis-sentinel"})
+                < max by (statefulset) (kube_statefulset_replicas{namespace="voxchain", statefulset=~"redis|redis-sentinel"}),
+              "componente", "$1", "statefulset", "(.*)")
+            or
+            label_replace(
+              max by (deployment) (kube_deployment_status_replicas_available{namespace="voxchain", deployment="redis-haproxy"})
+                < max by (deployment) (kube_deployment_spec_replicas{namespace="voxchain", deployment="redis-haproxy"}),
+              "componente", "$1", "deployment", "(.*)")
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Redis perdió redundancia: {{ $labels.componente }}"
+            description: >-
+              {{ $labels.componente }} tiene {{ $value }} réplicas listas, menos
+              de las esperadas, hace más de 1 minuto. El sistema sigue andando
+              (Sentinel y HAProxy cubren la caída de un pod), pero otra falla
+              podría dejarlo sin Redis. Revisar los pods y los eventos del
+              StatefulSet o Deployment en el namespace voxchain.
+        - alert: VoxchainRedisCaido
+          expr: >-
+            label_replace(
+              max by (statefulset) (kube_statefulset_status_replicas_ready{namespace="voxchain", statefulset="redis"}) == 0,
+              "componente", "$1", "statefulset", "(.*)")
+            or
+            label_replace(
+              max by (deployment) (kube_deployment_status_replicas_available{namespace="voxchain", deployment="redis-haproxy"}) == 0,
+              "componente", "$1", "deployment", "(.*)")
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Redis inalcanzable: {{ $labels.componente }} sin réplicas listas"
+            description: >-
+              No queda ninguna réplica lista de {{ $labels.componente }}. Sin
+              Redis (o sin HAProxy, que es la dirección por la que llegan todos
+              los clientes) el NCT no puede renovar su lease ni sellar bloques, y
+              los mineros no pueden reportar estado.
+        - alert: VoxchainRabbitMQDegradado
+          expr: >-
+            max by (statefulset) (kube_statefulset_status_replicas_ready{namespace="voxchain", statefulset="rabbitmq"})
+              < max by (statefulset) (kube_statefulset_replicas{namespace="voxchain", statefulset="rabbitmq"})
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: "RabbitMQ perdió un nodo"
+            description: >-
+              RabbitMQ tiene {{ $value }} nodos listos, menos de los esperados,
+              hace más de 1 minuto. Las colas son clásicas: las que vivían en
+              el nodo caído quedan inaccesibles hasta que vuelva.
+        - alert: VoxchainRabbitMQCaido
+          expr: >-
+            max by (statefulset) (kube_statefulset_status_replicas_ready{namespace="voxchain", statefulset="rabbitmq"}) == 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "RabbitMQ sin nodos listos"
+            description: >-
+              No queda ningún nodo de RabbitMQ listo: no entran propuestas ni
+              salen desafíos, y los mineros del k3s pierden la conexión AMQPS.

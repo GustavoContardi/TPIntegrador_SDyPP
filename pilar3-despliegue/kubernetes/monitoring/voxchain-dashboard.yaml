@@ -393,6 +393,172 @@ data:
           }
         },
         {
+          "id": 54,
+          "title": "Líder NCT por pod",
+          "type": "timeseries",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 0,
+            "y": 20
+          },
+          "targets": [
+            {
+              "expr": "max by (pod) (voxchain_nct_is_leader{job=\"nct\"})",
+              "legendFormat": "{{pod}}"
+            }
+          ],
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "right",
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "unit": "short",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 2,
+                "fillOpacity": 10,
+                "showPoints": "never",
+                "spanNulls": true,
+                "lineInterpolation": "stepAfter"
+              },
+              "min": 0,
+              "max": 1
+            }
+          },
+          "description": "1 = el pod tiene el lease de líder en Redis. Un cruce entre las dos líneas es un failover primary → standby."
+        },
+        {
+          "id": 55,
+          "title": "Bloques sellados por ventana (1h)",
+          "type": "stat",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 6,
+            "x": 12,
+            "y": 20
+          },
+          "targets": [
+            {
+              "expr": "sum(increase(voxchain_nct_blocks_sealed_total[1h])) / clamp_min(sum(increase(voxchain_nct_windows_opened_total[1h])), 1)",
+              "legendFormat": "__auto"
+            }
+          ],
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "orientation": "auto",
+            "textMode": "auto",
+            "colorMode": "background",
+            "graphMode": "none"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "value": null,
+                    "color": "red"
+                  },
+                  {
+                    "value": 0.5,
+                    "color": "orange"
+                  },
+                  {
+                    "value": 0.9,
+                    "color": "green"
+                  }
+                ]
+              },
+              "unit": "percentunit",
+              "mappings": []
+            }
+          },
+          "description": "Proporción de ventanas de votación de la última hora que terminaron en un bloque sellado."
+        },
+        {
+          "id": 56,
+          "title": "Propuestas por bloque (1h)",
+          "type": "stat",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 7,
+            "w": 6,
+            "x": 18,
+            "y": 20
+          },
+          "targets": [
+            {
+              "expr": "sum(increase(voxchain_nct_proposals_total[1h])) / clamp_min(sum(increase(voxchain_nct_blocks_sealed_total[1h])), 1)",
+              "legendFormat": "__auto"
+            }
+          ],
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "orientation": "auto",
+            "textMode": "auto",
+            "colorMode": "background",
+            "graphMode": "none"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "fixed",
+                "fixedColor": "purple"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "value": null,
+                    "color": "purple"
+                  }
+                ]
+              },
+              "unit": "short",
+              "mappings": [],
+              "decimals": 1
+            }
+          },
+          "description": "Cuántas propuestas (votos) entran, en promedio, en cada bloque sellado."
+        },
+        {
           "id": 30,
           "title": "API — Gateway",
           "type": "row",
@@ -401,7 +567,7 @@ data:
             "h": 1,
             "w": 24,
             "x": 0,
-            "y": 20
+            "y": 27
           }
         },
         {
@@ -416,7 +582,7 @@ data:
             "h": 4,
             "w": 6,
             "x": 0,
-            "y": 21
+            "y": 28
           },
           "targets": [
             {
@@ -455,7 +621,7 @@ data:
             "h": 4,
             "w": 18,
             "x": 6,
-            "y": 21
+            "y": 28
           },
           "targets": [
             {
@@ -519,7 +685,7 @@ data:
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 25
+            "y": 32
           },
           "targets": [
             {
@@ -562,7 +728,7 @@ data:
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 25
+            "y": 32
           },
           "targets": [
             {
@@ -612,7 +778,7 @@ data:
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 33
+            "y": 40
           },
           "targets": [
             {
@@ -644,6 +810,158 @@ data:
           }
         },
         {
+          "id": 57,
+          "title": "Latencia p95 por ruta (sin health/metrics)",
+          "type": "timeseries",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 40
+          },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.95, sum by (le, path) (rate(voxchain_api_http_request_duration_seconds_bucket{path!~\"/metrics|/api/health.*\"}[5m])))",
+              "legendFormat": "{{path}}"
+            }
+          ],
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "right",
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "unit": "s",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 2,
+                "fillOpacity": 10,
+                "showPoints": "never",
+                "spanNulls": true
+              }
+            }
+          }
+        },
+        {
+          "id": 58,
+          "title": "Requests/s por réplica del API",
+          "type": "timeseries",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 48
+          },
+          "targets": [
+            {
+              "expr": "sum by (pod) (rate(voxchain_api_http_requests_total[1m]))",
+              "legendFormat": "{{pod}}"
+            }
+          ],
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "right",
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "unit": "reqps",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 2,
+                "fillOpacity": 10,
+                "showPoints": "never",
+                "spanNulls": true
+              }
+            }
+          },
+          "description": "Sirve para ver que el Service reparte la carga entre las réplicas del HPA."
+        },
+        {
+          "id": 59,
+          "title": "Top 10 rutas en el rango (sin health/metrics)",
+          "type": "bargauge",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 48
+          },
+          "targets": [
+            {
+              "expr": "topk(10, sum by (path) (increase(voxchain_api_http_requests_total{path!~\"/metrics|/api/health.*\"}[$__range])))",
+              "legendFormat": "{{path}}",
+              "instant": true,
+              "range": false
+            }
+          ],
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "orientation": "horizontal",
+            "displayMode": "gradient",
+            "showUnfilled": true,
+            "valueMode": "color"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "value": null,
+                    "color": "blue"
+                  }
+                ]
+              },
+              "unit": "short"
+            }
+          }
+        },
+        {
           "id": 40,
           "title": "MINEROS — k3s (latido en Redis, exportado por el API)",
           "type": "row",
@@ -652,7 +970,7 @@ data:
             "h": 1,
             "w": 24,
             "x": 0,
-            "y": 41
+            "y": 56
           }
         },
         {
@@ -667,7 +985,7 @@ data:
             "h": 4,
             "w": 6,
             "x": 0,
-            "y": 42
+            "y": 57
           },
           "targets": [
             {
@@ -714,7 +1032,7 @@ data:
             "h": 4,
             "w": 6,
             "x": 6,
-            "y": 42
+            "y": 57
           },
           "targets": [
             {
@@ -761,7 +1079,7 @@ data:
             "h": 4,
             "w": 12,
             "x": 12,
-            "y": 42
+            "y": 57
           },
           "targets": [
             {
@@ -808,7 +1126,7 @@ data:
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 46
+            "y": 61
           },
           "targets": [
             {
@@ -850,7 +1168,7 @@ data:
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 46
+            "y": 61
           },
           "targets": [
             {
@@ -893,7 +1211,7 @@ data:
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 54
+            "y": 69
           },
           "targets": [
             {
@@ -939,7 +1257,7 @@ data:
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 54
+            "y": 69
           },
           "targets": [
             {
@@ -983,7 +1301,7 @@ data:
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 62
+            "y": 77
           },
           "targets": [
             {
@@ -1027,7 +1345,7 @@ data:
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 62
+            "y": 77
           },
           "targets": [
             {
@@ -1064,6 +1382,860 @@ data:
           }
         },
         {
+          "id": 60,
+          "title": "Mineros minando ahora",
+          "type": "stat",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 8,
+            "x": 0,
+            "y": 85
+          },
+          "targets": [
+            {
+              "expr": "sum(max by (worker_id) (voxchain_miner_running)) or vector(0)",
+              "legendFormat": "__auto"
+            }
+          ],
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "orientation": "auto",
+            "textMode": "auto",
+            "colorMode": "background",
+            "graphMode": "area"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "fixed",
+                "fixedColor": "green"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "value": null,
+                    "color": "green"
+                  }
+                ]
+              },
+              "unit": "short",
+              "mappings": []
+            }
+          },
+          "description": "Mineros con latido vigente y el hilo de minería vivo."
+        },
+        {
+          "id": 61,
+          "title": "Capacidad total (fragmentos a la vez)",
+          "type": "stat",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 8,
+            "x": 8,
+            "y": 85
+          },
+          "targets": [
+            {
+              "expr": "sum(max by (worker_id) (voxchain_miner_capacity)) or vector(0)",
+              "legendFormat": "__auto"
+            }
+          ],
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "orientation": "auto",
+            "textMode": "auto",
+            "colorMode": "background",
+            "graphMode": "area"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "fixed",
+                "fixedColor": "purple"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "value": null,
+                    "color": "purple"
+                  }
+                ]
+              },
+              "unit": "short",
+              "mappings": []
+            }
+          }
+        },
+        {
+          "id": 62,
+          "title": "Lectura de latidos en Redis",
+          "type": "stat",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 8,
+            "x": 16,
+            "y": 85
+          },
+          "targets": [
+            {
+              "expr": "min(voxchain_miner_status_read_ok)",
+              "legendFormat": "__auto"
+            }
+          ],
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "orientation": "auto",
+            "textMode": "auto",
+            "colorMode": "background",
+            "graphMode": "none"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "value": null,
+                    "color": "red"
+                  },
+                  {
+                    "value": 1,
+                    "color": "green"
+                  }
+                ]
+              },
+              "unit": "short",
+              "mappings": [
+                {
+                  "type": "value",
+                  "options": {
+                    "0": {
+                      "text": "FALLA",
+                      "index": 0
+                    },
+                    "1": {
+                      "text": "OK",
+                      "index": 1
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "description": "Si el API puede leer worker:status de Redis. Con FALLA, los paneles de mineros quedan vacíos aunque haya mineros andando."
+        },
+        {
+          "id": 63,
+          "title": "Detalle por minero",
+          "type": "table",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 24,
+            "x": 0,
+            "y": 89
+          },
+          "targets": [
+            {
+              "expr": "max by (worker_id, mode, resource) (voxchain_miner_hashrate_hps)",
+              "legendFormat": "",
+              "instant": true,
+              "range": false,
+              "format": "table",
+              "refId": "A"
+            },
+            {
+              "expr": "max by (worker_id, mode, resource) (voxchain_miner_capacity)",
+              "legendFormat": "",
+              "instant": true,
+              "range": false,
+              "format": "table",
+              "refId": "B"
+            },
+            {
+              "expr": "max by (worker_id, mode, resource) (voxchain_miner_running)",
+              "legendFormat": "",
+              "instant": true,
+              "range": false,
+              "format": "table",
+              "refId": "C"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "merge",
+              "options": {}
+            },
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true
+                },
+                "renameByName": {
+                  "worker_id": "Minero",
+                  "mode": "Modo",
+                  "resource": "Recurso",
+                  "Value #A": "Hashrate (H/s)",
+                  "Value #B": "Capacidad",
+                  "Value #C": "Minando"
+                }
+              }
+            }
+          ],
+          "options": {
+            "showHeader": true,
+            "sortBy": [
+              {
+                "displayName": "Hashrate (H/s)",
+                "desc": true
+              }
+            ]
+          },
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "align": "auto"
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Hashrate (H/s)"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "short"
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "Minando"
+                },
+                "properties": [
+                  {
+                    "id": "mappings",
+                    "value": [
+                      {
+                        "type": "value",
+                        "options": {
+                          "0": {
+                            "text": "no",
+                            "color": "red",
+                            "index": 0
+                          },
+                          "1": {
+                            "text": "sí",
+                            "color": "green",
+                            "index": 1
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "id": "custom.cellOptions",
+                    "value": {
+                      "type": "color-text"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "id": 64,
+          "title": "INFRAESTRUCTURA — GKE (namespace voxchain)",
+          "type": "row",
+          "collapsed": false,
+          "panels": [],
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 97
+          }
+        },
+        {
+          "id": 65,
+          "title": "Pods no listos",
+          "type": "stat",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 0,
+            "y": 98
+          },
+          "targets": [
+            {
+              "expr": "sum(kube_pod_status_ready{namespace=\"voxchain\", condition=\"false\"})",
+              "legendFormat": "__auto"
+            }
+          ],
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "orientation": "auto",
+            "textMode": "auto",
+            "colorMode": "background",
+            "graphMode": "none"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "value": null,
+                    "color": "green"
+                  },
+                  {
+                    "value": 1,
+                    "color": "red"
+                  }
+                ]
+              },
+              "unit": "short",
+              "mappings": []
+            }
+          }
+        },
+        {
+          "id": 66,
+          "title": "Reinicios en el rango",
+          "type": "stat",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 6,
+            "y": 98
+          },
+          "targets": [
+            {
+              "expr": "round(sum(increase(kube_pod_container_status_restarts_total{namespace=\"voxchain\"}[$__range])))",
+              "legendFormat": "__auto"
+            }
+          ],
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "orientation": "auto",
+            "textMode": "auto",
+            "colorMode": "background",
+            "graphMode": "none"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "value": null,
+                    "color": "green"
+                  },
+                  {
+                    "value": 1,
+                    "color": "orange"
+                  },
+                  {
+                    "value": 5,
+                    "color": "red"
+                  }
+                ]
+              },
+              "unit": "short",
+              "mappings": []
+            }
+          }
+        },
+        {
+          "id": 67,
+          "title": "Réplicas del API (HPA)",
+          "type": "stat",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 12,
+            "y": 98
+          },
+          "targets": [
+            {
+              "expr": "max(kube_horizontalpodautoscaler_status_current_replicas{namespace=\"voxchain\"})",
+              "legendFormat": "__auto"
+            }
+          ],
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "orientation": "auto",
+            "textMode": "auto",
+            "colorMode": "background",
+            "graphMode": "area"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "fixed",
+                "fixedColor": "blue"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "value": null,
+                    "color": "blue"
+                  }
+                ]
+              },
+              "unit": "short",
+              "mappings": []
+            }
+          },
+          "description": "Réplicas actuales que decidió el HorizontalPodAutoscaler del API."
+        },
+        {
+          "id": 68,
+          "title": "Pods en el namespace",
+          "type": "stat",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 18,
+            "y": 98
+          },
+          "targets": [
+            {
+              "expr": "count(kube_pod_info{namespace=\"voxchain\"})",
+              "legendFormat": "__auto"
+            }
+          ],
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "orientation": "auto",
+            "textMode": "auto",
+            "colorMode": "background",
+            "graphMode": "area"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "fixed",
+                "fixedColor": "purple"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "value": null,
+                    "color": "purple"
+                  }
+                ]
+              },
+              "unit": "short",
+              "mappings": []
+            }
+          }
+        },
+        {
+          "id": 69,
+          "title": "Réplicas listas por componente",
+          "type": "bargauge",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 102
+          },
+          "targets": [
+            {
+              "expr": "max by (statefulset) (kube_statefulset_status_replicas_ready{namespace=\"voxchain\"}) / max by (statefulset) (kube_statefulset_replicas{namespace=\"voxchain\"})",
+              "legendFormat": "{{statefulset}}"
+            },
+            {
+              "expr": "max by (deployment) (kube_deployment_status_replicas_available{namespace=\"voxchain\"}) / max by (deployment) (kube_deployment_spec_replicas{namespace=\"voxchain\"})",
+              "legendFormat": "{{deployment}}"
+            }
+          ],
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "orientation": "horizontal",
+            "displayMode": "gradient",
+            "showUnfilled": true,
+            "valueMode": "color"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "value": null,
+                    "color": "red"
+                  },
+                  {
+                    "value": 0.5,
+                    "color": "orange"
+                  },
+                  {
+                    "value": 1,
+                    "color": "green"
+                  }
+                ]
+              },
+              "unit": "percentunit",
+              "min": 0,
+              "max": 1
+            }
+          },
+          "description": "Listas sobre deseadas. Menos de 100% en redis, redis-sentinel, redis-haproxy o rabbitmq es lo que disparan las alertas de infraestructura."
+        },
+        {
+          "id": 70,
+          "title": "Reinicios por pod en el rango",
+          "type": "bargauge",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 102
+          },
+          "targets": [
+            {
+              "expr": "round(sum by (pod) (increase(kube_pod_container_status_restarts_total{namespace=\"voxchain\"}[$__range])))",
+              "legendFormat": "{{pod}}",
+              "instant": true,
+              "range": false
+            }
+          ],
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ]
+            },
+            "orientation": "horizontal",
+            "displayMode": "gradient",
+            "showUnfilled": true,
+            "valueMode": "color"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "value": null,
+                    "color": "green"
+                  },
+                  {
+                    "value": 1,
+                    "color": "orange"
+                  },
+                  {
+                    "value": 5,
+                    "color": "red"
+                  }
+                ]
+              },
+              "unit": "short"
+            }
+          }
+        },
+        {
+          "id": 71,
+          "title": "CPU por pod (cores)",
+          "type": "timeseries",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 110
+          },
+          "targets": [
+            {
+              "expr": "sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=\"voxchain\", container!=\"\"}[5m]))",
+              "legendFormat": "{{pod}}"
+            }
+          ],
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "right",
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "unit": "short",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 2,
+                "fillOpacity": 10,
+                "showPoints": "never",
+                "spanNulls": true
+              },
+              "min": 0
+            }
+          }
+        },
+        {
+          "id": 72,
+          "title": "Memoria por pod (working set)",
+          "type": "timeseries",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 110
+          },
+          "targets": [
+            {
+              "expr": "sum by (pod) (container_memory_working_set_bytes{namespace=\"voxchain\", container!=\"\"})",
+              "legendFormat": "{{pod}}"
+            }
+          ],
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "right",
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "unit": "bytes",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 2,
+                "fillOpacity": 10,
+                "showPoints": "never",
+                "spanNulls": true
+              },
+              "min": 0
+            }
+          }
+        },
+        {
+          "id": 73,
+          "title": "Red recibida por pod",
+          "type": "timeseries",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 118
+          },
+          "targets": [
+            {
+              "expr": "sum by (pod) (rate(container_network_receive_bytes_total{namespace=\"voxchain\"}[5m]))",
+              "legendFormat": "{{pod}}"
+            }
+          ],
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "right",
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "unit": "Bps",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 2,
+                "fillOpacity": 10,
+                "showPoints": "never",
+                "spanNulls": true
+              },
+              "min": 0
+            }
+          }
+        },
+        {
+          "id": 74,
+          "title": "Red enviada por pod",
+          "type": "timeseries",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 118
+          },
+          "targets": [
+            {
+              "expr": "sum by (pod) (rate(container_network_transmit_bytes_total{namespace=\"voxchain\"}[5m]))",
+              "legendFormat": "{{pod}}"
+            }
+          ],
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "right",
+              "calcs": [
+                "lastNotNull",
+                "max"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "unit": "Bps",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 2,
+                "fillOpacity": 10,
+                "showPoints": "never",
+                "spanNulls": true
+              },
+              "min": 0
+            }
+          }
+        },
+        {
           "id": 50,
           "title": "LOGS — Loki (GKE por Alloy, k3s por push)",
           "type": "row",
@@ -1072,7 +2244,7 @@ data:
             "h": 1,
             "w": 24,
             "x": 0,
-            "y": 70
+            "y": 126
           },
           "panels": []
         },
@@ -1089,7 +2261,7 @@ data:
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 71
+            "y": 127
           },
           "targets": [
             {
@@ -1132,7 +2304,7 @@ data:
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 71
+            "y": 127
           },
           "targets": [
             {
@@ -1175,7 +2347,7 @@ data:
             "h": 10,
             "w": 24,
             "x": 0,
-            "y": 79
+            "y": 135
           },
           "targets": [
             {

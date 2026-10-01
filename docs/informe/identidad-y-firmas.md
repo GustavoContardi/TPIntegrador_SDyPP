@@ -79,9 +79,12 @@ Navegador (Angular)              API (FastAPI)                 RabbitMQ         
                                                                                     5. reglas de gobierno → encola
 ```
 
-1. **Identidad** (`identity.service.ts`, `generateKeypair`). Se genera el par con Web
-   Crypto. La pública se exporta como SPKI en base64. La privada se guarda como
-   `CryptoKey` **no extraíble** en IndexedDB (ver §4).
+1. **Identidad** (`identity.service.ts`). La pública se exporta como SPKI en
+   base64. La privada, preferentemente, vive en una **passkey**
+   (`createPasskey`): la genera el autenticador del dispositivo y nunca sale de
+   ahí. Si no, se genera con Web Crypto (`generateKeypair`) y se guarda en
+   IndexedDB **cifrada con una contraseña**. Cómo se llegó a esto está en §4
+   a §7, y el estado final en §8.
 2. **Firma en el navegador** (`propose-law.component.ts`). Se arma el mensaje
    `pubkey|action|text_hash|law_id|created_at|category` y se firma.
    - **Se firma el hash del texto, no el texto.** Si alguien cambia una coma en
