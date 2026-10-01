@@ -95,6 +95,33 @@ class PoolWorker:
             return None
         return resp.get("ok", False)
 
+    def _mine_with_heartbeat(self, base: str, prefix: str, rmin: int, rmax: int):
+        """Mina el fragmento y, mientras tanto, sigue latiendo en otro hilo.
+
+        El bucle de `run` sólo late entre fragmentos, y uno de 25M nonces en
+        CPU (~1 MH/s) dura más que los 15 s sin latido tras los que el
+        coordinator purga al minero. Purgado, el coordinator devuelve su
+        fragmento a la cola para que otro lo barra: sin este latido, un minero
+        vivo pero lento perdería su rango a mitad de camino y el pool volvería
+        a repartir siempre los mismos fragmentos.
+
+        Lo que conteste el latido acá se ignora: si el coordinator ya no lo
+        reconoce, el latido siguiente del bucle principal lo re-registra.
+        """
+        terminado = threading.Event()
+
+        def latir():
+            while not terminado.wait(self.heartbeat_interval):
+                self.heartbeat()
+
+        hilo = threading.Thread(target=latir, daemon=True, name="pool-worker-hb")
+        hilo.start()
+        try:
+            return self.mine(base, prefix, rmin, rmax)
+        finally:
+            terminado.set()
+            hilo.join(timeout=1)
+
     def request_work(self) -> dict | None:
         if not self.miner_id:
             return None
@@ -152,7 +179,7 @@ class PoolWorker:
                 rmax = int(task["range_max"])
 
                 log.info("minando ventana %s rango [%d, %d)", wid, rmin, rmax)
-                nonce, hash_hex = self.mine(base, prefix, rmin, rmax)
+                nonce, hash_hex = self._mine_with_heartbeat(base, prefix, rmin, rmax)
 
                 if nonce is not None:
                     self.submit_result(wid, nonce, hash_hex)

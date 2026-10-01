@@ -254,8 +254,7 @@ La razón que el README de Pilar 2 declaraba hasta septiembre era:
 > El coordinator necesita saber **qué minero tiene cada rango** para reasignarlo
 > si deja de reportar.
 
-(Hoy el README explica el modelo *pull* y dice que la reasignación falta.) El
-razonamiento es correcto y es la diferencia real entre los dos transportes:
+El razonamiento es correcto y es la diferencia real entre los dos transportes:
 
 | | Cola RabbitMQ | HTTP pull |
 |---|---|---|
@@ -264,9 +263,9 @@ razonamiento es correcto y es la diferencia real entre los dos transportes:
 | Alta/baja de mineros | transparente | registro explícito + keep-alive |
 | Reasignación al morir uno | requeue por nack/TTL | el coordinator decide |
 
-⚠️ **Pero la reasignación no está implementada.** Ver §7, hallazgo A. Hoy el
-argumento justifica la elección de HTTP, pero el beneficio que justifica no se
-está cobrando.
+La reasignación está implementada desde el 1/10 (§7, hallazgo A): el
+coordinator anota el fragmento de cada minero y lo devuelve a la cola al
+purgarlo.
 
 Hay una segunda razón, no declarada pero igual de válida: los mineros del clúster
 k3s **ya pagan una conexión AMQPS por internet** contra el RabbitMQ de GKE. Meter
@@ -968,11 +967,18 @@ hace y lo que la documentación entregable afirma. Los marcados ✅ ya se
 resolvieron y se dejan documentados con la decisión que se tomó, porque el
 razonamiento sigue siendo el contexto de lo que hoy está en el código.
 
-### A. No hay reasignación de fragmentos al caer un minero 🔴
+### A. No hay reasignación de fragmentos al caer un minero ✅ (resuelto 1/10)
 
-> **Estado (30/9):** la documentación ya describe lo que hace el código (INFORME
-> §2.4, §5.1 y §7.2, y el README de Pilar 2). El arreglo del código sigue
-> pendiente y es la mejora 1 del INFORME §7.2.
+> **Estado (1/10):** resuelto. `PoolCoordinator._assigned` guarda el fragmento
+> en curso de cada minero (se pisa en cada `get_next_task`, porque pedir otro
+> implica haber terminado el anterior), `_purge_stale_miners` lo devuelve con
+> `appendleft` y `_discard_fragments` olvida los de ventanas ganadas o vencidas
+> para no devolverlos. Hizo falta un segundo cambio: el pool-worker latía sólo
+> entre fragmentos, y uno de 25M en CPU dura más que el TTL de 15 s, así que el
+> coordinator purgaba mineros vivos; con la reasignación eso hacía que el pool
+> repartiera una y otra vez los mismos rangos. Ahora late en otro hilo mientras
+> mina (`PoolWorker._mine_with_heartbeat`). Tests en
+> `worker/tests/test_pool_coordinator.py`. Lo de abajo queda como contexto.
 
 **Qué decía la doc.** INFORME §5.1: *"El coordinator trackea qué minero tiene cada
 fragmento y purga a los que dejan de mandar keep-alive. **El fragmento vuelve a la

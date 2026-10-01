@@ -241,9 +241,9 @@ nadie pueda empezar a minar durante la pausa.
 **Distribución interna de trabajo:** el coordinator reparte fragmentos por
 **HTTP** (`GET /work/next/<miner_id>`), no por cola. Es un modelo *pull*: cada
 minero pide el próximo fragmento cuando termina el anterior, así que el más
-rápido barre más, y el coordinator conoce a sus mineros por el keep-alive. Lo
-que hoy **no** hace es anotar qué minero tiene cada rango: si uno se cae, su
-fragmento no se reasigna (sección 5.1).
+rápido barre más, y el coordinator conoce a sus mineros por el keep-alive.
+Además anota qué rango tiene cada minero: si uno se cae, su fragmento vuelve a
+la cola y lo barre otro (sección 5.1).
 
 ---
 
@@ -517,8 +517,8 @@ ventana que vence sin ganador.
 
 | Suite | Resultado |
 |---|---|
-| Completa (`./run.sh test`) | **666 passed** |
-| Como la corre CI (`-k "not integration"`) | 660 passed, 6 deselected |
+| Completa (`./run.sh test`) | **671 passed** |
+| Como la corre CI (`-k "not integration"`) | 665 passed, 6 deselected |
 | Sólo integración (`-m integration`) | 6 passed |
 
 Los tests de integración corren el flujo extremo a extremo (propuesta → ventana
@@ -538,19 +538,21 @@ Tres mecanismos, en capas:
 
 1. **Purga del minero.** El coordinator saca de su lista a los mineros que dejan
    de mandar keep-alive durante 15 s (`_purge_stale_miners`) y deja de
-   contarlos como capacidad. **El fragmento que tenía en la mano no se
-   reasigna**: `get_next_task` lo saca de la cola sin anotar a quién se lo dio.
-   Arreglarlo es acotado (un registro `minero → fragmento` y devolverlo a la
-   cola al purgar) y está en las mejoras (7.2).
+   contarlos como capacidad. **El fragmento que tenía en la mano se
+   reasigna**: `get_next_task` anota qué fragmento le dio a cada minero, y al
+   purgarlo el coordinator lo devuelve al frente de la cola, así que lo toma el
+   próximo minero que pida trabajo. No se devuelven los de una ventana ya
+   ganada o vencida. Para que un minero vivo pero lento no pierda su rango a
+   mitad de camino (25M nonces en CPU tardan más que los 15 s), el pool-worker
+   sigue latiendo en otro hilo mientras mina.
 2. **Reposición del pod.** El Deployment repone el pod caído. Para el
    Deployment `worker` hay además un HPA declarado (`worker-hpa`, 2→10 al 70% de
    CPU); el pipeline `04` despliega el escenario de demo, con réplicas fijas, y
    el HPA se aplica a mano.
-3. **Lo que se pierde está acotado.** Es, como mucho, un fragmento del espacio
-   de nonces por minero caído (1/50 con la configuración desplegada). La
-   ventana sigue abierta y el resto de los mineros sigue barriendo. Si el nonce
-   ganador estaba justo en ese tramo, la ventana vence sin solución aunque haya
-   capacidad de sobra: es poco probable, pero posible.
+3. **No se pierde espacio de búsqueda.** La ventana sigue abierta, el resto de
+   los mineros sigue barriendo y el fragmento del caído se vuelve a barrer. Lo
+   que se pierde es tiempo: hasta 15 s de detección más lo que el caído ya
+   había barrido de su rango, que se repite.
 
 El caso extremo — que caigan **todos** los mineros — se resuelve por deadline, y
 el quórum (sección 1.3) decide qué pasa con la ley. Si al vencer la red está por
@@ -1002,28 +1004,24 @@ puede frenar leyes que el resto habría sellado (AGENT.md 9).
 
 En orden de relación valor/esfuerzo:
 
-1. **Reasignar el fragmento de un minero caído.** Registrar en `get_next_task`
-   qué fragmento se le dio a cada minero, borrarlo en `submit_result` y, en
-   `_purge_stale_miners`, devolverlo al frente de la cola. Son unas 15 líneas y
-   un test, y cierra la pregunta "¿se reasignan tareas?" de la checklist.
-2. **Medir el codo de la curva** con 8 y 16 workers sobre el clúster. Portar el
+1. **Medir el codo de la curva** con 8 y 16 workers sobre el clúster. Portar el
    runner a `kubectl scale` es trabajo menor y respondería la pregunta abierta
    más interesante que quedó.
-3. **Ventanas concurrentes.** Permitir N ventanas simultáneas sobre leyes
+2. **Ventanas concurrentes.** Permitir N ventanas simultáneas sobre leyes
    independientes multiplicaría el throughput. Requiere repensar el
    encadenamiento de bloques (hoy estrictamente lineal).
-4. **Fragmentación adaptativa.** Ajustar `FRAGMENT_SIZE` según la latencia
+3. **Fragmentación adaptativa.** Ajustar `FRAGMENT_SIZE` según la latencia
    observada hacia cada minero: fragmentos grandes para los remotos, chicos para
    los locales. Con workers federados por internet esto tendría efecto real.
-5. **Coordinator sin auto-minado** cuando el pool crece. Que reparta y nada más,
+4. **Coordinator sin auto-minado** cuando el pool crece. Que reparta y nada más,
    para que atender a los mineros no compita con minar.
-6. **TLS en Redis.** El canal externo ya está acotado a la IP del k3s y la
+5. **TLS en Redis.** El canal externo ya está acotado a la IP del k3s y la
    segmentación interna se aplica; falta cifrarlo (`--tls-port` con la misma CA
    de RabbitMQ, y `rediss://` en los clientes).
-7. **HPA por métrica específica.** Escalar los mineros por la profundidad de la
+6. **HPA por métrica específica.** Escalar los mineros por la profundidad de la
    cola o por el cómputo vivo (`voxchain_pool_miners_registered`), con
    prometheus-adapter o KEDA, en vez de sólo por CPU.
-8. **mTLS interno** con un service mesh, si el sistema fuera a manejar algo
+7. **mTLS interno** con un service mesh, si el sistema fuera a manejar algo
    sensible de verdad.
 
 ### 7.3 Dónde aplicaría esta solución
@@ -1042,7 +1040,7 @@ es independiente.
 El patrón concreto que vale la pena llevarse: **workers efímeros y sin estado
 que piden trabajo en lugar de recibirlo**. Eso hace trivial agregar capacidad
 (un worker nuevo simplemente empieza a pedir) y tolerar que desaparezca (el
-resto sigue pidiendo; con el registro de 7.2, su fragmento volvería a la cola). Fue lo que permitió, en este trabajo, federar un
+resto sigue pidiendo y su fragmento vuelve a la cola). Fue lo que permitió, en este trabajo, federar un
 clúster ajeno sin coordinación previa más allá de una URL y un certificado.
 
 Donde **no** lo aplicaría: cargas con dependencias entre unidades de trabajo, o
@@ -1067,7 +1065,7 @@ README raíz del repositorio.
      agregarla acá y en el README raíz. -->
 
 Todo el código asistido por IA fue revisado, entendido y validado. El mecanismo
-de verificación es doble: la suite automatizada (666 tests unitarios y de
+de verificación es doble: la suite automatizada (671 tests unitarios y de
 integración, corriendo en CI sobre cada push) y las corridas reales del sistema
 desplegado.
 

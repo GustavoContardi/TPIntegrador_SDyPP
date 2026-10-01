@@ -559,6 +559,39 @@ resource "helm_release" "ingress_nginx" {
     value = data.google_compute_address.ingress.address
   }
 
+  # Dos réplicas: con una sola, el controller era el único punto de entrada
+  # HTTP (web, /api, Grafana y el push de logs del k3s) y su caída cortaba todo
+  # hasta que Kubernetes lo reprogramara. Con replicaCount > 1 el chart crea
+  # además un PDB con minAvailable 1, así un drain o un upgrade de nodos no
+  # las baja a las dos juntas.
+  #
+  # Anti-affinity "preferred" y no "required", igual que Redis: el pool apps
+  # escala de 2 a 3 nodos, y con required una réplica que no entra quedaría
+  # Pending en vez de compartir nodo.
+  values = [yamlencode({
+    controller = {
+      replicaCount = 2
+      minAvailable = 1
+      affinity = {
+        podAntiAffinity = {
+          preferredDuringSchedulingIgnoredDuringExecution = [{
+            weight = 100
+            podAffinityTerm = {
+              labelSelector = {
+                matchLabels = {
+                  "app.kubernetes.io/name"      = "ingress-nginx"
+                  "app.kubernetes.io/instance"  = "ingress-nginx"
+                  "app.kubernetes.io/component" = "controller"
+                }
+              }
+              topologyKey = "kubernetes.io/hostname"
+            }
+          }]
+        }
+      }
+    }
+  })]
+
   depends_on = [google_container_cluster.cluster]
 }
 

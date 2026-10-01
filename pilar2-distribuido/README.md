@@ -63,9 +63,9 @@ nonce válido ⇔ md5(partial_hash_base + str(nonce)) empieza con n ceros
 
 > El reparto de fragmentos va por **HTTP**, no por cola: cada minero pide el
 > próximo fragmento cuando termina (modelo *pull*), así que el más rápido barre
-> más. El coordinator todavía **no** anota qué rango tiene cada minero: si uno
-> deja de reportar se lo purga a los 15 s, pero su fragmento no se reasigna
-> (INFORME §5.1).
+> más. El coordinator anota qué rango tiene cada minero: si uno deja de
+> reportar se lo purga a los 15 s y su fragmento vuelve al frente de la cola
+> para que lo barra otro (INFORME §5.1).
 
 ### Flujos de RabbitMQ
 

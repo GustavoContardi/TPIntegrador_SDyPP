@@ -113,6 +113,11 @@ class PoolCoordinator:
         self._lease_value = encode_lease(self.instance_id, lease_rank)
         self._miners: dict[str, dict] = {}
         self._pending_fragments: deque[dict] = deque()
+        # Fragmento que cada minero externo tiene en curso: el último que le dio
+        # `get_next_task`. Si el minero cae, `_purge_stale_miners` lo devuelve a
+        # la cola; sin esto el rango de un minero caído no lo barría nadie y, si
+        # el nonce estaba ahí, la ventana vencía sin ganador.
+        self._assigned: dict[str, dict] = {}
         self._lock = Lock()
         self._solved: set[str] = set()
         # La agenda real la baja el backend a `pool:policy:<pool_id>` cuando el
@@ -258,13 +263,23 @@ class PoolCoordinator:
 
     def _purge_stale_miners(self) -> None:
         cutoff = self.now() - KEEPALIVE_TTL
-        stale = [mid for mid, info in self._miners.items()
-                 if info["last_seen"] < cutoff]
-        for mid in stale:
-            del self._miners[mid]
-        pool_miners_registered.set(len(self._miners))
+        reasignados = 0
+        with self._lock:
+            stale = [mid for mid, info in self._miners.items()
+                     if info["last_seen"] < cutoff]
+            for mid in stale:
+                del self._miners[mid]
+                fragment = self._assigned.pop(mid, None)
+                # Al frente de la cola: es el rango más viejo sin barrer de la
+                # ventana en curso. Si la ventana ya se ganó no se devuelve;
+                # las de ventanas viejas ya las sacó `_discard_fragments`.
+                if fragment and fragment["voting_window_id"] not in self._solved:
+                    self._pending_fragments.appendleft(fragment)
+                    reasignados += 1
+            pool_miners_registered.set(len(self._miners))
         if stale:
-            log.debug("miners stale eliminados: %s", stale)
+            log.info("miners stale eliminados: %s (%d fragmentos devueltos a la cola)",
+                     stale, reasignados)
 
     def get_next_task(self, miner_id: str) -> dict | None:
         # En espera no se reparte: el Service no le manda mineros a esta réplica
@@ -278,6 +293,10 @@ class PoolCoordinator:
             if not self._pending_fragments:
                 return None
             fragment = self._pending_fragments.popleft()
+            # Un minero pide trabajo nuevo sólo cuando terminó el anterior sin
+            # encontrar nonce, así que el fragmento previo ya está barrido y se
+            # pisa.
+            self._assigned[miner_id] = fragment
             pool_work_distributed_total.inc()
             return {
                 "voting_window_id": fragment["voting_window_id"],
@@ -298,13 +317,27 @@ class PoolCoordinator:
                 return None
             return self._pending_fragments.popleft()
 
+    def _fragments_known(self) -> list[dict]:
+        """Los fragmentos sin repartir más los que tienen los mineros en curso.
+
+        Se llama con ``_lock`` tomado.
+        """
+        return [*self._pending_fragments, *self._assigned.values()]
+
     def _discard_fragments(self, wid: str) -> int:
-        """Saca de la cola los fragmentos pendientes de la ventana ``wid``."""
+        """Saca de la cola los fragmentos pendientes de la ventana ``wid``.
+
+        También olvida los que los mineros tienen en curso de esa ventana: si
+        uno de ellos cae después, no hay que devolver a la cola el rango de una
+        ventana ganada o vencida.
+        """
         with self._lock:
             quedan = deque(f for f in self._pending_fragments
                            if f.get("voting_window_id") != wid)
             descartados = len(self._pending_fragments) - len(quedan)
             self._pending_fragments = quedan
+            self._assigned = {mid: f for mid, f in self._assigned.items()
+                              if f.get("voting_window_id") != wid}
         if descartados:
             log.info("pool %s descartó %d fragmentos de la ventana %s",
                      self.pool_id, descartados, wid)
@@ -365,7 +398,7 @@ class PoolCoordinator:
         if isinstance(activa, bytes):
             activa = activa.decode("utf-8")
         with self._lock:
-            ventanas = {f.get("voting_window_id") for f in self._pending_fragments}
+            ventanas = {f.get("voting_window_id") for f in self._fragments_known()}
         for wid in ventanas - {activa}:
             self._discard_fragments(wid)
         if activa in ventanas:
@@ -443,7 +476,7 @@ class PoolCoordinator:
         # venció sin ganador (ahí no pasa por submit_result).
         with self._lock:
             otras_ventanas = {f.get("voting_window_id")
-                              for f in self._pending_fragments
+                              for f in self._fragments_known()
                               if f.get("voting_window_id") != wid}
         for vieja in otras_ventanas:
             self._discard_fragments(vieja)

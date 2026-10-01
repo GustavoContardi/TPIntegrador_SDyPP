@@ -76,6 +76,7 @@ EstadoChecklist.md
 DECISIONES-DE-DISENO.md
 marketing.md
 GUION-PRESENTACION.md
+TEORIA-SISTEMAS-DISTRIBUIDOS.md
 docs/diagrams/arquitectura-actual.md
 
 # Caché de kubectl: sin credenciales, pero trae la IP y el puerto del k3s

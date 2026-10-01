@@ -261,6 +261,65 @@ class TestPoolCoordinator:
         coordinator._purge_stale_miners()
         assert len(coordinator._miners) == 0
 
+    def test_fragmento_de_minero_caido_vuelve_a_la_cola(self, coordinator):
+        # Antes el fragmento de un minero purgado se perdía: si el nonce estaba
+        # en ese rango, la ventana vencía sin ganador.
+        caido = coordinator.register_miner()
+        vivo = coordinator.register_miner()
+        self._fragmentar(coordinator, "win-1", fragmentos=4)
+        tarea = coordinator.get_next_task(caido)
+        assert len(coordinator._pending_fragments) == 3
+
+        coordinator._miners[caido]["last_seen"] = 0
+        coordinator._purge_stale_miners()
+
+        assert caido not in coordinator._miners
+        assert len(coordinator._pending_fragments) == 4
+        # Al frente: lo toma el próximo minero que pida trabajo.
+        reasignada = coordinator.get_next_task(vivo)
+        assert (reasignada["range_min"], reasignada["range_max"]) == \
+            (tarea["range_min"], tarea["range_max"])
+
+    def test_minero_que_pide_otra_tarea_libera_la_anterior(self, coordinator):
+        # Pedir trabajo nuevo implica haber barrido el fragmento anterior: si
+        # el minero cae después, sólo vuelve el que tenía en curso.
+        mid = coordinator.register_miner()
+        self._fragmentar(coordinator, "win-1", fragmentos=4)
+        coordinator.get_next_task(mid)
+        segunda = coordinator.get_next_task(mid)
+
+        coordinator._miners[mid]["last_seen"] = 0
+        coordinator._purge_stale_miners()
+
+        assert len(coordinator._pending_fragments) == 3
+        assert coordinator._pending_fragments[0]["range_min"] == segunda["range_min"]
+
+    def test_fragmento_de_ventana_ganada_no_vuelve(self, coordinator):
+        mid = coordinator.register_miner()
+        self._fragmentar(coordinator, "win-1", fragmentos=4)
+        coordinator.get_next_task(mid)
+        coordinator.submit_result(mid, {"voting_window_id": "win-1", "nonce": 7,
+                                        "block_hash_candidato": "0xbeef"})
+
+        coordinator._miners[mid]["last_seen"] = 0
+        coordinator._purge_stale_miners()
+
+        assert len(coordinator._pending_fragments) == 0
+
+    def test_fragmento_de_ventana_vieja_no_vuelve(self, coordinator):
+        # La ventana 1 quedó toda repartida y venció sin ganador; llega la 2.
+        # Si el minero que tenía un rango de la 1 cae, ese rango ya no sirve.
+        mid = coordinator.register_miner()
+        self._fragmentar(coordinator, "win-1", fragmentos=1)
+        coordinator.get_next_task(mid)
+        self._fragmentar(coordinator, "win-2", fragmentos=2)
+
+        coordinator._miners[mid]["last_seen"] = 0
+        coordinator._purge_stale_miners()
+
+        wids = [f["voting_window_id"] for f in coordinator._pending_fragments]
+        assert wids == ["win-2", "win-2"]
+
     def test_policy_accept(self, coordinator):
         coordinator.set_voting_policy({"decision": "accept"})
         assert coordinator._check_voting_policy({"action": "derogacion"}) is True
@@ -354,6 +413,25 @@ class TestPoolWorkerReregistration:
         worker.run()
 
         assert calls["register"] == 1  # solo el registro inicial
+
+    def test_late_mientras_mina(self):
+        """Un fragmento largo no puede dejar al minero sin latir: el coordinator
+        lo purgaría a los 15 s y devolvería su fragmento a la cola."""
+        from worker_pkg.pool_worker import PoolWorker
+
+        latidos = []
+        worker = PoolWorker("http://coordinator:9001", miner_id="m-1",
+                            mine=lambda *a: (time.sleep(0.2), (7, "0xbeef"))[1],
+                            heartbeat_interval=0.02)
+        worker._post = lambda path, data: latidos.append(path) or {"ok": True}
+
+        assert worker._mine_with_heartbeat("abc", "0000", 0, 100) == (7, "0xbeef")
+        assert latidos.count("/heartbeat") >= 3
+
+        # Al terminar de minar el hilo se detiene.
+        cantidad = len(latidos)
+        time.sleep(0.1)
+        assert len(latidos) == cantidad
 
 
 class TestPoolElection:
