@@ -10,6 +10,9 @@
   standby, no en el primario. Si el standby era líder y moría, el primario no
   detectaba la caída y el clúster quedaba acéfalo. Ahora todo follower monitorea,
   sin importar si su etiqueta es "primary" o "standby".
+- BUG 5 (ventana perdida en el failover): el nuevo líder borraba la ventana en
+  curso y la ley quedaba ``in_window`` fuera de la cola para siempre. Ahora la
+  retoma desde Redis, incluso si el anterior cayó a mitad del sellado.
 """
 
 import hashlib
@@ -22,6 +25,7 @@ from common.messaging import (
     QUEUE_PROPUESTAS,
     QUEUE_RESPUESTA_NONCE,
 )
+from common.storage import LawStatus, WindowResult
 from nct.coordinator import NCTCoordinator
 from nct.monitor import NCTHeartbeatMonitor
 
@@ -370,3 +374,141 @@ def test_follower_fresco_con_lider_muerto_dispara_eleccion(bus, store):
     monitor.tick()
     assert nct.is_leader is True
     assert store.get_leader() == "nct-primary"
+
+
+# ---- BUG 5: el sucesor retoma la ventana en curso -------------------------
+#
+# Antes `become_leader` borraba `active_window` y arrancaba de cero: se perdía
+# el cómputo invertido y, peor, la ley quedaba `in_window` fuera de la cola para
+# siempre. Todo lo necesario para retomarla ya estaba en Redis.
+
+def _ventana_abierta(bus, store, clock):
+    """Un líder con la ventana de L1 abierta, que después cae."""
+    challenges = []
+    bus.on_challenge(challenges.append)
+    lider = _nct(bus, store, nct_id="nct-primary", is_leader=True, clock=clock)
+    bus.publish_proposal({"law_id": "L1", "author_pubkey": "A",
+                          "text_hash": "h1", "created_at": "t0"})
+    assert len(challenges) == 1
+    return lider, challenges
+
+
+def _caer(lider):
+    """El líder deja de consumir: lo que se publique ahora le llega al sucesor."""
+    lider.step_down()
+
+
+def test_sucesor_retoma_la_ventana_y_la_sella(bus, store):
+    clock = Clock()
+    lider, challenges = _ventana_abierta(bus, store, clock)
+    ch = challenges[0]
+    wid = ch["voting_window_id"]
+    _caer(lider)
+
+    clock.t += 15  # failover: timeout de heartbeat + elección
+    sucesor = _nct(bus, store, nct_id="nct-standby", is_leader=False, clock=clock)
+    sucesor.become_leader()
+
+    # Retoma la misma ventana en vez de abrir otra: no se publica un desafío nuevo.
+    assert sucesor._active["voting_window_id"] == wid
+    assert store.get_active_window() == wid
+    assert store.get_law("L1")["status"] == LawStatus.IN_WINDOW
+    assert len(challenges) == 1
+
+    # El nonce que los mineros siguieron buscando sobre el desafío original sella.
+    nonce = _solve_from(ch["partial_hash_base"], ch["n_zeros_required"])
+    bus.publish_nonce_response({"voting_window_id": wid, "nonce": nonce,
+                                "winning_node_or_pool": "worker-1"})
+
+    assert store.chain_length() == 1
+    assert store.get_chain()[0].voting_window_id == wid
+    assert store.get_law("L1")["status"] == LawStatus.PROMULGATED
+    assert store.get_window(wid)["result"] == WindowResult.SUCCESS
+    assert store.get_active_window() is None
+
+
+def test_ventana_vencida_durante_el_failover_se_cierra_al_asumir(bus, store):
+    clock = Clock()
+    lider, challenges = _ventana_abierta(bus, store, clock)
+    wid = challenges[0]["voting_window_id"]
+    _caer(lider)
+
+    clock.t += 61  # el deadline (60 s) pasó mientras no había líder
+    sucesor = _nct(bus, store, nct_id="nct-standby", is_leader=False, clock=clock)
+    sucesor.become_leader()
+
+    # Se cierra como cualquier ventana vencida, no queda colgada.
+    assert store.get_window(wid)["result"] == WindowResult.EXPIRED_PENDING
+    assert store.get_law("L1")["status"] == LawStatus.DISCARDED
+    assert store.get_active_window() is None
+    assert sucesor._active is None
+
+
+def test_lider_cayo_despues_de_agregar_el_bloque(bus, store, monkeypatch):
+    """El bloque entró a la cadena pero la ventana seguía figurando abierta."""
+    clock = Clock()
+    lider, challenges = _ventana_abierta(bus, store, clock)
+    ch = challenges[0]
+    wid = ch["voting_window_id"]
+
+    def caida(*a, **kw):
+        raise RuntimeError("el NCT se cae justo después de append_block")
+    monkeypatch.setattr(lider, "_cerrar_ventana_sellada", caida)
+    nonce = _solve_from(ch["partial_hash_base"], ch["n_zeros_required"])
+    with pytest.raises(RuntimeError):
+        bus.publish_nonce_response({"voting_window_id": wid, "nonce": nonce,
+                                    "winning_node_or_pool": "worker-1"})
+    assert store.chain_length() == 1
+    assert store.get_active_window() == wid
+    _caer(lider)
+
+    sucesor = _nct(bus, store, nct_id="nct-standby", is_leader=False, clock=clock)
+    sucesor.become_leader()
+
+    # Completa el cierre con los datos del bloque; no vuelve a minarla.
+    assert store.chain_length() == 1
+    assert store.get_law("L1")["status"] == LawStatus.PROMULGATED
+    win = store.get_window(wid)
+    assert win["result"] == WindowResult.SUCCESS
+    assert int(win["winning_nonce"]) == nonce
+    assert store.get_active_window() is None
+    assert len(challenges) == 1
+
+
+def test_lider_cayo_con_el_guard_de_cierre_puesto_sin_bloque(bus, store):
+    """Ganó el SETNX y cayó antes del bloque: el guard no puede bloquear la ventana."""
+    clock = Clock()
+    lider, challenges = _ventana_abierta(bus, store, clock)
+    ch = challenges[0]
+    wid = ch["voting_window_id"]
+    assert store.try_seal_window(wid, "worker-que-nunca-llego")
+    _caer(lider)
+
+    sucesor = _nct(bus, store, nct_id="nct-standby", is_leader=False, clock=clock)
+    sucesor.become_leader()
+    nonce = _solve_from(ch["partial_hash_base"], ch["n_zeros_required"])
+    bus.publish_nonce_response({"voting_window_id": wid, "nonce": nonce,
+                                "winning_node_or_pool": "worker-2"})
+
+    assert store.chain_length() == 1
+    assert store.get_chain()[0].winning_node_or_pool == "worker-2"
+    assert store.get_law("L1")["status"] == LawStatus.PROMULGATED
+
+
+def test_ventana_irrecuperable_devuelve_la_ley_a_la_cola(bus, store):
+    """Si los datos de la ventana no alcanzan para retomarla, la ley no se pierde."""
+    clock = Clock()
+    lider, challenges = _ventana_abierta(bus, store, clock)
+    wid = challenges[0]["voting_window_id"]
+    store.r.hdel(f"window:{wid}", "partial_hash_base")
+    _caer(lider)
+
+    sucesor = _nct(bus, store, nct_id="nct-standby", is_leader=False, clock=clock)
+    sucesor.become_leader()
+
+    # Vuelve a la cola y, como el sucesor está libre, le abre una ventana nueva.
+    assert len(challenges) == 2
+    nueva = challenges[1]
+    assert nueva["law_id"] == "L1"
+    assert nueva["voting_window_id"] != wid
+    assert store.get_active_window() == nueva["voting_window_id"]

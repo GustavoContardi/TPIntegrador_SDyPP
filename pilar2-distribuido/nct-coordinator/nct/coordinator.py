@@ -185,8 +185,9 @@ class NCTCoordinator:
         # activarse y empezar a observar heartbeats del nuevo líder.
         self._on_stepdown = on_stepdown
 
-        # Estado en memoria de la ventana activa (no se persiste para recuperación:
-        # ante caída del NCT la ventana se pierde, AGENT.md 4).
+        # Copia en memoria de la ventana activa. La fuente es Redis
+        # (`window:<id>` + `active_window`): ante una caída del NCT, el sucesor
+        # la reconstruye desde ahí y la retoma (`_retomar_ventana_en_curso`).
         self._last_author = store.get_last_author()
         self._active = None  # dict con datos de la ventana en curso, o None
         # La ley anunciada que espera las decisiones de los convocados, o None.
@@ -994,7 +995,22 @@ class NCTCoordinator:
             self._active = None
             self.maybe_open_window()
             return
-        self.store.set_window_result(active["voting_window_id"],
+        new_status = self._cerrar_ventana_sellada(
+            active["voting_window_id"], law_id, action, nonce, winner)
+        nct_blocks_sealed_total.inc()
+        log.info("bloque sellado %s (ley %s → %s, nonce %d, por %s)",
+                 block.block_hash[:12], law_id, new_status, nonce, winner)
+        self.maybe_open_window()
+
+    def _cerrar_ventana_sellada(self, voting_window_id: str, law_id: str,
+                                action: str, nonce: int, winner: str) -> str:
+        """Lo que sigue a un bloque ya en la cadena: resultado, estado y puntero.
+
+        Aparte de ``_seal`` porque el NCT que retoma una ventana lo necesita
+        solo: si el líder anterior agregó el bloque y se cayó antes de llegar
+        acá, la ley está sellada pero la ventana sigue figurando abierta.
+        """
+        self.store.set_window_result(voting_window_id,
                                      result=WindowResult.SUCCESS, winning_nonce=nonce,
                                      winning_node_or_pool=winner)
         new_status = (LawStatus.REPEALED if action == ACTION_DEROGACION
@@ -1002,10 +1018,7 @@ class NCTCoordinator:
         self.store.set_law_status(law_id, new_status)
         self.store.clear_active_window()
         self._active = None
-        nct_blocks_sealed_total.inc()
-        log.info("bloque sellado %s (ley %s → %s, nonce %d, por %s)",
-                 block.block_hash[:12], law_id, new_status, nonce, winner)
-        self.maybe_open_window()
+        return new_status
 
     # -- cierre por deadline (ley pendiente → discarded) -------------------
     def check_deadline(self) -> None:
@@ -1076,19 +1089,93 @@ class NCTCoordinator:
         self.is_leader = True
         self._subscribe_work_queues()
         self._last_author = self.store.get_last_author()
-        self.store.clear_active_window()
-        self._active = None
+        self._retomar_ventana_en_curso()
         self._recuperar_deliberacion_huerfana()
-        # La ventana en curso al momento de la caída se pierde (AGENT.md 4);
-        # si hay leyes pendientes en Redis, abrimos una ventana nueva.
+        # Una ventana retomada que venció durante el failover se cierra acá, con
+        # la misma lógica que cualquier otra (quórum incluido); si no quedó
+        # ninguna abierta y hay leyes pendientes, se abre la siguiente.
+        self.check_deadline()
         self.maybe_open_window()
+
+    def _retomar_ventana_en_curso(self) -> None:
+        """Retoma la ventana que el líder anterior dejó abierta (AGENT.md 4.1).
+
+        Todo lo que hace falta para validar un nonce quedó en Redis al abrirla
+        (``window:<id>`` y el puntero ``active_window``), y los mineros nunca
+        dejaron de minar ese desafío: los nonces que publicaron durante el
+        failover esperan en ``respuesta_nonce``, que nadie consumía. Retomarla
+        no arriesga un bloque doble: el cierre es SETNX (``try_seal_window``) y
+        el bloque, un CAS sobre el tip (``append_block``).
+
+        Antes se descartaba, y además la ley quedaba ``in_window`` fuera de la
+        cola para siempre: ni sellada, ni descartada, ni reencolada.
+        """
+        self._active = None
+        wid = None
+        try:
+            wid = self.store.get_active_window()
+            if not wid:
+                return
+            ventana = self.store.get_window(wid)
+            if not ventana or ventana.get("result"):
+                # Ya estaba cerrada: el anterior se cayó entre anotar el
+                # resultado y borrar el puntero.
+                self.store.clear_active_window()
+                return
+            law_id = ventana["law_id"]
+            action = ventana.get("action", ACTION_PROMULGACION)
+            ultimo = self.store.get_block(self.store.last_block_hash())
+            if ultimo is not None and ultimo.voting_window_id == wid:
+                # El anterior agregó el bloque y se cayó antes de cerrar la
+                # ventana: la ley ya está en la cadena, falta el resto.
+                self._cerrar_ventana_sellada(wid, law_id, action, ultimo.nonce,
+                                             ultimo.winning_node_or_pool)
+                log.warning("ventana %s ya sellada por el líder anterior: "
+                            "cierre completado", wid)
+                return
+            if self.store.get_window_sealer(wid):
+                # Ganó el guard pero no llegó a agregar el bloque: sin soltarlo,
+                # todo nonce posterior se descartaría como tardío.
+                self.store.release_window_seal(wid)
+            law = self.store.get_law(law_id) or {}
+            self._active = {
+                "voting_window_id": wid, "law_id": law_id, "action": action,
+                "n_zeros_required": int(ventana["n_zeros_required"]),
+                "partial_hash_base": ventana["partial_hash_base"],
+                "deadline_epoch": datetime.fromisoformat(ventana["deadline"]).timestamp(),
+                "author_pubkey": law.get("author_pubkey"),
+                "category": ventana.get("category"),
+                "participants": ventana.get("participants"),
+            }
+            log.warning("retomando la ventana %s del líder anterior (ley %s, "
+                        "deadline %s)", wid, law_id, ventana["deadline"])
+        except Exception:  # noqa: BLE001
+            log.exception("no se pudo retomar la ventana %s: su ley vuelve a la "
+                          "cola", wid)
+            self._active = None
+            self._devolver_ley_de_ventana(wid)
+
+    def _devolver_ley_de_ventana(self, wid: str | None) -> None:
+        """Último recurso si la ventana no se puede retomar: la ley no se pierde."""
+        try:
+            ventana = self.store.get_window(wid) if wid else None
+            self.store.clear_active_window()
+            law_id = (ventana or {}).get("law_id")
+            if not law_id:
+                return
+            law = self.store.get_law(law_id)
+            if law and law.get("status") == LawStatus.IN_WINDOW:
+                self.store.set_law_status(law_id, LawStatus.PENDING_QUEUE)
+                self.store.enqueue_law(law_id)
+        except Exception:  # noqa: BLE001
+            log.exception("no se pudo devolver a la cola la ley de la ventana %s", wid)
 
     def _recuperar_deliberacion_huerfana(self) -> None:
         """Devuelve a la cola la ley que el líder anterior dejó en deliberación.
 
-        Igual que la ventana en curso, la deliberación se pierde con la caída
-        (AGENT.md 4); pero la ley no: sin esto quedaría `in_deliberation` para
-        siempre, fuera de la cola.
+        A diferencia de la ventana, la deliberación no se retoma: la pausa se
+        pierde con la caída (AGENT.md 4), pero la ley no: sin esto quedaría
+        `in_deliberation` para siempre, fuera de la cola.
         """
         self._deliberation = None
         try:
@@ -1114,7 +1201,8 @@ class NCTCoordinator:
         Se invoca al detectar pérdida de liderazgo en Redis (split-brain,
         AGENT.md 11.4): no basta con ignorar mensajes en memoria, hay que dejar
         de consumir ``propuestas``/``respuesta_nonce`` para no robarlos del
-        reparto round-robin. La ventana en curso se pierde por diseño (AGENT.md 4).
+        reparto round-robin. Sólo suelta la copia en memoria de la ventana: el
+        puntero en Redis queda, y el líder vigente la retoma desde ahí.
         Tras ceder el liderazgo, notifica al monitor (``_on_stepdown``) para que
         empiece a observar heartbeats del nuevo líder."""
         if not self.is_leader:

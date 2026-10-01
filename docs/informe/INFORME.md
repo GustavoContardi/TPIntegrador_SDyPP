@@ -630,10 +630,26 @@ líder abre esos consumidores; el `step_down` los cierra.
 > muerto cuando el follower arrancaba, nadie tomaba el relevo. Corregido con test
 > de regresión.
 
-La ventana en curso al momento de la caída **se pierde por diseño**: se prefiere
-descartarla antes que arriesgar un sellado doble. Si la caída ocurre durante
-una deliberación, la pausa se pierde igual, pero la ley no: el nuevo líder la
-devuelve a la cola.
+**La ventana en curso se retoma.** Todo lo necesario para validar un nonce
+queda en Redis al abrirla (`window:<id>` y el puntero `active_window`): el nuevo
+líder la reconstruye desde ahí y sigue esperando la solución del mismo
+desafío, que los mineros nunca dejaron de minar. Los nonces publicados durante
+el failover esperan en `respuesta_nonce`, que nadie consumía. Si el deadline
+venció mientras no había líder, la ventana se cierra como cualquier otra
+vencida. Si el líder cayó a mitad del sellado, el sucesor lo completa. El
+sellado doble no es un riesgo: el cierre es un SETNX (`try_seal_window`) y el
+bloque, un CAS sobre el tip (`append_block`).
+
+> **Bug corregido en esta área:** antes la ventana se descartaba "para no
+> arriesgar un sellado doble", pero el líder nuevo borraba el puntero sin tocar
+> la ley, que quedaba `in_window` fuera de la cola para siempre: ni sellada, ni
+> descartada, ni reencolada. Cubierto por cinco tests en
+> `nct-coordinator/tests/test_failover_y_cierre.py` (retoma y sella, vence en
+> el hueco, cae después del bloque, cae con el guard puesto, datos
+> irrecuperables).
+
+Si la caída ocurre durante una **deliberación**, la pausa no se retoma, pero la
+ley no se pierde: el nuevo líder la devuelve a la cola y la anuncia de nuevo.
 
 ### 5.2.bis Si cae Redis
 

@@ -186,9 +186,8 @@ class DifficultyRatchet:
     Redis). Sin eso, reiniciar el NCT era una forma de saltearse la histéresis:
     el sucesor arrancaba sin memoria y adoptaba la primera medición tal cual, así
     que bastaba con provocar un failover después de apagar el cómputo para que
-    `n` bajara de una. Que la ventana en curso sí se pierda en la caída
-    (AGENT.md 4) no aplica acá: la dificultad no es estado de *una* ventana sino
-    del sistema, y debe sobrevivir a quién la esté coordinando.
+    `n` bajara de una. La dificultad no es estado de *una* ventana sino del
+    sistema, y debe sobrevivir a quién la esté coordinando.
     """
 
     def __init__(self, decay_windows: int = DIFFICULTY_DECAY_WINDOWS):

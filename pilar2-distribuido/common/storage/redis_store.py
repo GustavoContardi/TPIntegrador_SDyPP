@@ -263,6 +263,16 @@ class VoxChainStore:
     def get_window_sealer(self, voting_window_id: str) -> Optional[str]:
         return self.r.get(f"window_sealed:{voting_window_id}")
 
+    def release_window_seal(self, voting_window_id: str) -> None:
+        """Suelta el guard de cierre de una ventana que nunca llegó a sellarse.
+
+        Sólo para el NCT que retoma una ventana: si el líder anterior ganó el
+        guard y se cayó antes de agregar el bloque, el guard quedó puesto sin
+        bloque detrás y bloquearía todo nonce posterior. Soltarlo no habilita un
+        bloque doble: ``append_block`` sigue siendo un CAS sobre el tip.
+        """
+        self.r.delete(f"window_sealed:{voting_window_id}")
+
     # ---- ventana activa (estado único) ------------------------------------
     def set_active_window(self, voting_window_id: str) -> None:
         self.r.set("active_window", voting_window_id)

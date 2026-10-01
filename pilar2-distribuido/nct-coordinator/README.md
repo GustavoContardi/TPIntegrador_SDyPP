@@ -82,9 +82,10 @@ Health: `GET :8080/health` → `{"nct":"ok","redis":"ok","rabbitmq":"ok","mode":
 
 ## Decisiones de diseño
 
-- **Estado de ventana en memoria, no recuperable**: ante caída del NCT la ventana
-  se pierde (AGENT.md 4); por eso el `_active` vive en proceso. La cadena, leyes y
-  cooldowns sí persisten en Redis.
+- **La ventana vive en Redis; `_active` es una copia en memoria**: ante caída del
+  NCT el sucesor la reconstruye desde `window:<id>` y `active_window` y la retoma
+  (AGENT.md 4.1), incluso si el anterior cayó a mitad del sellado. La cadena,
+  leyes y cooldowns también persisten en Redis.
 - **El autor no puede ganar su propia ventana** (3.4): se descarta la respuesta si
   `winning_node_or_pool == author_pubkey` de la ley.
 - **Derogación**: reutiliza la ley promulgada cambiando su `action` y reencolándola;

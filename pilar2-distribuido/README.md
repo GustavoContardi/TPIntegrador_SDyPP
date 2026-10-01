@@ -310,9 +310,9 @@ minero CPU de Pilar 1, que vive fuera de este directorio.
   `NCTHeartbeatMonitor`; si el líder deja de emitir durante `HEARTBEAT_TIMEOUT`,
   intenta tomar el lease de liderazgo en Redis. **El arbitraje es atómico en
   Redis, no una elección distribuida por PoW**: los NCT son homogéneos y sin
-  ventaja de cómputo entre sí, así que gana quien detectó la caída antes. La
-  ventana en curso se pierde por diseño (se prefiere descartarla antes que
-  arriesgar un sellado doble). Cubierto por `nct-coordinator/tests/test_bully.py`
+  ventaja de cómputo entre sí, así que gana quien detectó la caída antes. El
+  nuevo líder **retoma la ventana en curso** desde Redis (`window:<id>`); el
+  sellado doble lo impiden el SETNX del cierre y el CAS del bloque. Cubierto por `nct-coordinator/tests/test_bully.py`
   y `nct-coordinator/tests/test_failover_y_cierre.py`.
 - **El modo cooperativo se administra por equipos, no por URL**: para poner un
   minero en `pool-worker` hay que decirle la URL del coordinador, y esa URL un

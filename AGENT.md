@@ -251,7 +251,7 @@ Un pod que **reemplaza** a otro arranca con tokens ya gastados. Para él, los to
   - **nadie respondió** → vuelve a la **cola**: no hubo decisión, así que no puede leerse como rechazo. Tras `MAX_SILENT_DELIBERATIONS` pausas **seguidas** así (default 3) la ley se descarta **sin respuesta** (`unanswered`): sin anotar su `text_hash`, así que reproponerla no paga el cooldown largo, porque nadie la juzgó. Una ventana abierta reinicia la cuenta. Sin este tope, una red ausente la reanunciaría para siempre.
 - **Respuesta por defecto.** Cada convocado puede dejar declarado qué vale si no responde durante la pausa: `accept`, `reject` o nada (no mina). El fundador la fija para su equipo (`PUT /api/teams/<id>/default-decision`, firmado) y el standalone por entorno (`STANDALONE_DEFAULT_DECISION`). No es una excepción a "quien no responde no vota": es una respuesta dada de antemano, igual que el veto puntual precargado, y la de la pausa la pisa. Por eso **no adelanta el cierre**: la pausa se cierra antes sólo si todos respondieron en ella. Sirve para que un equipo no tenga que estar conectado en cada ley, y es lo que evita que la mayoría de las pausas terminen en silencio.
 - Si la ventana abierta vence sin que los que aceptaron la resuelvan, la ley se descarta como siempre: ése es el caso en que el "no" del más grande surtió efecto.
-- Ante la caída del NCT la deliberación se pierde como la ventana (4.1), pero la ley no: el nuevo líder la devuelve a la cola.
+- Ante la caída del NCT la deliberación **no se retoma**, a diferencia de la ventana (4.1): la pausa se pierde, pero la ley no: el nuevo líder la devuelve a la cola y la anuncia de nuevo.
 - `DELIBERATION_SECONDS=0` apaga todo esto y vuelve al comportamiento anterior (el stack del experimento de escalado corre así: mide cómputo, no decisiones).
 
 ---
@@ -266,7 +266,8 @@ El sistema elige coordinadores en dos planos distintos, con criterios distintos 
 - Si un standby pasa `heartbeat_timeout` sin recibirlo, intenta adquirir el lease `nct:leader` en Redis (`elect_acquire_leadership`). Gana quien llega primero; el `dead_threshold` distingue un lease abandonado por un líder muerto de uno recién tomado por otro candidato.
 - **Candidatos:** sólo los NCT desplegados como standby, no cualquier nodo de la red. Son réplicas del mismo Deployment.
 - **No hay PoW ni cola de elección.** No existe una cola `nct_election`: el arbitraje es el lease de Redis y nada más. El PoW se quitó porque entre réplicas homogéneas del mismo Deployment no hay ventaja de cómputo que medir (ver 1.1); lo único que aportaba era retrasar el failover.
-- **Estado de la ventana en curso:** se pierde. No se persiste en Redis para este propósito. El nuevo NCT **siempre arranca con una ventana nueva**, incluso si había una en progreso al momento de la caída. Esto es una simplificación deliberada — el costo de cómputo ya invertido por los nodos en la ventana perdida se documenta como una limitación conocida, no se intenta mitigar.
+- **Estado de la ventana en curso: se retoma.** Todo lo necesario para validar un nonce queda en Redis al abrir la ventana (`window:<id>` y el puntero `active_window`), así que el nuevo líder la reconstruye desde ahí y sigue esperando la solución del **mismo desafío**, que los mineros nunca dejaron de minar. Los nonces publicados durante el failover esperan en `respuesta_nonce`, que nadie consumía. Si el deadline venció mientras no había líder, la ventana se cierra como cualquier otra vencida. Si el líder cayó a mitad del sellado, el sucesor lo completa: con el bloque ya en la cadena cierra la ventana; con el guard de cierre puesto pero sin bloque, lo suelta y sigue. Retomarla no arriesga un bloque doble: el cierre es SETNX (`try_seal_window`) y el bloque, un CAS sobre el tip (`append_block`). Si los datos de la ventana no alcanzan para retomarla, la ley vuelve a la cola: nunca queda `in_window` fuera de ella.
+- *Historia:* hasta octubre la ventana se descartaba, "para no arriesgar un sellado doble". Pero el SETNX y el CAS ya cubrían ese riesgo, y el descarte tenía un bug: la ley quedaba `in_window` fuera de la cola para siempre, ni sellada ni descartada.
 
 ### 4.2 Coordinación de pools (Bully por esfuerzo)
 
@@ -337,7 +338,7 @@ Preguntas de investigación para el informe (cualitativas, no requieren estudio 
 - Tiempo de promulgación con distinta cantidad de nodos participantes.
 - Diferencia de tiempo entre promulgar (n) y derogar (n+1) para la misma población de nodos.
 - Comportamiento del sistema cuando un pool grande compite contra muchos mineros individuales pequeños (observación cualitativa sobre concentración de poder, no medición estadística rigurosa).
-- Tiempo de recuperación tras una caída del NCT (failover por lease, 4.1) y costo de la ventana perdida.
+- Tiempo de recuperación tras una caída del NCT (failover por lease, 4.1), con la ventana en curso retomada por el sucesor.
 - Tiempo que tarda un pool de infraestructura en reorganizarse tras perder su coordinador (Bully por esfuerzo, 4.2), y cómo cambia con la dificultad del mini-desafío.
 
 ---
@@ -479,7 +480,7 @@ Responde directamente al requisito de seguridad del TP ("Zero static keys", cred
 ## 9. Limitaciones conocidas
 
 - **Sybil:** el sistema no verifica identidad real. Un individuo puede generar múltiples claves y proponer/votar como si fuera varios. La cuota de turnos (3.3) acota el monopolio de *una* identidad, que es el caso barato, pero por construcción no frena a quien rota identidades: la cuota es por identidad y generarlas es gratis. Mitigación futura (DNI) fuera de alcance.
-- **Pérdida de estado en falla del NCT:** la ventana en curso se pierde íntegramente al caer el NCT; el cómputo invertido por la red hasta ese momento no se aprovecha.
+- **Pausa en la falla del NCT:** el relevo tarda ~12-15 s (timeout de heartbeat más elección). La ventana en curso se retoma (4.1), pero mientras no hay líder no se sella nada, y una ventana cuyo deadline vence en ese hueco se cierra sin solución aunque un minero la haya resuelto a tiempo: el nonce se valida contra el reloj del NCT al procesarlo, no al publicarlo. Una deliberación en curso no se retoma: la ley vuelve a la cola y se anuncia de nuevo.
 - **Split-brain del NCT:** si una partición de red separa al NCT primario de los standbys sin que el primario falle realmente, ambos pueden operar como líderes simultáneamente. El primario verifica en cada tick que su liderazgo en Redis sigue vigente (`renew_leadership`), y si descubre que otro NCT adquirió el liderazgo, ejecuta `step_down()`. Esta detección no es instantánea; hay una ventana de solapamiento.
 - **Leyes sin electorado:** con agendas temáticas (3.10), una ley de un área que ningún equipo vota no reúne cómputo. Con el default `QUORUM_BY_CATEGORY=true` **no expira: espera indefinidamente** en la cola (3.11) — se eligió el limbo por sobre la muerte silenciosa, porque una ley que espera puede salir cuando cambie el mapa político y una descartada no. El costo es que la cola puede acumular leyes que nadie va a minar nunca, y el sistema no las caduca. Con `false` vuelve el veto por abstención. Está buscado —es la abstención hecha mecanismo— pero significa que la promulgación ya no depende sólo del esfuerzo total de la red sino de **cómo está repartido por área**. Un área desierta es, en la práctica, un veto silencioso.
 - **El "no" es del más grande (3.12):** la dificultad se congela sobre el convocado más grande del área, así que sólo su abstención encarece la ley para los demás. Un equipo chico que se baja no cambia nada si el resto puede resolverla. No es una votación proporcional sino un **veto del mayor**; se aceptó porque es barato —reusa la dificultad por máximo y los vetos que ya existían— y le da al sistema un "no" real sin cambiar la arquitectura de minado.
@@ -573,7 +574,7 @@ El failover del NCT (sección 4.1) mitiga su caída pero introduce un riesgo de 
 **Mecanismo de detección:** en cada `tick()`, el NCT primario verifica que su liderazgo en Redis sigue vigente mediante `renew_leadership()`. Si la operación falla (porque otro NCT adquirió el lock), ejecuta `step_down()`:
 
 - `is_leader = False`
-- Limpia `_active` (la ventana en curso se pierde — AGENT.md 4)
+- Suelta su copia en memoria de la ventana (`_active`); el puntero en Redis queda, y el líder vigente la retoma desde ahí (4.1)
 - Deja de publicar heartbeats
 
 No hay detección de doble liderazgo más allá de Redis; la ventana de solapamiento es de hasta `HEARTBEAT_INTERVAL` segundos, aceptada como limitación conocida.
