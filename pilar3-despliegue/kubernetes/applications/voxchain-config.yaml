@@ -22,7 +22,9 @@ data:
   # que vota esa área; el plazo es FACTOR × su tiempo esperado, acotado por
   # WINDOW_MIN_SECONDS y WINDOW_SECONDS_<acción>.
   DELIBERATION_SECONDS: "120"
-  WINDOW_DEADLINE_FACTOR: "2"
+  # 3 y no 2: el tiempo hasta el primer nonce es exponencial, así que con 2×
+  # el esperado la ventana vence sin sellar ~14% de las veces; con 3×, ~5%.
+  WINDOW_DEADLINE_FACTOR: "3"
   WINDOW_MIN_SECONDS: "20"
   # Pausas seguidas sin ninguna respuesta antes de descartar la ley "sin
   # respuesta" (sin penalidad de reproposición). Corta el reanuncio infinito.
@@ -33,8 +35,11 @@ data:
   # trinquete vive en Redis (`nct:difficulty`) y sobrevive al failover del NCT:
   # sin eso, forzar una caída era la forma de saltearse la histéresis.
   DIFFICULTY_DECAY_WINDOWS: "3"
-  # H/s a suponerle a un minero que todavía no reportó medición propia.
-  HPS_CPU: "954180"
+  # H/s a suponerle a un minero que todavía no reportó medición propia. Es lo
+  # que miden los pods del k3s (límite de 500m de CPU): 120–170 kH/s. El
+  # benchmark de un núcleo entero (954180) sobreestimaba ~6× a un minero recién
+  # creado, el plazo salía corto y la ventana vencía sin sellar.
+  HPS_CPU: "150000"
   HPS_GPU: "500000000"
   # Firma de propuestas y de nonces (A-01 / AGENT.md 3.1). "true" = se rechaza
   # todo lo no firmado. "false" era el modo de migración (acepta no firmadas,
