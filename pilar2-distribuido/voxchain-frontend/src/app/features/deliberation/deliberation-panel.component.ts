@@ -29,6 +29,7 @@ import { friendlyDuration, friendlyError } from '../../core/utils/format';
         <span class="tag tag-accent mono" title="Tiempo para decidir">{{ countdown() }}</span>
       </div>
       <h3 class="mono vc-live__id">{{ d.law_id }}</h3>
+      <p class="dp__text" *ngIf="text() as t">{{ t }}</p>
       <p class="vc-note-sm dp__lead">
         Antes de votar, cada equipo y cada minero independiente convocado decide si
         pone su poder de cómputo a favor de esta ley. Quien no responde, no participa.
@@ -65,7 +66,12 @@ import { friendlyDuration, friendlyError } from '../../core/utils/format';
   `,
   styles: [`
     .dp { margin-top: 40px; padding: 26px; }
-    .dp__lead { margin-top: 10px; }
+    .dp__text {
+      margin: 14px 0 0; padding: 14px 16px; border-radius: var(--radius-md);
+      background: var(--color-neutral-900); font-size: 14px; line-height: 1.7;
+      white-space: pre-wrap; overflow-wrap: anywhere; color: var(--color-neutral-200);
+    }
+    .dp__lead { margin-top: 14px; }
     .dp__btn { padding: 4px 12px; font-size: 12.5px; }
     .dp__err { margin-top: 16px; }
     /* En el celular la fila de un convocado no entra: nombre, peso, postura y
@@ -81,6 +87,10 @@ export class DeliberationPanelComponent implements OnInit, OnDestroy {
   private identityService = inject(IdentityService);
 
   deliberation = signal<Deliberation | null>(null);
+  /** Texto de la ley anunciada: es lo que se decide, así que va a la vista sin pedirlo. */
+  text = signal<string | null>(null);
+  /** De qué ley es `text`: el panel se refresca cada 3 s y el texto se pide una vez por ley. */
+  private textOf: string | null = null;
   busy = signal(false);
   error = signal<string | null>(null);
   /** Momento local en que vence la pausa: el contador corre sin pedirle al backend. */
@@ -163,8 +173,22 @@ export class DeliberationPanelComponent implements OnInit, OnDestroy {
       next: (d) => {
         this.deliberation.set(d);
         if (d) this.endsAt.set(Date.now() + d.seconds_left * 1000);
+        this.loadText(d?.law_id ?? null);
       },
       error: () => {},  // sin respuesta no se muestra nada: mejor que un panel viejo
+    });
+  }
+
+  private loadText(lawId: string | null) {
+    if (lawId === this.textOf) return;
+    this.textOf = lawId;
+    this.text.set(null);
+    if (!lawId) return;
+    this.api.getLawText(lawId).subscribe({
+      // Si mientras tanto se anunció otra ley, este texto ya no corresponde.
+      next: (t) => { if (this.textOf === lawId) this.text.set(t); },
+      // Se reintenta en el próximo refresco en vez de dejar el panel sin texto.
+      error: () => { if (this.textOf === lawId) this.textOf = null; },
     });
   }
 }

@@ -61,22 +61,6 @@ gpu-check.yaml
 gustavo.yaml
 
 # Notas personales de seguimiento (fuera de git)
-RESUMEN-PILARES.md
-PENDIENTES.md
-FUNCIONAMIENTO.md
-RESUMEN-ESCALADO.md
-GUION-VIDEO.md
-ESTUDIO-CHECKLIST.md
-DIAGRAMA-ARQUITECTURA.md
-ARQUITECTURA-REAL.md
-SEGURIDAD-CLAVES.md
-COMO-FUNCIONA-AHORA.md
-DELIBERACION.md
-EstadoChecklist.md
-DECISIONES-DE-DISENO.md
-marketing.md
-GUION-PRESENTACION.md
-TEORIA-SISTEMAS-DISTRIBUIDOS.md
 docs/diagrams/arquitectura-actual.md
 docs/k3s-propio-en-gcp.md
 
