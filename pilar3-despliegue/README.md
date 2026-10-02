@@ -59,6 +59,30 @@ Diagrama completo: [`docs/diagrams/ArquitecturaVoxchain.png`](../docs/diagrams/A
   minero standalone que ya pide la GTX 1060: aplicarlo y borrarlo es la prueba
   de ingreso/egreso de un nodo GPU.
 
+### k3s propio en GCP (desde el 2026-10-01)
+
+El k3s de la cátedra no estuvo disponible para la presentación. Su lugar lo
+ocupa un k3s de un nodo en una VM de GCP (`voxchain-k3s`, e2-standard-4, **sin
+GPU**: los mineros minan con CPU). El esquema de arriba no cambia, salvo por
+dónde vive el k3s:
+
+- La VM está en **`voxchain-vpc`** (IP interna `10.0.0.9`). El API del k3s
+  (6443) sólo acepta a los nodos y pods de GKE, y se administra por IAP. Los
+  mineros salen a los LoadBalancer con la IP estática `35.247.210.102`, que es
+  la que lleva `K3S_EGRESS_CIDRS`.
+- El API de GKE usa una SA del k3s con un Role acotado a `g-git-push-cv`.
+- **`04-gpu-workers` no llega al k3s** (los runners de GitHub no ven la IP
+  interna). Sus pasos se hacen a mano: los no secretos por IAP (ver Paso 7) y
+  el kubeconfig y las contraseñas con
+  [`scripts/conectar-k3s-vm.sh`](kubernetes/scripts/conectar-k3s-vm.sh).
+- **Antes de `tofu destroy`**, borrar la VM, la IP `voxchain-k3s-ip` y las
+  reglas `voxchain-k3s-api-internal` y `voxchain-k3s-iap`: la VM ocupa la subred
+  y el destroy falla.
+
+Bitácora completa en
+[`despliegue-gcp.md` §10](../docs/informe/despliegue-gcp.md); resumen para la
+presentación en [`docs/k3s-propio-en-gcp.md`](../docs/k3s-propio-en-gcp.md).
+
 ## Guía de setup paso a paso
 
 > Los pasos 1, 2 y 4 son manuales, una vez por entorno. El 3 lo hace `01-infra`
@@ -291,6 +315,14 @@ En el k3s del profesor el namespace ya existe y nuestra ServiceAccount no
 puede crear Roles: `worker-rbac.yaml` y `backend-proxy-rbac.yaml` se aplican
 best-effort y los pods corren con la SA `default`.
 
+**Con el k3s en la VM de GCP** no hay kubeconfig local: los comandos contra el
+k3s van por IAP, por ejemplo
+`... | gcloud compute ssh voxchain-k3s --zone southamerica-east1-a --tunnel-through-iap --command 'sudo k3s kubectl apply -f -'`
+(con `kubectl create ... --dry-run=client -o yaml` del lado local). Los
+secretos los carga `scripts/conectar-k3s-vm.sh`, que además deja el kubeconfig
+de la SA en el Secret `k3s-kubeconfig` de GKE y en `K3S_KUBECONFIG`, y
+reinicia el API.
+
 Los mineros de altas anteriores a la creación de Services siguen anunciando la
 IP de su pod: para pasarlos al esquema nuevo hay que darlos de baja y volver a
 registrarlos.
@@ -351,7 +383,7 @@ Los workflows están en `.github/workflows/`:
 | `01-infra.yml` | manual (`plan` / `apply`) | OpenTofu |
 | `02-services.yml` | push a `main` en `kubernetes/infrastructure/`, `cert-manager/` o `namespace.yaml` | verifica los secretos del paso 2, despliega Redis y RabbitMQ, los ClusterIssuer, el kubeconfig del k3s y el usuario de los workers |
 | `03-apps.yml` | push a `main` en `pilar2-distribuido/`, `pilar1-minero/gpu/`, o en los manifests de `applications/`, `hpa/` y `monitoring/` | build y push de las 5 imágenes, apply de los manifests y pin al SHA |
-| `04-gpu-workers.yml` | push a `main` en `kubernetes/gpu-cluster/` | workers en el k3s |
+| `04-gpu-workers.yml` | push a `main` en `kubernetes/gpu-cluster/` | workers en el k3s (no alcanza al k3s de la VM de GCP, que sólo escucha en la red interna: ver [k3s propio en GCP](#k3s-propio-en-gcp-desde-el-2026-10-01)) |
 
 ```
 PR / push → ci-checks (gitleaks + pytest)

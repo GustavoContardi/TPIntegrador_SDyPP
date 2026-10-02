@@ -74,6 +74,12 @@ spec:
               value: /etc/k3s/kubeconfig
             - name: WORKER_NAMESPACE
               value: g-git-push-cv
+            # URL con la que los mineros del k3s enrolan su identidad de nodo
+            # (VOXCHAIN_API_URL). El default, voxchain-api.voxchain.svc.cluster.local,
+            # sólo resuelve dentro de GKE: desde el k3s el enrolamiento fallaba
+            # y los nonces quedaban a nombre de una identidad anónima.
+            - name: INTERNAL_API_URL
+              value: "https://voxchain.35.199.68.144.sslip.io"
           envFrom:
             - configMapRef:
                 name: voxchain-config

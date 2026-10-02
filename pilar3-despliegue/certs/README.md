@@ -54,7 +54,8 @@ agosto justamente para evitar ese trabajo.
 ## La parte que no es obvia: SANs sin la IP del LoadBalancer
 
 Los workers del k3s se conectan a la **IP del LoadBalancer** (hoy
-`34.151.236.95:5671`), y esa IP **no está en los SANs**. Una validación TLS
+`35.198.29.28:5671`; cambia en cada redespliegue), y esa IP **no está en los
+SANs**. Una validación TLS
 normal fallaría con un error de hostname.
 
 No falla porque el cliente valida contra un nombre distinto del que usa para

@@ -15,7 +15,7 @@ GitHub Secrets, sin SOPS y sin nada de este directorio:
 |---|---|
 | `RABBITMQ_USER` / `RABBITMQ_PASS` | credenciales de `voxchain-worker` en el broker |
 | `RABBITMQ_CA_CERT` | CA para validar el AMQPS (ver `../certs/README.md`) |
-| `K3S_KUBECONFIG` | acceso al cluster del profesor |
+| `K3S_KUBECONFIG` | acceso al cluster k3s (desde el 2026-10-01, el k3s propio en una VM de GCP; antes, el del profesor) |
 
 Del lado de GKE los secretos vienen de **GCP Secret Manager** vía
 external-secrets, y los sube `../kubernetes/scripts/bootstrap-secrets.sh`.

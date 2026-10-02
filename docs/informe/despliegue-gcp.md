@@ -533,3 +533,94 @@ plataforma — red, cluster, registry, identidad federada y observabilidad — e
 20 minutos, sin una sola credencial estática en el repositorio: los secretos
 viven en Secret Manager y llegan al cluster por External Secrets con Workload
 Identity."*
+
+## 10. k3s propio en GCP (2026-10-01)
+
+El k3s de la cátedra no estuvo disponible la semana de la presentación. Para no
+quedarnos sin dónde crear mineros, levantamos un k3s propio en una VM de GCP.
+Resumen no técnico, con las preguntas que pueden hacer:
+[`docs/k3s-propio-en-gcp.md`](../k3s-propio-en-gcp.md).
+
+### 10.1 Qué se creó
+
+| Recurso | Valor |
+|---|---|
+| VM | `voxchain-k3s`, e2-standard-4, Ubuntu 24.04, 50 GB, `southamerica-east1-a` |
+| Red | **`voxchain-vpc` / `voxchain-subnet`** (la de GKE), IP interna `10.0.0.9` |
+| IP pública | estática `voxchain-k3s-ip` = `35.247.210.102` (la IP de salida de los mineros) |
+| k3s | v1.36.5+k3s1, `--tls-san 10.0.0.9 --disable traefik` |
+| Firewall | `voxchain-k3s-api-internal`: 6443 sólo desde `10.0.0.0/16` (nodos) y `10.1.0.0/16` (pods) · `voxchain-k3s-iap`: 22 y 6443 desde `35.235.240.0/20` (IAP) |
+| Acceso del API | SA `voxchain-api` en `g-git-push-cv`, con un Role sólo de ese namespace: deployments (+ `scale`), secrets, services, configmaps y pods |
+
+### 10.2 Por qué la VM está en la VPC de GKE
+
+El primer plan era una VM en la red `default` con el 6443 abierto a
+`0.0.0.0/0`, porque `04-gpu-workers` corre en runners de GitHub con IPs
+variables. Se descartó por exponer un API de Kubernetes a internet. Con la VM en
+`voxchain-vpc`, los pods del API llegan al k3s por IP interna (VPC-native: el
+tráfico sale con la IP del pod) y el 6443 no tiene regla pública.
+
+Consecuencia: **`04` no llega al k3s.** Sus pasos se hicieron a mano:
+
+- configmaps `worker-config` (hosts de los LoadBalancer y URL de Loki) y
+  `worker-modes`, y la CA de RabbitMQ (`certs/ca.crt`, mismo fingerprint que el
+  Secret `rabbitmq-tls` del broker), aplicados por IAP;
+- kubeconfig de la SA y credenciales de Redis, RabbitMQ (`voxchain-worker`) y
+  Loki, con [`scripts/conectar-k3s-vm.sh`](../../pilar3-despliegue/kubernetes/scripts/conectar-k3s-vm.sh).
+  El script deja el kubeconfig en el Secret `k3s-kubeconfig` de GKE y en el
+  secret `K3S_KUBECONFIG` de GitHub (para que un `02` posterior no vuelva a
+  poner el de la cátedra), copia las contraseñas sin mostrarlas y reinicia el
+  API.
+
+### 10.3 LoadBalancers acotados
+
+`K3S_EGRESS_CIDRS` = `35.247.210.102/32`, y `redis-external` y
+`rabbitmq-external` se parchearon con el mismo `loadBalancerSourceRanges` que
+aplica `02`. Verificado: desde la VM conectan; desde afuera, no. Una VM en la
+misma VPC que pega a la IP externa de un LoadBalancer sale con su IP pública,
+así que el filtro por IP de salida funciona igual que con un clúster externo.
+
+### 10.4 Verificación
+
+- Desde un pod del API: `read_namespaced_config_map("worker-modes")` contra el
+  k3s responde, y `K8S_ENABLED=True` con namespace `g-git-push-cv`.
+- Un minero de prueba (`worker-deployment.yaml` con 1 réplica) en la VM: TLS
+  contra RabbitMQ validado con la CA, elección bully resuelta, y el minero
+  apareció en `/api/workers/status` con `/api/health` en `workers: ok`. Se borró
+  después.
+- Se repitió con los LoadBalancers ya acotados, forzando conexiones nuevas.
+
+### 10.5 Lo que destapó
+
+- **`worker-deployment.yaml` trae `REDIS_URL: ""`** (ya documentado en
+  `docs/workers.md`): sus mineros no reportan estado a Redis. Para la prueba
+  sirve de trampa, porque el minero arranca y conecta a RabbitMQ pero no
+  aparece en el API. Los que crea "Registrar minero" sí llevan `REDIS_URL`
+  armado con `worker-config` y `redis-credentials`; en la prueba se agregaron
+  esas tres variables a mano.
+- **El enrolamiento de identidad desde el k3s apunta a un nombre interno de
+  GKE.** El API pasa `VOXCHAIN_API_URL=INTERNAL_API_URL`, cuyo default es
+  `voxchain-api.voxchain.svc.cluster.local`, que no resuelve fuera de GKE. El
+  minero sigue (firma como identidad anónima) y el NCT acepta sus nonces, pero
+  no quedan atribuidos al ciudadano. Ya pasaba con el k3s de la cátedra.
+  **Arreglado el 1/10:** `INTERNAL_API_URL=https://voxchain.<IP>.sslip.io` en
+  `voxchain-api-deployment.yaml` (aplicado con `kubectl set env` para no tocar
+  la imagen fijada por `03`). Sólo afecta a los mineros dados de alta después:
+  los anteriores llevan la URL vieja en su Deployment y hay que registrarlos de
+  nuevo.
+- **Mineros de altas anteriores** (`pepito`, `Miner-Contardi`) quedan con modo
+  `unknown`: sus Deployments estaban en el k3s de la cátedra. Hay que darlos de
+  baja y registrarlos de nuevo.
+- **La VM ocupa `voxchain-vpc`.** Antes de `tofu destroy` hay que borrar la VM,
+  la IP `voxchain-k3s-ip` y las dos reglas de firewall; si no, el destroy falla
+  al borrar la subred.
+
+### 10.6 Costo
+
+VM ~US$0,20/h, sobre ~US$0,45/h de GKE: unos US$15 por día con todo prendido.
+
+### 10.7 Volver al k3s de la cátedra
+
+Restaurar `K3S_KUBECONFIG` (el de la cátedra) y `K3S_EGRESS_CIDRS` (su IP de
+salida), correr `02` (vuelve a poner el Secret `k3s-kubeconfig` y acota los
+LoadBalancers) y `04`, y borrar la VM con sus recursos.

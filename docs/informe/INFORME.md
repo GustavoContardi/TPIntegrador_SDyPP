@@ -196,6 +196,16 @@ junto con las variables `NVIDIA_*`. Sin eso, el minero detecta que no hay GPU
 utilizable (self-test del binario) y mina con CPU, que es como corren hoy los
 manifests del repositorio.
 
+> **Octubre de 2026: k3s propio.** El k3s de la cátedra no estuvo disponible
+> para la presentación, y el clúster 2 pasó a ser un k3s de un nodo en una VM
+> de GCP, sin GPU. Para GKE nada cambia: le habla por el API de Kubernetes con
+> un token acotado a `g-git-push-cv`, y los mineros llegan por los mismos
+> LoadBalancer, acotados a la IP de la VM. La diferencia es que la VM está en
+> la VPC de GKE para no exponer su API a internet, y por eso `04` se reemplaza
+> por pasos manuales. Detalle en
+> [`despliegue-gcp.md` §10](despliegue-gcp.md) y resumen en
+> [`docs/k3s-propio-en-gcp.md`](../k3s-propio-en-gcp.md).
+
 ### 2.3 Componentes
 
 | Componente | Rol |
@@ -756,8 +766,10 @@ criterio:
   tráfico de afuera llegue con la IP real del cliente y la policy lo reconozca
   como externo. En el redespliegue de septiembre Dataplane V2 quedó activo y el
   sistema de GKE anduvo con las policies aplicadas (`/api/health` en verde).
-  **Falta verificar el acceso de los mineros del k3s**, que no estaba conectado.
-  Si algo deja de conectar, `kubectl delete networkpolicy -n voxchain --all`
+  El acceso de los mineros del k3s se verificó el 1 de octubre, con el k3s
+  propio en GCP: un minero de la VM entró a RabbitMQ y a Redis (por HAProxy y su
+  policy de `ipBlock`) con las policies aplicadas y los LoadBalancers acotados a
+  su IP. Si algo deja de conectar, `kubectl delete networkpolicy -n voxchain --all`
   vuelve al estado anterior.
 
 El tráfico interno API↔NCT↔Redis sigue sin cifrar; la protección interna es de
@@ -843,6 +855,12 @@ El despliegue pasó por **tres ciclos completos** desde cero:
    split-brain silencioso de RabbitMQ, entre otros) y terminó con
    `/api/health` en verde para todos los servicios de GKE. El k3s de la cátedra
    quedó pendiente porque su IP había cambiado.
+
+El 1 de octubre, sin acceso al k3s de la cátedra, se levantó un k3s propio en
+una VM de GCP dentro de la VPC de GKE (sección 2.2), sobre el despliegue de
+septiembre. Un minero de prueba en la VM conectó por AMQPS y Redis, apareció en
+`/api/workers/status` y `/api/health` pasó a `workers: ok`. Los LoadBalancers
+de Redis y RabbitMQ quedaron acotados a la IP de la VM.
 
 Desde septiembre el Ingress usa una **IP estática** (`voxchain-ingress-ip`,
 reservada por `bootstrap-secrets.sh` fuera del estado de OpenTofu), así que un
