@@ -91,18 +91,29 @@ const FILTROS: { key: string; label: string }[] = [
                 <th>Tipo</th>
                 <th>Estado</th>
                 <th>Propuesta el</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
-              <tr *ngFor="let l of visible()">
-                <td class="mono laws__id" data-label="Ley">{{ l.law_id }}</td>
-                <td data-label="Área"><span class="tag tag-outline">{{ label(l.category) }}</span></td>
-                <td class="laws__action" data-label="Tipo">{{ actionLabel(l.action) }}</td>
-                <td data-label="Estado">
-                  <span class="tag" [ngClass]="statusCls(l.status)">{{ statusLabel(l.status) }}</span>
-                </td>
-                <td class="laws__date" data-label="Propuesta el">{{ date(l.created_at) }}</td>
-              </tr>
+              <ng-container *ngFor="let l of visible()">
+                <tr>
+                  <td class="mono laws__id" data-label="Ley">{{ l.law_id }}</td>
+                  <td data-label="Área"><span class="tag tag-outline">{{ label(l.category) }}</span></td>
+                  <td class="laws__action" data-label="Tipo">{{ actionLabel(l.action) }}</td>
+                  <td data-label="Estado">
+                    <span class="tag" [ngClass]="statusCls(l.status)">{{ statusLabel(l.status) }}</span>
+                  </td>
+                  <td class="laws__date" data-label="Propuesta el">{{ date(l.created_at) }}</td>
+                  <td data-label="Texto">
+                    <button type="button" class="btn btn-ghost laws__toggle" (click)="toggleText(l.law_id)">
+                      {{ texts()[l.law_id] ? 'Ocultar texto' : 'Ver texto' }}
+                    </button>
+                  </td>
+                </tr>
+                <tr class="laws__textrow" *ngIf="texts()[l.law_id] as t">
+                  <td colspan="6"><p class="laws__text">{{ t }}</p></td>
+                </tr>
+              </ng-container>
             </tbody>
           </table>
         </div>
@@ -129,6 +140,19 @@ const FILTROS: { key: string; label: string }[] = [
     .laws__action { font-size: 13px; color: var(--color-neutral-300); }
     .laws__date { font-size: 12.5px; color: var(--color-neutral-400); }
     .laws__empty { margin-top: 24px; }
+    .laws__toggle { font-size: 12.5px; }
+    /* El texto ocupa la fila entera, también en la vista apilada del celular,
+       donde cada celda lleva la etiqueta de su columna: acá no hay columna. */
+    .laws__textrow td { display: table-cell; padding-top: 0; text-align: left; }
+    .laws__textrow td::before { content: none; }
+    .laws__text {
+      margin: 0; padding: 14px 16px; border-radius: var(--radius-md);
+      background: var(--color-neutral-900); font-size: 13.5px; line-height: 1.7;
+      white-space: pre-wrap; overflow-wrap: anywhere; color: var(--color-neutral-200);
+    }
+    @media (max-width: 720px) {
+      .laws__textrow td { display: block; }
+    }
   `]
 })
 export class LawsComponent {
@@ -150,6 +174,8 @@ export class LawsComponent {
   laws = signal<Law[]>([]);
   /** Etiquetas de las áreas; el backend las pisa con la lista autoritativa. */
   categories = signal<LawCategory[]>(LAW_CATEGORIES);
+  /** Textos de ley ya pedidos, por id. Su presencia es además el "está abierto". */
+  texts = signal<Record<string, string>>({});
 
   visible = computed(() => {
     const f = this.filter();
@@ -197,6 +223,20 @@ export class LawsComponent {
     this.api.getLaws().subscribe({
       next: (laws) => this.laws.set(laws),
       error: (err) => console.error('No se pudieron leer las leyes:', err),
+    });
+  }
+
+  /** Mismo mecanismo que la cola: el texto se pide recién al abrirlo. */
+  toggleText(lawId: string) {
+    const current = this.texts();
+    if (current[lawId]) {
+      const { [lawId]: _drop, ...rest } = current;
+      this.texts.set(rest);
+      return;
+    }
+    this.api.getLawText(lawId).subscribe({
+      next: (text) => this.texts.set({ ...this.texts(), [lawId]: text }),
+      error: () => console.error('No se pudo leer el texto de', lawId),
     });
   }
 }
