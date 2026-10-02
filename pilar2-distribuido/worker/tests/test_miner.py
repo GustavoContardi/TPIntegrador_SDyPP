@@ -55,7 +55,7 @@ def test_standalone_publica_nonce_cuando_encuentra():
     publicados = []
     bus.on_nonce_response(publicados.append)
 
-    def fake_mine(base, prefix, rmin, rmax):
+    def fake_mine(base, prefix, rmin, rmax, **kw):
         return 42, "0000deadbeef0000deadbeef00001234"
 
     sw = StandaloneWorker(bus, worker_id="w1", mine=fake_mine, clock=lambda: 0)
@@ -75,7 +75,7 @@ def test_standalone_rechaza_por_accion():
     publicados = []
     bus.on_nonce_response(publicados.append)
 
-    sw = StandaloneWorker(bus, worker_id="w1", mine=lambda *a: (1, "h"), clock=lambda: 0)
+    sw = StandaloneWorker(bus, worker_id="w1", mine=lambda *a, **kw: (1, "h"), clock=lambda: 0)
     sw._rejected_actions = {"derogacion"}
     sw.wire()
     bus.publish_challenge({
@@ -91,7 +91,7 @@ def test_standalone_con_deliberacion_mina_solo_si_su_dueno_acepto():
     publicados = []
     bus.on_nonce_response(publicados.append)
 
-    sw = StandaloneWorker(bus, worker_id="w1", mine=lambda *a: (1, "h"), clock=lambda: 0)
+    sw = StandaloneWorker(bus, worker_id="w1", mine=lambda *a, **kw: (1, "h"), clock=lambda: 0)
     sw._rejected_actions = set()
     sw.wire()
     base = {"action": "promulgacion", "partial_hash_base": "base",
@@ -110,7 +110,7 @@ def test_standalone_es_idempotente_por_ventana():
     bus.on_nonce_response(publicados.append)
     calls = []
 
-    def fake_mine(base, prefix, rmin, rmax):
+    def fake_mine(base, prefix, rmin, rmax, **kw):
         calls.append((rmin, rmax))
         return 1, "h"
 
@@ -222,3 +222,133 @@ def test_el_latido_lleva_el_snapshot():
     estado = worker_main.WorkerManager("w-latido", has_gpu=False).get_status()
 
     assert estado["mining_stats"] == mining_stats_snapshot()
+
+
+# -- corte del minado: deadline y aviso de cierre ----------------------------
+#
+# Antes nadie avisaba que una ventana había cerrado y el minero barría su rango
+# entero: con 50M de nonces, minutos de cómputo sobre una ventana muerta.
+
+import threading
+import time
+from datetime import datetime, timezone
+
+# Un prefijo imposible sobre un rango enorme: el minero CPU no termina solo.
+_IMPOSIBLE = ("L1hW1promulgacion", "0" * 20, 0, 10**12)
+
+
+def test_run_miner_corta_al_vencer_el_timeout():
+    cpu = {"resource": "cpu"}
+    tareas_antes = _sample("voxchain_worker_mining_tasks_total", cpu)
+    empezo = time.monotonic()
+    nonce, h = run_miner(*_IMPOSIBLE, prefer_gpu=False,
+                         cpu_script=os.path.abspath(CPU_SCRIPT), timeout=0.5)
+    assert (nonce, h) == (None, None)
+    assert time.monotonic() - empezo < 5
+    # Un barrido a medias no se registra: falsearía el hashrate.
+    assert _sample("voxchain_worker_mining_tasks_total", cpu) == tareas_antes
+
+
+def test_run_miner_corta_al_prenderse_cancel():
+    cancel = threading.Event()
+    threading.Timer(0.3, cancel.set).start()
+    empezo = time.monotonic()
+    nonce, _ = run_miner(*_IMPOSIBLE, prefer_gpu=False,
+                         cpu_script=os.path.abspath(CPU_SCRIPT), cancel=cancel)
+    assert nonce is None
+    assert time.monotonic() - empezo < 5
+
+
+def _desafio(wid, **extra):
+    return {"voting_window_id": wid, "law_id": "L1", "action": "promulgacion",
+            "partial_hash_base": f"base-{wid}", "n_zeros_required": 1, **extra}
+
+
+class _MineroLento:
+    """Mina hasta que lo cortan; anota qué ventanas cortaron."""
+
+    def __init__(self):
+        self.empezo = {}
+        self.cortadas = []
+        self.termino = threading.Event()
+
+    def __call__(self, base, prefix, rmin, rmax, *, timeout=None, cancel=None):
+        wid = base.removeprefix("base-")
+        self.empezo.setdefault(wid, threading.Event()).set()
+        if cancel.wait(5):
+            self.cortadas.append(wid)
+        self.termino.set()
+        return 7, "h"
+
+    def esperar_inicio(self, wid):
+        return self.empezo.setdefault(wid, threading.Event()).wait(5)
+
+
+def _standalone(bus, mine, **kw):
+    sw = StandaloneWorker(bus, worker_id="w1", mine=mine, clock=lambda: 0, **kw)
+    sw._rejected_actions = set()
+    sw._categories = []
+    sw.wire()
+    return sw
+
+
+def test_standalone_corta_la_ventana_al_recibir_el_cierre():
+    bus = InMemoryBus()
+    publicados = []
+    bus.on_nonce_response(publicados.append)
+    minero = _MineroLento()
+    _standalone(bus, minero, background=True)
+
+    # En segundo plano el handler vuelve enseguida: el hilo de RabbitMQ queda
+    # libre para recibir el aviso mientras se mina.
+    bus.publish_challenge(_desafio("W1"))
+    assert minero.esperar_inicio("W1")
+    bus.publish_window_closed({"voting_window_id": "W1", "result": "success"})
+
+    assert minero.termino.wait(5)
+    time.sleep(0.2)
+    assert minero.cortadas == ["W1"]
+    assert publicados == []  # el nonce de una ventana cerrada no se publica
+
+
+def test_standalone_un_desafio_nuevo_corta_el_anterior():
+    bus = InMemoryBus()
+    minero = _MineroLento()
+    sw = _standalone(bus, minero, background=True)
+
+    bus.publish_challenge(_desafio("W1"))
+    assert minero.esperar_inicio("W1")
+    bus.publish_challenge(_desafio("W2"))
+    assert minero.esperar_inicio("W2")
+
+    deadline = time.monotonic() + 5
+    while "W1" not in minero.cortadas and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert minero.cortadas == ["W1"]
+    sw.stop()  # corta W2 también
+
+
+def test_standalone_no_mina_una_ventana_que_ya_cerro():
+    bus = InMemoryBus()
+    llamadas = []
+    _standalone(bus, lambda *a, **kw: llamadas.append(a) or (1, "h"))
+    bus.publish_window_closed({"voting_window_id": "W1", "result": "expired_pending"})
+    bus.publish_challenge(_desafio("W1"))
+    assert llamadas == []
+
+
+def test_standalone_le_pasa_el_deadline_al_minero():
+    bus = InMemoryBus()
+    recibido = {}
+
+    def mine(base, prefix, rmin, rmax, *, timeout=None, cancel=None):
+        recibido["timeout"] = timeout
+        return None, None
+
+    sw = StandaloneWorker(bus, worker_id="w1", mine=mine, clock=lambda: 1000.0)
+    sw._rejected_actions = set()
+    sw._categories = []
+    sw.wire()
+    deadline = datetime.fromtimestamp(1030.0, tz=timezone.utc).isoformat()
+    bus.publish_challenge(_desafio("W1", deadline=deadline))
+    assert recibido["timeout"] == pytest.approx(30.0)

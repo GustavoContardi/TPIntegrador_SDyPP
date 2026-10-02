@@ -42,6 +42,9 @@ class FakeMessaging:
     def on_challenge(self, handler):
         pass
 
+    def on_window_closed(self, handler):
+        pass
+
     def publish_keepalive(self, msg):
         self.published.append(("keepalive", msg))
 

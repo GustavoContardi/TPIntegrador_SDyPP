@@ -1052,20 +1052,29 @@ reciente. Mitigarlo requiere una fuente de aleatoriedad compartida que no depend
 de Redis (por ejemplo el último `voting_window_id` visto por RabbitMQ) y es un
 cambio de protocolo, no una corrección puntual.
 
-### C. El minado es bloqueante y no mira el deadline 🟠
+### C. El minado es bloqueante y no mira el deadline ✅ corregido
 
-`self.mine(...)` barre el rango **entero** antes de devolver. Ni el standalone
-(`standalone_worker.py:71`), ni el auto-miner (`coordinator.py:305`), ni el
-pool-worker (`pool_worker.py:146`) chequean el deadline **durante** el barrido, y
-`run_miner` se llama siempre con `timeout=None`.
+`self.mine(...)` barría el rango **entero** antes de devolver, con
+`timeout=None`, y nadie avisaba que la ventana había cerrado. Si vencía o la
+ganaba otro a mitad de un barrido, el worker seguía quemando CPU en trabajo
+inútil: el standalone hasta agotar `NONCE_SPACE`, el pool hasta que llegaba el
+desafío siguiente (con la deliberación de por medio, minutos). Peor: el
+standalone minaba **dentro del callback de RabbitMQ**, así que mientras minaba no
+recibía nada, ni comandos ni heartbeats AMQP.
 
-Efecto: si una ventana vence a mitad de un barrido, el worker sigue quemando CPU en
-trabajo inútil y recién atiende la ventana siguiente cuando termina. El deadline sí
-se chequea **al recibir** el desafío (`standalone_worker.py:60`), lo que evita
-arrancar tarde, pero no cortar a mitad.
+Corregido en tres partes:
+- **`run_miner` se puede cortar** (`timeout` y `cancel`): corre el subproceso con
+  `Popen` y lo mata si vence el plazo o se prende la señal. Un corte devuelve
+  `(None, None)` sin caer a CPU y sin registrar métricas.
+- **El NCT avisa el cierre** por el flujo 2 (routing key `desafio.cerrada`).
+- **El standalone mina en un hilo propio** y corta con el deadline, con el aviso
+  o con un desafío nuevo. El **coordinador de equipo** tira los fragmentos de la
+  ventana avisada y no reparte los de ventanas vencidas.
 
-En el pool esto está mitigado por el tamaño del fragmento (un fragmento de 500 K
-nonces son fracciones de segundo). En standalone con `NONCE_SPACE=50M` y `n=6`, no.
+Queda: el auto-miner y el pool-worker terminan el fragmento que tienen en curso
+(un fragmento de 1M nonces son segundos). Tests en `worker/tests/test_miner.py`,
+`worker/tests/test_pool_coordinator.py::TestVentanaCerrada` y
+`nct-coordinator/tests/test_failover_y_cierre.py` (BUG 6).
 
 ### C-bis. En modo `pool-worker` nadie consumía RabbitMQ ✅ corregido
 

@@ -6,6 +6,9 @@ Tres flujos canónicos hacia/desde el NCT (no agregar un cuarto que lo toque):
 2. ``desafio_activo``   topic  NCT → red      (desafío de la ventana abierta)
 3. ``respuesta_nonce``  cola   red → NCT      (nonce ganador)
 
+El flujo 2 lleva también el aviso de ventana cerrada (routing key
+``desafio.cerrada``): mismo exchange y misma dirección, no un flujo nuevo.
+
 Los flujos internos 4 (tareas_trp) y 5 (keepalive_trp) fueron eliminados
 junto con el Transaction Pool (TrP). La fragmentación la hace cada
 Pool Coordinator internamente.
@@ -18,6 +21,8 @@ from .base import (
     EXCHANGE_DESAFIO,
     DESAFIO_ROUTING_KEY,
     DESAFIO_BINDING_KEY,
+    CIERRE_ROUTING_KEY,
+    STREAM_CIERRE,
     QUEUE_RESPUESTA_NONCE,
     EXCHANGE_HEARTBEAT,
     HEARTBEAT_ROUTING_KEY,
@@ -31,6 +36,8 @@ __all__ = [
     "EXCHANGE_DESAFIO",
     "DESAFIO_ROUTING_KEY",
     "DESAFIO_BINDING_KEY",
+    "CIERRE_ROUTING_KEY",
+    "STREAM_CIERRE",
     "QUEUE_RESPUESTA_NONCE",
     "EXCHANGE_HEARTBEAT",
     "HEARTBEAT_ROUTING_KEY",

@@ -512,3 +512,80 @@ def test_ventana_irrecuperable_devuelve_la_ley_a_la_cola(bus, store):
     assert nueva["law_id"] == "L1"
     assert nueva["voting_window_id"] != wid
     assert store.get_active_window() == nueva["voting_window_id"]
+
+
+# ---- BUG 6: nadie avisaba que la ventana cerró ----------------------------
+#
+# Al sellar o vencer, el NCT cerraba la ventana sólo en Redis. Los mineros
+# seguían barriéndola hasta agotar su rango o hasta el desafío siguiente.
+
+def _con_avisos(bus):
+    avisos = []
+    bus.on_window_closed(avisos.append)
+    return avisos
+
+
+def test_avisa_el_cierre_al_sellar(bus, store):
+    clock = Clock()
+    avisos = _con_avisos(bus)
+    _, challenges = _ventana_abierta(bus, store, clock)
+    ch = challenges[0]
+    nonce = _solve_from(ch["partial_hash_base"], ch["n_zeros_required"])
+    bus.publish_nonce_response({"voting_window_id": ch["voting_window_id"],
+                                "nonce": nonce, "winning_node_or_pool": "worker-1"})
+
+    assert [(a["voting_window_id"], a["result"]) for a in avisos] == [
+        (ch["voting_window_id"], WindowResult.SUCCESS)]
+
+
+def test_avisa_el_cierre_al_vencer(bus, store):
+    clock = Clock()
+    avisos = _con_avisos(bus)
+    lider, challenges = _ventana_abierta(bus, store, clock)
+    clock.t += 61
+    lider.check_deadline()
+
+    assert [(a["voting_window_id"], a["result"]) for a in avisos] == [
+        (challenges[0]["voting_window_id"], WindowResult.EXPIRED_PENDING)]
+
+
+def test_avisa_el_cierre_al_vencer_sin_quorum(bus, store):
+    import json
+
+    clock = Clock()
+    avisos = _con_avisos(bus)
+    challenges = []
+    bus.on_challenge(challenges.append)
+    store.r.set("worker:status:w1",
+                json.dumps({"worker_id": "w1", "mode": "standalone"}), ex=15)
+    lider = _nct(bus, store, nct_id="nct-primary", is_leader=True, clock=clock,
+                 min_workers_for_window=1)
+    bus.publish_proposal({"law_id": "L1", "author_pubkey": "A",
+                          "text_hash": "h1", "created_at": "t0"})
+    assert len(challenges) == 1
+
+    store.r.delete("worker:status:w1")  # el minero se cae con la ventana abierta
+    clock.t += 61
+    lider.check_deadline()
+
+    assert [a["result"] for a in avisos] == [WindowResult.EXPIRED_NO_QUORUM]
+    assert store.get_law("L1")["status"] == LawStatus.PENDING_QUEUE
+
+
+def test_una_falla_al_avisar_no_traba_el_sellado(bus, store, monkeypatch):
+    """El aviso es best-effort: el estado autoritativo es Redis."""
+    clock = Clock()
+    _, challenges = _ventana_abierta(bus, store, clock)
+
+    def caido(aviso):
+        raise ConnectionError("RabbitMQ no disponible")
+    monkeypatch.setattr(bus, "publish_window_closed", caido)
+
+    ch = challenges[0]
+    nonce = _solve_from(ch["partial_hash_base"], ch["n_zeros_required"])
+    bus.publish_nonce_response({"voting_window_id": ch["voting_window_id"],
+                                "nonce": nonce, "winning_node_or_pool": "worker-1"})
+
+    assert store.chain_length() == 1
+    assert store.get_law("L1")["status"] == LawStatus.PROMULGATED
+    assert store.get_active_window() is None

@@ -43,7 +43,10 @@ vuelta de su loop de reporte (cada 5 s), así que también sigue a su coordinado
 
 ### Standalone mode
 Se suscribe directo al exchange `desafio_activo` del NCT. Mina el **espacio
-completo de nonces** y publica el resultado directamente al NCT. Filtra leyes
+completo de nonces** y publica el resultado directamente al NCT. Mina en un hilo
+propio, así que mientras mina sigue recibiendo mensajes, y corta el barrido al
+vencer el `deadline`, al llegar el aviso de cierre de esa ventana o al llegar un
+desafío nuevo. Filtra leyes
 según `STANDALONE_REJECTED_ACTIONS` (por acción) y `STANDALONE_CATEGORIES` (por
 área de gobierno) — el usuario decide qué leyes votar.
 

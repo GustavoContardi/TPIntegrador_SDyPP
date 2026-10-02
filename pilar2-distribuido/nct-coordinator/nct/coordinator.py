@@ -81,6 +81,12 @@ log = logging.getLogger("voxchain.nct")
 AVAILABILITY_CACHE_SECONDS = 5.0
 
 
+# Resultado que viaja en el aviso de cierre cuando la ventana no terminó ni
+# sellada ni vencida (el CAS del bloque falló, o no se pudo retomar tras un
+# failover). No se guarda en la ventana: sólo le dice a la red que deje de minar.
+CIERRE_INTERRUMPIDA = "interrupted"
+
+
 def _iso(epoch: float) -> str:
     return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
 
@@ -993,6 +999,7 @@ class NCTCoordinator:
             self.store.enqueue_law(law_id)
             self.store.clear_active_window()
             self._active = None
+            self._avisar_cierre(active["voting_window_id"], CIERRE_INTERRUMPIDA)
             self.maybe_open_window()
             return
         new_status = self._cerrar_ventana_sellada(
@@ -1018,7 +1025,27 @@ class NCTCoordinator:
         self.store.set_law_status(law_id, new_status)
         self.store.clear_active_window()
         self._active = None
+        self._avisar_cierre(voting_window_id, WindowResult.SUCCESS)
         return new_status
+
+    def _avisar_cierre(self, voting_window_id: str, result: str) -> None:
+        """Le avisa a la red que la ventana cerró, para que deje de minarla.
+
+        Va por el flujo 2 (``desafio_activo``) con otra routing key. Antes nadie
+        avisaba: cada minero seguía hasta agotar su rango o hasta el desafío
+        siguiente, barriendo una ventana que ya no podía ganar. Es best-effort:
+        el estado autoritativo es Redis, y los mineros además cortan solos al
+        vencer el deadline, así que una falla acá no puede trabar el cierre.
+        """
+        try:
+            self.m.publish_window_closed({
+                "voting_window_id": voting_window_id,
+                "result": result,
+                "closed_at": _iso(self.now()),
+            })
+        except Exception:  # noqa: BLE001
+            log.exception("no se pudo avisar el cierre de la ventana %s",
+                          voting_window_id)
 
     # -- cierre por deadline (ley pendiente → discarded) -------------------
     def check_deadline(self) -> None:
@@ -1052,6 +1079,7 @@ class NCTCoordinator:
             self.store.mark_text_hash_discarded(law.get("text_hash", ""))
         self.store.clear_active_window()
         self._active = None
+        self._avisar_cierre(active["voting_window_id"], WindowResult.EXPIRED_PENDING)
         log.info("ventana %s vencida sin solución: ley %s descartada",
                  active["voting_window_id"], active["law_id"])
         self.maybe_open_window()
@@ -1072,6 +1100,7 @@ class NCTCoordinator:
         self.store.enqueue_law(law_id)
         self.store.clear_active_window()
         self._active = None
+        self._avisar_cierre(active["voting_window_id"], WindowResult.EXPIRED_NO_QUORUM)
         log.warning("ventana %s vencida sin quórum (%s): ley %s reencolada, "
                     "no descartada", active["voting_window_id"], quorum.reason(),
                     law_id)
@@ -1119,8 +1148,10 @@ class NCTCoordinator:
             ventana = self.store.get_window(wid)
             if not ventana or ventana.get("result"):
                 # Ya estaba cerrada: el anterior se cayó entre anotar el
-                # resultado y borrar el puntero.
+                # resultado y borrar el puntero, así que tampoco avisó.
                 self.store.clear_active_window()
+                if ventana:
+                    self._avisar_cierre(wid, ventana["result"])
                 return
             law_id = ventana["law_id"]
             action = ventana.get("action", ACTION_PROMULGACION)
@@ -1160,6 +1191,8 @@ class NCTCoordinator:
         try:
             ventana = self.store.get_window(wid) if wid else None
             self.store.clear_active_window()
+            if wid:
+                self._avisar_cierre(wid, CIERRE_INTERRUMPIDA)
             law_id = (ventana or {}).get("law_id")
             if not law_id:
                 return

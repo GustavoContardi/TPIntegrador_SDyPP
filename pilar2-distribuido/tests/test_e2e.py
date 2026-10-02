@@ -26,9 +26,9 @@ CPU_SCRIPT = os.path.abspath(os.path.join(
     "brute_force.py"))
 
 
-def cpu_mine(base, prefix, rmin, rmax):
+def cpu_mine(base, prefix, rmin, rmax, **kw):
     return run_miner(base, prefix, rmin, rmax, prefer_gpu=False,
-                     cpu_script=CPU_SCRIPT)
+                     cpu_script=CPU_SCRIPT, **kw)
 
 
 @pytest.fixture

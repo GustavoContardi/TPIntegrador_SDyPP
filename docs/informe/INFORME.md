@@ -225,6 +225,14 @@ manifests del repositorio.
 | 2 | `desafio_activo` | exchange topic | NCT → red | `voting_window_id, law_id, n_zeros_required, deadline, partial_hash_base, action, category, nonce_space, participants` |
 | 3 | `respuesta_nonce` | cola | red → NCT | `voting_window_id, nonce, winning_node_or_pool, block_hash_candidato` |
 
+El flujo 2 lleva además el **aviso de cierre** (routing key `desafio.cerrada`):
+al sellar, vencer o interrumpir una ventana, el NCT avisa con
+`voting_window_id, result, closed_at`. Antes nadie avisaba: cada minero seguía
+barriendo la ventana muerta hasta agotar su rango o hasta el desafío siguiente.
+El standalone corta el subproceso del minero y el coordinador de equipo tira
+los fragmentos pendientes. Es best-effort: los dos cortan también solos al
+vencer el `deadline`.
+
 La **deliberación** no agrega un flujo de RabbitMQ: el anuncio vive en Redis
 (`nct:deliberation`, sólo la ley y su área) y las respuestas llegan firmadas por
 el API. `partial_hash_base` recién se publica al abrir la ventana, para que

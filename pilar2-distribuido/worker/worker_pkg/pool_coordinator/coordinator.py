@@ -120,6 +120,8 @@ class PoolCoordinator:
         self._assigned: dict[str, dict] = {}
         self._lock = Lock()
         self._solved: set[str] = set()
+        # Ventanas que cerró el NCT (las ganó otro o vencieron).
+        self._cerradas: set[str] = set()
         # La agenda real la baja el backend a `pool:policy:<pool_id>` cuando el
         # dueño del equipo la elige, y se relee en cada tick.
         self._voting_policy = dict(_DEFAULT_POLICY)
@@ -161,6 +163,23 @@ class PoolCoordinator:
 
     def wire(self) -> None:
         self.m.on_challenge(self.handle_challenge)
+        self.m.on_window_closed(self.handle_window_closed)
+
+    def handle_window_closed(self, aviso: dict) -> None:
+        """La ventana se cerró (sellada por otro o vencida): tirar su trabajo.
+
+        Antes el pool seguía repartiendo sus fragmentos hasta que llegaba el
+        desafío siguiente, que con la deliberación de por medio son minutos de
+        cómputo sobre una ventana muerta. Va también a la réplica en espera,
+        para que al asumir no reparta lo que ya no sirve.
+        """
+        wid = aviso.get("voting_window_id")
+        if not wid:
+            return
+        # No se re-fragmenta si el desafío llega repetido, ni se devuelven a la
+        # cola los rangos de un minero que cae, ni se publica un nonce tardío.
+        self._cerradas.add(wid)
+        self._discard_fragments(wid)
 
     def try_acquire_leadership(self) -> bool:
         if self.redis is None:
@@ -273,7 +292,8 @@ class PoolCoordinator:
                 # Al frente de la cola: es el rango más viejo sin barrer de la
                 # ventana en curso. Si la ventana ya se ganó no se devuelve;
                 # las de ventanas viejas ya las sacó `_discard_fragments`.
-                if fragment and fragment["voting_window_id"] not in self._solved:
+                if (fragment and fragment["voting_window_id"] not in self._solved
+                        and fragment["voting_window_id"] not in self._cerradas):
                     self._pending_fragments.appendleft(fragment)
                     reasignados += 1
             pool_miners_registered.set(len(self._miners))
@@ -290,9 +310,9 @@ class PoolCoordinator:
         with self._lock:
             if miner_id not in self._miners:
                 return None
-            if not self._pending_fragments:
+            fragment = self._tomar_fragmento()
+            if fragment is None:
                 return None
-            fragment = self._pending_fragments.popleft()
             # Un minero pide trabajo nuevo sólo cuando terminó el anterior sin
             # encontrar nonce, así que el fragmento previo ya está barrido y se
             # pisa.
@@ -313,9 +333,33 @@ class PoolCoordinator:
         if self.standby:
             return None
         with self._lock:
-            if not self._pending_fragments:
-                return None
-            return self._pending_fragments.popleft()
+            return self._tomar_fragmento()
+
+    def _tomar_fragmento(self) -> dict | None:
+        """El próximo fragmento de una ventana vigente, salteando los vencidos.
+
+        Pasado el deadline el NCT descarta cualquier nonce, así que barrer ese
+        rango es tiempo tirado. Cubre el caso en que el aviso de cierre no
+        llegó (un NCT de una versión anterior, o un corte de RabbitMQ).
+
+        Se llama con ``_lock`` tomado.
+        """
+        ahora = self.now()
+        vencidos = 0
+        while self._pending_fragments:
+            fragment = self._pending_fragments.popleft()
+            deadline = fragment.get("deadline_epoch")
+            if deadline is not None and ahora > deadline:
+                vencidos += 1
+                continue
+            if vencidos:
+                log.info("pool %s descartó %d fragmentos de ventanas vencidas",
+                         self.pool_id, vencidos)
+            return fragment
+        if vencidos:
+            log.info("pool %s descartó %d fragmentos de ventanas vencidas",
+                     self.pool_id, vencidos)
+        return None
 
     def _fragments_known(self) -> list[dict]:
         """Los fragmentos sin repartir más los que tienen los mineros en curso.
@@ -349,7 +393,7 @@ class PoolCoordinator:
         hash_hex = result.get("block_hash_candidato")
         if not wid or nonce is None:
             return False
-        if wid in self._solved:
+        if wid in self._solved or wid in self._cerradas:
             return False
         self._solved.add(wid)
         # La ventana ya está ganada: los fragmentos que quedaron sin repartir
@@ -444,8 +488,9 @@ class PoolCoordinator:
         if not self._running:
             return
         wid = challenge.get("voting_window_id")
-        if not wid or wid in self._solved:
+        if not wid or wid in self._solved or wid in self._cerradas:
             return
+        deadline_ts = None
         deadline_str = challenge.get("deadline", "")
         if deadline_str:
             try:
@@ -454,7 +499,7 @@ class PoolCoordinator:
                     log.info("pool %s ventana %s ya venció, saltando", self.pool_id, wid)
                     return
             except (ValueError, TypeError):
-                pass
+                deadline_ts = None
         if not self._check_voting_policy(challenge):
             log.info("pool %s no aporta cómputo a la ventana %s (categoría %s, "
                      "agenda %s)", self.pool_id, wid,
@@ -491,6 +536,7 @@ class PoolCoordinator:
                     "n_zeros_required": challenge.get("n_zeros_required"),
                     "range_min": rmin,
                     "range_max": rmax,
+                    "deadline_epoch": deadline_ts,
                 })
 
     def _auto_mine_loop(self) -> None:

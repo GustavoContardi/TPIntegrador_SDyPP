@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -31,13 +32,24 @@ log = logging.getLogger("voxchain.worker.standalone")
 
 class StandaloneWorker:
     def __init__(self, messaging, *, worker_id: str, mine,
-                 clock=time.time, signer=None):
+                 clock=time.time, signer=None, background: bool = False):
         self.m = messaging
         self.worker_id = worker_id
         self.mine = mine
         self.now = clock
         self.signer = signer
+        # En producción se mina en un hilo propio (``background=True``): el
+        # handler del desafío corre en el hilo de RabbitMQ, y minar ahí lo
+        # bloqueaba entero —no llegaban el aviso de cierre ni los comandos, y
+        # no se respondían los heartbeats AMQP—. Los tests usan el bus en
+        # memoria, que despacha sincrónico, y minan en el mismo hilo.
+        self.background = background
         self._solved: set[str] = set()
+        # Ventanas que cerró otro (aviso del NCT): no se vuelven a minar.
+        self._cerradas: set[str] = set()
+        # Ventana que se está minando y la señal para cortarla.
+        self._minando: tuple[str, threading.Event] | None = None
+        self._minando_lock = threading.Lock()
         self._running = True
         # El default es `NONCE_SPACE`, no una constante propia: el espacio que
         # barre un standalone tiene que crecer junto con `n`, igual que el de
@@ -61,12 +73,31 @@ class StandaloneWorker:
 
     def wire(self) -> None:
         self.m.on_challenge(self.handle_challenge)
+        self.m.on_window_closed(self.handle_window_closed)
+
+    def handle_window_closed(self, aviso: dict) -> None:
+        """La ventana se cerró (la ganó alguien o venció): dejar de minarla."""
+        wid = aviso.get("voting_window_id")
+        if not wid:
+            return
+        self._cerradas.add(wid)  # un desafío repetido de esa ventana ya no se mina
+        with self._minando_lock:
+            if self._minando and self._minando[0] == wid:
+                log.info("%s corta la ventana %s: se cerró (%s)", self.worker_id,
+                         wid, aviso.get("result", "?"))
+                self._minando[1].set()
+
+    def _cortar_minado(self) -> None:
+        with self._minando_lock:
+            if self._minando:
+                self._minando[1].set()
+            self._minando = None
 
     def handle_challenge(self, challenge: dict) -> None:
         if not self._running:
             return
         wid = challenge.get("voting_window_id")
-        if not wid or wid in self._solved:
+        if not wid or wid in self._solved or wid in self._cerradas:
             return
         observe_challenge_latency(challenge, self.now())
         # Con deliberación (AGENT.md 3.12) la decisión ya la tomó el dueño al
@@ -76,7 +107,7 @@ class StandaloneWorker:
                 log.info("%s no aceptó minar la ventana %s en la deliberación",
                          self.worker_id, wid)
                 return
-            return self._mine(challenge, wid)
+            return self._lanzar(challenge, wid)
         action = challenge.get("action", "")
         if action in self._rejected_actions:
             log.info("%s rechaza ventana %s (acción=%s)", self.worker_id, wid, action)
@@ -86,9 +117,24 @@ class StandaloneWorker:
             log.info("%s no aporta cómputo a la ventana %s (categoría=%s)",
                      self.worker_id, wid, category)
             return
-        self._mine(challenge, wid)
+        self._lanzar(challenge, wid)
 
-    def _mine(self, challenge: dict, wid: str) -> None:
+    def _lanzar(self, challenge: dict, wid: str) -> None:
+        """Empieza a minar ``wid``. Un desafío nuevo implica que el anterior
+        cerró (hay una sola ventana por vez), así que se corta el que siguiera."""
+        cancel = threading.Event()
+        with self._minando_lock:
+            if self._minando:
+                self._minando[1].set()
+            self._minando = (wid, cancel)
+        if self.background:
+            threading.Thread(target=self._mine, args=(challenge, wid, cancel),
+                             daemon=True, name=f"mina-{wid}").start()
+        else:
+            self._mine(challenge, wid, cancel)
+
+    def _mine(self, challenge: dict, wid: str, cancel: threading.Event) -> None:
+        timeout = None
         deadline_str = challenge.get("deadline", "")
         if deadline_str:
             try:
@@ -96,6 +142,9 @@ class StandaloneWorker:
                 if self.now() > deadline_ts:
                     log.info("%s ventana %s ya venció, saltando", self.worker_id, wid)
                     return
+                # Pasado el deadline el NCT descarta el nonce: no hay para qué
+                # seguir barriendo.
+                timeout = deadline_ts - self.now()
             except (ValueError, TypeError):
                 pass
 
@@ -109,8 +158,17 @@ class StandaloneWorker:
         log.info("%s minando ventana %s rango [0, %d) prefijo %r",
                  self.worker_id, wid, espacio, prefix)
         worker_busy.set(1)
-        nonce, hash_hex = self.mine(base, prefix, 0, espacio)
-        worker_busy.set(0)
+        try:
+            nonce, hash_hex = self.mine(base, prefix, 0, espacio,
+                                        timeout=timeout, cancel=cancel)
+        finally:
+            worker_busy.set(0)
+            with self._minando_lock:
+                if self._minando and self._minando[0] == wid:
+                    self._minando = None
+        if cancel.is_set():
+            log.info("%s dejó de minar la ventana %s: se cerró", self.worker_id, wid)
+            return
         if nonce is None:
             log.info("%s sin solución para ventana %s", self.worker_id, wid)
             return
@@ -131,3 +189,4 @@ class StandaloneWorker:
 
     def stop(self) -> None:
         self._running = False
+        self._cortar_minado()

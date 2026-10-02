@@ -16,6 +16,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from typing import Optional
 
@@ -113,13 +114,47 @@ def _record_attempt(resource: str, prefix: str, started: float,
         worker_mining_success_total.labels(resource=resource).inc()
 
 
+# Cada cuánto se mira si hay que cortar el minado. Es lo que tarda, como mucho,
+# en apagarse un minero cuya ventana cerró.
+_CANCEL_POLL_SECONDS = 0.2
+
+
+def _ejecutar(cmd: list[str], timeout: Optional[float],
+              cancel: Optional[threading.Event]) -> Optional[str]:
+    """Corre el minero y devuelve su stdout, o ``None`` si hubo que cortarlo.
+
+    Se corta al vencer ``timeout`` (el deadline de la ventana) o al prenderse
+    ``cancel`` (la ventana se cerró: alguien la ganó o venció). Sin esto el
+    proceso barría el rango entero aunque la ventana llevara rato cerrada.
+    """
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, text=True)
+    limite = None if timeout is None else time.monotonic() + max(timeout, 0)
+    while True:
+        try:
+            out, _ = proc.communicate(timeout=_CANCEL_POLL_SECONDS)
+            return out
+        except subprocess.TimeoutExpired:
+            cancelado = cancel is not None and cancel.is_set()
+            vencido = limite is not None and time.monotonic() >= limite
+            if cancelado or vencido:
+                proc.kill()
+                proc.communicate()
+                return None
+
+
 def run_miner(base: str, prefix: str, range_min: int, range_max: int, *,
               gpu_bin: Optional[str] = None, cpu_script: Optional[str] = None,
-              prefer_gpu: bool = True, timeout: Optional[float] = None):
+              prefer_gpu: bool = True, timeout: Optional[float] = None,
+              cancel: Optional[threading.Event] = None):
     """Ejecuta el minero sobre ``[range_min, range_max)`` buscando ``prefix``.
 
     Devuelve ``(nonce, hash_hex)`` o ``(None, None)`` si no hay solución en el
     rango. Intenta GPU si está disponible; ante cualquier fallo cae a CPU.
+
+    ``timeout`` y ``cancel`` cortan la búsqueda (ver ``_ejecutar``). Un corte
+    devuelve ``(None, None)`` sin caer a CPU —la ventana ya no sirve— y no
+    registra métricas: un barrido a medias falsearía el hashrate.
     """
     gpu_bin = gpu_bin if gpu_bin is not None else os.getenv("MINER_GPU_BIN", "")
     cpu_script = cpu_script if cpu_script is not None else os.getenv(
@@ -131,9 +166,11 @@ def run_miner(base: str, prefix: str, range_min: int, range_max: int, *,
         started = time.perf_counter()
         try:
             cmd = [gpu_bin, base, prefix, str(range_min), str(range_max)]
-            out = subprocess.run(cmd, capture_output=True, text=True,
-                                 timeout=timeout, check=False)
-            nonce, hash_hex = parse_miner_output(out.stdout)
+            stdout = _ejecutar(cmd, timeout, cancel)
+            if stdout is None:
+                log.info("minado GPU cortado: la ventana cerró o venció")
+                return None, None
+            nonce, hash_hex = parse_miner_output(stdout)
             _record_attempt("gpu", prefix, started, nonce, range_min, range_max)
             if nonce is not None:
                 log.info("GPU encontró nonce %d", nonce)
@@ -144,9 +181,11 @@ def run_miner(base: str, prefix: str, range_min: int, range_max: int, *,
 
     cmd = [sys.executable, cpu_script, base, prefix, str(range_min), str(range_max)]
     started = time.perf_counter()
-    out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                         check=False)
-    nonce, hash_hex = parse_miner_output(out.stdout)
+    stdout = _ejecutar(cmd, timeout, cancel)
+    if stdout is None:
+        log.info("minado CPU cortado: la ventana cerró o venció")
+        return None, None
+    nonce, hash_hex = parse_miner_output(stdout)
     _record_attempt("cpu", prefix, started, nonce, range_min, range_max)
     if nonce is not None:
         log.info("CPU encontró nonce %d", nonce)

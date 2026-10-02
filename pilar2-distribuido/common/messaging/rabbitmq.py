@@ -28,6 +28,8 @@ from .base import (
     EXCHANGE_DESAFIO,
     DESAFIO_ROUTING_KEY,
     DESAFIO_BINDING_KEY,
+    CIERRE_ROUTING_KEY,
+    STREAM_CIERRE,
     QUEUE_RESPUESTA_NONCE,
     QUEUE_TAREAS,
     QUEUE_KEEPALIVE,
@@ -159,6 +161,8 @@ class RabbitMQMessaging(Messaging):
     def publish_proposal(self, law): self._publish("", QUEUE_PROPUESTAS, law)
     def publish_challenge(self, challenge):
         self._publish(EXCHANGE_DESAFIO, DESAFIO_ROUTING_KEY, challenge)
+    def publish_window_closed(self, aviso):
+        self._publish(EXCHANGE_DESAFIO, CIERRE_ROUTING_KEY, aviso)
     def publish_nonce_response(self, solution):
         self._publish("", QUEUE_RESPUESTA_NONCE, solution)
     def publish_task(self, task): self._publish("", QUEUE_TAREAS, task)
@@ -179,6 +183,7 @@ class RabbitMQMessaging(Messaging):
     def on_task(self, handler): self._subscribe(QUEUE_TAREAS, handler)
     def on_keepalive(self, handler): self._subscribe(QUEUE_KEEPALIVE, handler)
     def on_challenge(self, handler): self._subscribe(EXCHANGE_DESAFIO, handler)
+    def on_window_closed(self, handler): self._subscribe(STREAM_CIERRE, handler)
     def on_heartbeat(self, handler): self._subscribe(EXCHANGE_HEARTBEAT, handler)
     def on_pool_election(self, pool_id: str, handler: Callable[[dict], None]) -> None:
         stream = f"{EXCHANGE_POOL_ELECTION}.{pool_id}"
@@ -249,11 +254,21 @@ class RabbitMQMessaging(Messaging):
         self._consumer_tags[stream] = tag
 
     def _start_consumer(self, stream: str) -> None:
+        # El cierre de ventana no tiene cola propia: llega por la del desafío.
+        if stream == STREAM_CIERRE:
+            stream = EXCHANGE_DESAFIO
         if stream in self._consumer_tags:
             return
-        handler = self._handlers.get(stream)
-        if handler is None:
-            return
+        if stream == EXCHANGE_DESAFIO:
+            if not (self._handlers.get(EXCHANGE_DESAFIO)
+                    or self._handlers.get(STREAM_CIERRE)):
+                return
+            callback = self._wrap_desafio()
+        else:
+            handler = self._handlers.get(stream)
+            if handler is None:
+                return
+            callback = self._wrap(handler)
         if stream in (EXCHANGE_DESAFIO, EXCHANGE_HEARTBEAT):
             result = self._ch.queue_declare(queue="", exclusive=True)
             qname = result.method.queue
@@ -263,8 +278,7 @@ class RabbitMQMessaging(Messaging):
                                 routing_key=binding_key)
         else:
             qname = stream
-        tag = self._ch.basic_consume(queue=qname,
-                                     on_message_callback=self._wrap(handler))
+        tag = self._ch.basic_consume(queue=qname, on_message_callback=callback)
         self._consumer_tags[stream] = tag
 
     def _bind_consumers(self) -> None:
@@ -279,10 +293,27 @@ class RabbitMQMessaging(Messaging):
                 self._start_consumer(stream)
 
     def _wrap(self, handler: Callable[[dict], None]):
+        return self._wrap_resolving(lambda _routing_key: handler)
+
+    def _wrap_desafio(self):
+        """Consumidor único del exchange del desafío: reparte por routing key.
+
+        El desafío y el aviso de cierre comparten exchange y cola (ambos son el
+        flujo 2, NCT → red). El handler se busca al llegar cada mensaje, no al
+        suscribirse, así el que se registre después también recibe lo suyo.
+        """
+        def _resolver(routing_key: str):
+            stream = (STREAM_CIERRE if routing_key == CIERRE_ROUTING_KEY
+                      else EXCHANGE_DESAFIO)
+            return self._handlers.get(stream)
+        return self._wrap_resolving(_resolver)
+
+    def _wrap_resolving(self, resolver):
         def _cb(ch, method, properties, body):
             try:
-                payload = json.loads(body.decode())
-                handler(payload)
+                handler = resolver(method.routing_key)
+                if handler is not None:
+                    handler(json.loads(body.decode()))
             except Exception:  # noqa: BLE001
                 log.exception("error procesando mensaje en %s", method.routing_key)
             finally:

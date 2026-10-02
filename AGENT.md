@@ -301,7 +301,7 @@ Sin cambios respecto al enunciado base del TP: el minero GPU/CPU calcula hashes 
 **P2 (RabbitMQ):** tres flujos de consenso, más los de coordinación y control:
 
 1. `propuesta → NCT`: cualquier nodo publica una ley nueva a la cola de propuestas.
-2. `NCT → red (tópico)`: al abrir una ventana, el NCT publica el desafío activo (`law_id`, `n_zeros`, `deadline`, `partial_hash_base`, `action`, `category`). Todos los nodos/pools suscritos lo reciben simultáneamente. `category` viaja para que cada coordinador de equipo decida si la ventana entra en su agenda (3.10); **no** forma parte del `partial_hash_base`, así que el desafío que resuelve el minero de Pilar 1 no cambia.
+2. `NCT → red (tópico)`: al abrir una ventana, el NCT publica el desafío activo (`law_id`, `n_zeros`, `deadline`, `partial_hash_base`, `action`, `category`). Todos los nodos/pools suscritos lo reciben simultáneamente. `category` viaja para que cada coordinador de equipo decida si la ventana entra en su agenda (3.10); **no** forma parte del `partial_hash_base`, así que el desafío que resuelve el minero de Pilar 1 no cambia. Por el mismo exchange, con routing key `desafio.cerrada`, el NCT **avisa el cierre** de la ventana (sellada, vencida o interrumpida): `{voting_window_id, result, closed_at}`. Es el mismo flujo —NCT → red— y no un cuarto; sin el aviso, cada minero seguía barriendo la ventana muerta hasta agotar su rango o hasta el desafío siguiente. Es best-effort: los mineros además cortan solos al vencer el `deadline`.
 3. `red → NCT (cola de respuesta)`: el primer nodo/pool que encuentra el nonce válido publica la solución. El NCT verifica y descarta soluciones tardías para la misma ventana.
 
 Más dos flujos para la elección de coordinadores (AGENT.md 4):

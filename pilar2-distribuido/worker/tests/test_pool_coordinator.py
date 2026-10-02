@@ -88,6 +88,9 @@ class FakeMessaging(Messaging):
     def on_challenge(self, handler):
         self.challenges_registered.append(handler)
 
+    def on_window_closed(self, handler):
+        pass
+
     def publish_nonce_response(self, msg):
         self.published.append(("nonce", msg))
 
@@ -971,3 +974,66 @@ class TestSoltarElLease:
 
         c.stop()
         assert lease_holder(r.get("pool:leader:equipo-a")) == "otro"
+
+
+class TestVentanaCerrada:
+    """El pool deja de repartir una ventana que ya cerró.
+
+    Antes seguía entregando sus fragmentos hasta que llegaba el desafío
+    siguiente: con la deliberación de por medio, minutos de trabajo inútil.
+    """
+
+    @pytest.fixture
+    def pool(self):
+        reloj = {"t": 1000.0}
+        c = PoolCoordinator(FakeMessaging(), pool_id="test-pool", redis=FakeRedis(),
+                            mine=lambda *a: (None, None), clock=lambda: reloj["t"])
+        c._running = True
+        c.try_acquire_leadership()
+        c.fragment_size = 25
+        c.nonce_space = 100
+        return c, reloj
+
+    @staticmethod
+    def _desafio(wid, deadline_epoch):
+        from datetime import datetime, timezone
+        return {"voting_window_id": wid, "law_id": "law-1", "action": "promulgacion",
+                "partial_hash_base": "abc", "n_zeros_required": 4,
+                "deadline": datetime.fromtimestamp(deadline_epoch,
+                                                   tz=timezone.utc).isoformat()}
+
+    def test_no_reparte_fragmentos_de_una_ventana_vencida(self, pool):
+        c, reloj = pool
+        mid = c.register_miner()
+        c.handle_challenge(self._desafio("W1", deadline_epoch=1060.0))
+        assert c.get_next_task(mid)["voting_window_id"] == "W1"
+
+        reloj["t"] = 1061.0  # venció sin que llegara ningún aviso
+        assert c.get_next_task(mid) is None
+        assert c._get_auto_miner_fragment() is None
+        assert len(c._pending_fragments) == 0
+
+    def test_el_aviso_de_cierre_tira_la_ventana(self, pool):
+        c, _ = pool
+        mid = c.register_miner()
+        c.handle_challenge(self._desafio("W1", deadline_epoch=1060.0))
+        en_curso = c.get_next_task(mid)
+
+        c.handle_window_closed({"voting_window_id": "W1", "result": "success"})
+
+        assert len(c._pending_fragments) == 0
+        assert c.get_next_task(mid) is None
+        # Un nonce que el minero encuentre igual ya no se publica...
+        assert c.submit_result(mid, {"voting_window_id": "W1", "nonce": 1,
+                                     "block_hash_candidato": "h"}) is False
+        assert c.m.published == []
+        # ...ni se re-fragmenta si el desafío llega repetido.
+        c.handle_challenge(self._desafio("W1", deadline_epoch=1060.0))
+        assert len(c._pending_fragments) == 0
+        assert en_curso is not None
+
+    def test_el_cierre_de_otra_ventana_no_toca_la_vigente(self, pool):
+        c, _ = pool
+        c.handle_challenge(self._desafio("W2", deadline_epoch=1060.0))
+        c.handle_window_closed({"voting_window_id": "W1", "result": "expired_pending"})
+        assert len(c._pending_fragments) == 4

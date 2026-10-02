@@ -54,6 +54,9 @@ class BusMudo:
     def on_challenge(self, handler):
         pass
 
+    def on_window_closed(self, handler):
+        pass
+
     def publish_nonce_response(self, msg):
         self.publicado.append(msg)
 

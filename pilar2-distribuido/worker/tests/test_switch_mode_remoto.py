@@ -58,6 +58,9 @@ class BusDeUnHilo(Messaging):
     def on_challenge(self, handler):
         pass
 
+    def on_window_closed(self, handler):
+        pass
+
     def on_pool_election(self, pool_id, handler):
         self._pool_election_handler = handler
 

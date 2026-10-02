@@ -448,6 +448,7 @@ class WorkerManager:
             worker_id=self.worker_id,
             mine=run_miner,
             signer=self.signer,
+            background=True,
         )
         sw.wire()
         self._worker = sw

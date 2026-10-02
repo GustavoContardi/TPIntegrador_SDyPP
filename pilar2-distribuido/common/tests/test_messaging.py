@@ -117,3 +117,58 @@ def test_publicador_puro_no_difiere_aunque_cambie_de_hilo():
     assert len(m._ch.publicados) == 1
     assert m._conn.diferidos == []
 
+
+
+# -- aviso de ventana cerrada (flujo 2, routing key aparte) ------------------
+
+def test_inmemory_el_cierre_no_llega_al_handler_del_desafio():
+    bus = InMemoryBus()
+    desafios, cierres = [], []
+    bus.on_challenge(desafios.append)
+    bus.on_window_closed(cierres.append)
+    bus.publish_window_closed({"voting_window_id": "W1", "result": "success"})
+    assert desafios == []
+    assert cierres == [{"voting_window_id": "W1", "result": "success"}]
+
+
+def test_rabbit_el_cierre_sale_por_el_exchange_del_desafio():
+    """Mismo exchange que el desafío (es el flujo 2), otra routing key."""
+    from common.messaging import CIERRE_ROUTING_KEY, EXCHANGE_DESAFIO
+
+    m = _messaging_conectado(consuming=False)
+    m.publish_window_closed({"voting_window_id": "W1", "result": "success"})
+    (pub,) = m._ch.publicados
+    assert pub["exchange"] == EXCHANGE_DESAFIO
+    assert pub["routing_key"] == CIERRE_ROUTING_KEY
+
+
+def test_rabbit_un_solo_consumidor_reparte_por_routing_key():
+    import json
+    from types import SimpleNamespace
+
+    from common.messaging import CIERRE_ROUTING_KEY, DESAFIO_ROUTING_KEY
+
+    class _Canal:
+        def __init__(self):
+            self.acks = []
+
+        def basic_ack(self, delivery_tag):
+            self.acks.append(delivery_tag)
+
+    m = RabbitMQMessaging("amqp://x/")
+    desafios, cierres = [], []
+    m.on_challenge(desafios.append)
+    m.on_window_closed(cierres.append)
+    callback = m._wrap_desafio()
+    canal = _Canal()
+
+    def entregar(routing_key, payload, tag):
+        callback(canal, SimpleNamespace(routing_key=routing_key, delivery_tag=tag),
+                 None, json.dumps(payload).encode())
+
+    entregar(DESAFIO_ROUTING_KEY, {"voting_window_id": "W1"}, 1)
+    entregar(CIERRE_ROUTING_KEY, {"voting_window_id": "W1", "result": "success"}, 2)
+
+    assert desafios == [{"voting_window_id": "W1"}]
+    assert cierres == [{"voting_window_id": "W1", "result": "success"}]
+    assert canal.acks == [1, 2]

@@ -14,6 +14,12 @@ QUEUE_PROPUESTAS = "propuestas"            # nodo → NCT
 EXCHANGE_DESAFIO = "desafio_activo"        # NCT → red (topic)
 DESAFIO_ROUTING_KEY = "desafio.activo"
 DESAFIO_BINDING_KEY = "desafio.#"
+# Aviso de ventana cerrada (sellada o vencida). Viaja por el mismo exchange que
+# el desafío —es el flujo 2, NCT → red, no un cuarto flujo— con otra routing
+# key, y la mensajería lo entrega a un handler aparte. Sin él, los mineros
+# seguían barriendo una ventana muerta hasta terminar su rango.
+CIERRE_ROUTING_KEY = "desafio.cerrada"
+STREAM_CIERRE = "desafio_activo.cerrada"  # clave interna del handler, no un exchange
 QUEUE_RESPUESTA_NONCE = "respuesta_nonce"  # red → NCT
 QUEUE_TAREAS = "tareas_trp"                # TrP → workers (interno)
 QUEUE_KEEPALIVE = "keepalive_trp"          # workers → TrP (interno)
@@ -31,7 +37,7 @@ EXCHANGE_WORKER_COMMAND = "worker.command" # backend → worker (topic)
 # Topics (exchanges) → fan-out: cada consumidor recibe una copia.
 # El resto son colas de trabajo → consumidores competidores (round-robin),
 # igual que RabbitMQ reparte una cola entre sus consumidores.
-BROADCAST_STREAMS = frozenset({EXCHANGE_DESAFIO, EXCHANGE_HEARTBEAT})
+BROADCAST_STREAMS = frozenset({EXCHANGE_DESAFIO, STREAM_CIERRE, EXCHANGE_HEARTBEAT})
 
 Handler = Callable[[dict], None]
 
@@ -42,6 +48,7 @@ class Messaging:
     # -- publicación --
     def publish_proposal(self, law: dict) -> None: raise NotImplementedError
     def publish_challenge(self, challenge: dict) -> None: raise NotImplementedError
+    def publish_window_closed(self, aviso: dict) -> None: raise NotImplementedError
     def publish_nonce_response(self, solution: dict) -> None: raise NotImplementedError
     def publish_task(self, task: dict) -> None: raise NotImplementedError
     def publish_keepalive(self, keepalive: dict) -> None: raise NotImplementedError
@@ -54,6 +61,7 @@ class Messaging:
     # -- suscripción (registra callback; se ejecutan al consumir) --
     def on_proposal(self, handler: Handler) -> None: raise NotImplementedError
     def on_challenge(self, handler: Handler) -> None: raise NotImplementedError
+    def on_window_closed(self, handler: Handler) -> None: raise NotImplementedError
     def on_nonce_response(self, handler: Handler) -> None: raise NotImplementedError
     def on_task(self, handler: Handler) -> None: raise NotImplementedError
     def on_keepalive(self, handler: Handler) -> None: raise NotImplementedError
@@ -130,6 +138,7 @@ class InMemoryBus(Messaging):
     # publicación
     def publish_proposal(self, law): self._dispatch(QUEUE_PROPUESTAS, law)
     def publish_challenge(self, challenge): self._dispatch(EXCHANGE_DESAFIO, challenge)
+    def publish_window_closed(self, aviso): self._dispatch(STREAM_CIERRE, aviso)
     def publish_nonce_response(self, solution): self._dispatch(QUEUE_RESPUESTA_NONCE, solution)
     def publish_task(self, task): self._dispatch(QUEUE_TAREAS, task)
     def publish_keepalive(self, keepalive): self._dispatch(QUEUE_KEEPALIVE, keepalive)
@@ -142,6 +151,7 @@ class InMemoryBus(Messaging):
     # suscripción
     def on_proposal(self, handler): self._register(QUEUE_PROPUESTAS, handler)
     def on_challenge(self, handler): self._register(EXCHANGE_DESAFIO, handler)
+    def on_window_closed(self, handler): self._register(STREAM_CIERRE, handler)
     def on_nonce_response(self, handler): self._register(QUEUE_RESPUESTA_NONCE, handler)
     def on_task(self, handler): self._register(QUEUE_TAREAS, handler)
     def on_keepalive(self, handler): self._register(QUEUE_KEEPALIVE, handler)

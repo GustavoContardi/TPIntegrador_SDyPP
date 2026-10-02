@@ -78,6 +78,11 @@ cuarto que toque al NCT):
 | 2 | `desafio_activo`  | exchange *topic*| NCT → red   | `voting_window_id, law_id, n_zeros_required, deadline, partial_hash_base, action, category, participants` |
 | 3 | `respuesta_nonce` | cola            | red → NCT   | `voting_window_id, nonce, winning_node_or_pool, block_hash_candidato` |
 
+El flujo 2 lleva además el **aviso de cierre** de la ventana (routing key
+`desafio.cerrada`, payload `voting_window_id, result, closed_at`): al sellarla,
+vencerla o interrumpirla, el NCT avisa para que los mineros dejen de barrerla.
+Mismo exchange y misma dirección, así que no es un flujo nuevo.
+
 **Deliberación** (AGENT.md 3.12): antes de publicar el desafío, el NCT anuncia
 la ley en Redis (`nct:deliberation`, sólo la ley y su área) y espera
 `DELIBERATION_SECONDS` a que los convocados respondan por el API
